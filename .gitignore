@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.cache/
+tradeghost.egg-info/
+pytest-cache-files-*/
+
+apps/web/node_modules/
+apps/web/.next/
+apps/web/out/
+

@@ -7,6 +7,7 @@ This MVP is intentionally focused on:
 - Strategy planning
 - Historical backtesting
 - API delivery via FastAPI
+- Product UI delivery via Next.js dashboard
 
 This version explicitly does **not** include:
 - LLM features
@@ -28,6 +29,7 @@ This version explicitly does **not** include:
 tradeghost/
   apps/
     api/                 # FastAPI application and endpoints
+    web/                 # Next.js TypeScript frontend dashboard
   services/
     data/                # Market data abstraction + yfinance provider + caching
     indicators/          # Technical indicator calculations
@@ -40,7 +42,7 @@ tradeghost/
     models/              # Pydantic response models
     utils/               # Utilities (cache, math helpers)
   tests/                 # pytest coverage
-  docker/                # Dockerfile
+  docker/                # Dockerfiles
   docs/                  # Architecture and scoring docs
 ```
 
@@ -55,7 +57,7 @@ Category scores are normalized to `0-100`:
 
 Final score is weighted:
 
-`final_score = Σ(category_score * category_weight)`
+`final_score = ?(category_score * category_weight)`
 
 Weights are environment configurable:
 - `SCORE_MOMENTUM_WEIGHT`
@@ -67,13 +69,24 @@ Weights are environment configurable:
 Default threshold:
 - `SWING_CANDIDATE_THRESHOLD=65`
 
-## API Endpoints
+## Backend API Endpoints
 
 - `GET /health`
 - `GET /analyze?ticker=TSLA`
 - `GET /score?ticker=TSLA`
 - `GET /trade-plan?ticker=TSLA`
 - `GET /backtest?ticker=TSLA`
+
+## Frontend Tabs
+
+- `QuantEdge`
+- `SwingPulse`
+- `Temel Analiz`
+- `QE Backtest`
+- `SP Backtest`
+
+Frontend is served by Next.js at port `3000`.
+It uses internal Next API proxy routes (`/api/*`) to call FastAPI through `BACKEND_URL`.
 
 ## Quick Start (Docker)
 
@@ -88,19 +101,20 @@ docker compose up --build
 ```
 
 3. Open:
+- Web UI: `http://localhost:3000`
 - API docs: `http://localhost:8000/docs`
 - Health: `http://localhost:8000/health`
 
 ## Deploy To Your Linux Docker Host
 
-Example host you shared: `emrebee@192.168.1.72`
+Example host: `emrebee@192.168.1.72`
 
-1. SSH into your server:
+1. SSH into server:
 ```bash
 ssh emrebee@192.168.1.72
 ```
 
-2. Clone your TradeGhost repo (after you publish it privately):
+2. Clone and enter repo:
 ```bash
 git clone <your-private-repo-url> tradeghost
 cd tradeghost
@@ -116,35 +130,36 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-5. Verify container:
+5. Verify:
 ```bash
 docker compose ps
 docker compose logs -f tradeghost-api
+docker compose logs -f tradeghost-web
 ```
 
 6. Access from your LAN:
+- `http://192.168.1.72:3000`
 - `http://192.168.1.72:8000/health`
 - `http://192.168.1.72:8000/docs`
 
 ## Local Dev (without Docker)
 
-1. Create environment:
+1. Python backend:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-```
-
-2. Install:
-```bash
 pip install -e ".[dev]"
-```
-
-3. Run API:
-```bash
 uvicorn tradeghost.apps.api.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-4. Run tests:
+2. Next.js frontend:
+```bash
+cd apps/web
+npm install
+BACKEND_URL=http://localhost:8000 npm run dev
+```
+
+3. Run backend tests:
 ```bash
 pytest -q
 ```
@@ -158,6 +173,7 @@ pytest -q
   - Multi-position management
   - Position sizing
   - Portfolio-level analytics
+- Frontend backtest date-range controls are UI-ready; backend still uses default backtest history window.
 - Data provider abstraction is ready for migration to institutional feeds.
 
 ## Production Notes

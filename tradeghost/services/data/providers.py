@@ -37,18 +37,7 @@ class YFinanceMarketDataProvider(MarketDataProvider):
             raise ValueError(f"No OHLCV data returned for ticker={ticker}")
 
         normalized = self._normalize_download_columns(df=df, ticker=ticker)
-        renamed = normalized.rename(
-            columns={
-                "Open": "open",
-                "High": "high",
-                "Low": "low",
-                "Close": "close",
-                "Adj Close": "adj_close",
-                "Volume": "volume",
-            }
-        )
-        required = ["open", "high", "low", "close", "volume"]
-        out = renamed[required].copy()
+        out = self._extract_required_ohlcv(normalized)
         out.index = pd.to_datetime(out.index)
         out = out.dropna()
         return out
@@ -71,6 +60,37 @@ class YFinanceMarketDataProvider(MarketDataProvider):
         df = df.copy()
         df.columns = [col[0] if isinstance(col, tuple) and col else str(col) for col in df.columns]
         return df
+
+    @staticmethod
+    def _canonical_column_name(column: object) -> str:
+        text = str(column).strip().lower()
+        text = text.replace(" ", "_")
+        return text
+
+    @classmethod
+    def _extract_required_ohlcv(cls, df: pd.DataFrame) -> pd.DataFrame:
+        aliases = {
+            "open": {"open"},
+            "high": {"high"},
+            "low": {"low"},
+            "close": {"close", "adj_close", "adjclose"},
+            "volume": {"volume"},
+        }
+        canonical_to_original: dict[str, object] = {}
+        for column in df.columns:
+            canonical = cls._canonical_column_name(column)
+            canonical_to_original.setdefault(canonical, column)
+
+        selected: dict[str, pd.Series] = {}
+        for target, options in aliases.items():
+            source = next((canonical_to_original[opt] for opt in options if opt in canonical_to_original), None)
+            if source is None:
+                raise ValueError(
+                    f"Column(s) {sorted(list(aliases.keys()))} do not exist in yfinance response. "
+                    f"Received columns={list(df.columns)}"
+                )
+            selected[target] = df[source]
+        return pd.DataFrame(selected, index=df.index)
 
     def get_metadata(self, ticker: str) -> MarketMetadata:
         info = yf.Ticker(ticker).info or {}

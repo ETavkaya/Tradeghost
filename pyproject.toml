@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tradeghost"
+version = "0.1.0"
+description = "Deterministic, rule-based swing trading analysis engine."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi==0.116.1",
+  "uvicorn[standard]==0.35.0",
+  "pandas==2.3.2",
+  "numpy==2.3.2",
+  "yfinance==0.2.65",
+  "pydantic==2.11.7",
+  "pydantic-settings==2.10.1",
+  "python-dotenv==1.1.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.4.1",
+  "httpx==0.28.1",
+]
+
+[tool.setuptools.packages.find]
+include = ["tradeghost*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tradeghost/tests"]
+pythonpath = ["."]
+

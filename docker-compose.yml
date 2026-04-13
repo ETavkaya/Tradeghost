@@ -1,0 +1,12 @@
+services:
+  tradeghost-api:
+    build:
+      context: .
+      dockerfile: tradeghost/docker/Dockerfile
+    container_name: tradeghost-api
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+

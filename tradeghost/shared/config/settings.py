@@ -12,6 +12,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
     app_name: str = "TradeGhost"
@@ -46,4 +47,3 @@ def get_settings() -> Settings:
     settings = Settings()
     settings.cache_dir.mkdir(parents=True, exist_ok=True)
     return settings
-

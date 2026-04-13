@@ -36,7 +36,8 @@ class YFinanceMarketDataProvider(MarketDataProvider):
         if df.empty:
             raise ValueError(f"No OHLCV data returned for ticker={ticker}")
 
-        renamed = df.rename(
+        normalized = self._normalize_download_columns(df=df, ticker=ticker)
+        renamed = normalized.rename(
             columns={
                 "Open": "open",
                 "High": "high",
@@ -52,6 +53,25 @@ class YFinanceMarketDataProvider(MarketDataProvider):
         out = out.dropna()
         return out
 
+    @staticmethod
+    def _normalize_download_columns(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+        if not isinstance(df.columns, pd.MultiIndex):
+            return df
+
+        # yfinance may return columns like (PriceField, Ticker) for a single ticker request.
+        if ticker in df.columns.get_level_values(-1):
+            return df.xs(ticker, axis=1, level=-1, drop_level=True)
+
+        # Fallback: select first symbol if ticker suffix does not match exactly.
+        symbols = [x for x in df.columns.get_level_values(-1).unique() if isinstance(x, str)]
+        if symbols:
+            return df.xs(symbols[0], axis=1, level=-1, drop_level=True)
+
+        # Last-resort flatten to avoid KeyErrors and surface clearer validation failures upstream.
+        df = df.copy()
+        df.columns = [col[0] if isinstance(col, tuple) and col else str(col) for col in df.columns]
+        return df
+
     def get_metadata(self, ticker: str) -> MarketMetadata:
         info = yf.Ticker(ticker).info or {}
         return MarketMetadata(
@@ -59,4 +79,3 @@ class YFinanceMarketDataProvider(MarketDataProvider):
             sector=info.get("sector"),
             industry=info.get("industry"),
         )
-

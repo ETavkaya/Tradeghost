@@ -8,12 +8,13 @@ import { useAnalysisContext } from "@/components/analysis-context";
 import { TickerControls } from "@/components/ticker-controls";
 import { Panel, SectionTitle } from "@/components/ui";
 import { api } from "@/lib/api";
-import { AnalysisWindow } from "@/lib/types";
+import { AnalysisWindow, MarketCode } from "@/lib/types";
 
 export default function AnalysisPage() {
   const router = useRouter();
   const { analysis, setAnalysis } = useAnalysisContext();
   const [ticker, setTicker] = useState(analysis?.ticker ?? "TSLA");
+  const [market, setMarket] = useState<MarketCode>(analysis?.market ?? "us");
   const [window, setWindow] = useState<AnalysisWindow>(analysis?.window ?? "6m");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -22,7 +23,7 @@ export default function AnalysisPage() {
     setLoading(true);
     setError(null);
     try {
-      const result = await api.analyzeCombined(ticker, window);
+      const result = await api.analyzeCombined(ticker, market, window);
       setAnalysis(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to run analysis.");
@@ -36,6 +37,13 @@ export default function AnalysisPage() {
       <TickerControls
         ticker={ticker}
         onTickerChange={setTicker}
+        market={market}
+        onMarketChange={(nextMarket) => {
+          setMarket(nextMarket);
+          if (nextMarket === "bist" && ticker.endsWith(".IS")) {
+            setTicker(ticker.replace(".IS", ""));
+          }
+        }}
         window={window}
         onWindowChange={setWindow}
         onSubmit={onAnalyze}
@@ -59,13 +67,17 @@ export default function AnalysisPage() {
 
       {analysis ? (
         <>
-          <UnifiedAnalysisChart chart={analysis.chart} title={`${analysis.ticker} Unified Analysis (${analysis.window.toUpperCase()})`} />
+          <UnifiedAnalysisChart
+            chart={analysis.chart}
+            title={`${analysis.ticker} Unified Analysis (${analysis.market.toUpperCase()} • ${analysis.window.toUpperCase()})`}
+          />
 
           <Panel className="flex flex-col gap-3 bg-gradient-to-r from-panelSoft to-panel md:flex-row md:items-center md:justify-between">
             <div>
               <p className="text-sm text-slate-400">Context</p>
               <p className="text-sm text-slate-200">
-                Combined analysis generated for {analysis.ticker} ({analysis.window.toUpperCase()}) as of {analysis.as_of}
+                Combined analysis generated for {analysis.ticker} ({analysis.market.toUpperCase()} • {analysis.window.toUpperCase()}) as of{" "}
+                {analysis.as_of}
               </p>
             </div>
             <button

@@ -85,6 +85,11 @@ Default threshold:
 - `Analysis`
 - `Backtest` (enabled after a successful analysis context is created)
 
+## Market Support (Phase 1)
+
+- `US Stocks` (native symbols, e.g. `TSLA`, `NVDA`)
+- `BIST` (normalized to yfinance format, e.g. `THYAO -> THYAO.IS`)
+
 Legacy routes (`/quantedge`, `/swingpulse`, `/temel-analiz`, `/qe-backtest`, `/sp-backtest`) now redirect to the unified flow.
 
 Frontend is served by Next.js at port `3000`.

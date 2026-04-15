@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
+from tradeghost.shared.market import MarketCode
 
 
 class CategoryScores(BaseModel):
@@ -91,6 +92,8 @@ class AnalysisChart(BaseModel):
 
 class CombinedAnalysisResponse(BaseModel):
     ticker: str
+    normalized_ticker: str
+    market: MarketCode
     window: str
     as_of: date
     chart: AnalysisChart
@@ -157,6 +160,7 @@ class BacktestSummary(BaseModel):
 
 class BacktestFromAnalysisRequest(BaseModel):
     ticker: str
+    market: MarketCode = MarketCode.US
     window: str
     analysis_as_of: date | None = None
     quantedge_final_score: float
@@ -167,6 +171,8 @@ class BacktestFromAnalysisRequest(BaseModel):
 
 class BacktestFromAnalysisResponse(BaseModel):
     ticker: str
+    normalized_ticker: str
+    market: MarketCode
     window: str
     generated_from_analysis: bool
     analysis_as_of: date

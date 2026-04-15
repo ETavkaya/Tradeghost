@@ -28,47 +28,58 @@ def health() -> dict[str, str]:
 
 
 @app.get("/analyze", response_model=AnalysisResponse)
-def analyze(ticker: str = Query(..., min_length=1, max_length=10)) -> AnalysisResponse:
+def analyze(
+    ticker: str = Query(..., min_length=1, max_length=12),
+    market: str = Query(default="us"),
+) -> AnalysisResponse:
     try:
-        return analysis_engine.analyze(ticker)
+        return analysis_engine.analyze(ticker, market=market)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/analyze-combined", response_model=CombinedAnalysisResponse)
 def analyze_combined(
-    ticker: str = Query(..., min_length=1, max_length=10),
+    ticker: str = Query(..., min_length=1, max_length=12),
+    market: str = Query(default="us"),
     window: str = Query(default="6m"),
 ) -> CombinedAnalysisResponse:
     try:
-        return analysis_engine.analyze_combined(ticker=ticker, window=window)
+        return analysis_engine.analyze_combined(ticker=ticker, window=window, market=market)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/score", response_model=ScoreResponse)
-def score(ticker: str = Query(..., min_length=1, max_length=10)) -> ScoreResponse:
+def score(
+    ticker: str = Query(..., min_length=1, max_length=12),
+    market: str = Query(default="us"),
+) -> ScoreResponse:
     try:
-        return analysis_engine.score_only(ticker)
+        return analysis_engine.score_only(ticker, market=market)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/trade-plan", response_model=TradePlanResponse)
-def trade_plan(ticker: str = Query(..., min_length=1, max_length=10)) -> TradePlanResponse:
+def trade_plan(
+    ticker: str = Query(..., min_length=1, max_length=12),
+    market: str = Query(default="us"),
+) -> TradePlanResponse:
     try:
-        return analysis_engine.trade_plan_only(ticker)
+        return analysis_engine.trade_plan_only(ticker, market=market)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/backtest", response_model=BacktestSummary)
 def backtest(
-    ticker: str = Query(..., min_length=1, max_length=10),
+    ticker: str = Query(..., min_length=1, max_length=12),
+    market: str = Query(default="us"),
     window: str = Query(default="6m"),
 ) -> BacktestSummary:
     try:
-        return backtest_engine.run(ticker=ticker, window=window)
+        return backtest_engine.run(ticker=ticker, window=window, market=market)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

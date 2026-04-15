@@ -264,10 +264,10 @@ class BacktestEngine:
         )
         return chart, markers
 
-    def run(self, ticker: str, window: str | None = None) -> BacktestSummary:
+    def run(self, ticker: str, window: str | None = None, market: str | None = None) -> BacktestSummary:
         normalized_window = self._normalize_window(window)
         period = _WINDOW_TO_PERIOD[normalized_window]
-        bundle = self.analysis_engine.data_service.get_market_data(ticker, period=period)
+        bundle = self.analysis_engine.data_service.get_market_data(ticker, market=market, period=period)
 
         trades = self._simulate(
             daily=bundle.daily,
@@ -294,7 +294,7 @@ class BacktestEngine:
     def run_from_analysis(self, context: BacktestFromAnalysisRequest) -> BacktestFromAnalysisResponse:
         window = self._normalize_window(context.window)
         period = _WINDOW_TO_PERIOD[window]
-        bundle = self.analysis_engine.data_service.get_market_data(context.ticker, period=period)
+        bundle = self.analysis_engine.data_service.get_market_data(context.ticker, market=context.market, period=period)
 
         min_score_to_enter = max(self.settings.backtest_min_score_to_enter, context.quantedge_final_score * 0.85)
         if not context.swing_candidate:
@@ -312,6 +312,8 @@ class BacktestEngine:
 
         return BacktestFromAnalysisResponse(
             ticker=bundle.ticker,
+            normalized_ticker=bundle.normalized_ticker,
+            market=bundle.market,
             window=window,
             generated_from_analysis=True,
             analysis_as_of=context.analysis_as_of or date.today(),

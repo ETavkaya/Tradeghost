@@ -21,6 +21,7 @@ export default function BacktestPage() {
     try {
       const response = await api.backtestFromAnalysis({
         ticker: analysis.ticker,
+        market: analysis.market,
         window: analysis.window,
         analysis_as_of: analysis.as_of,
         quantedge_final_score: analysis.quantedge.final_score,
@@ -46,7 +47,7 @@ export default function BacktestPage() {
 
   const contextLabel = useMemo(() => {
     if (!analysis) return "No active analysis context.";
-    return `${analysis.ticker} | ${analysis.window.toUpperCase()} | Analysis date ${analysis.as_of}`;
+    return `${analysis.ticker} | ${analysis.market.toUpperCase()} | ${analysis.window.toUpperCase()} | Analysis date ${analysis.as_of}`;
   }, [analysis]);
 
   return (
@@ -76,7 +77,7 @@ export default function BacktestPage() {
           <Panel className="bg-panelSoft">
             <p className="text-sm text-slate-300">
               This backtest was generated from the current analysis configuration for {result.ticker} ({result.window.toUpperCase()})
-              , anchored to analysis date {result.analysis_as_of}.
+              {" "}on {result.market.toUpperCase()}, anchored to analysis date {result.analysis_as_of}.
             </p>
           </Panel>
           <UnifiedAnalysisChart chart={result.chart} markers={result.markers} title={`${result.ticker} Backtest Chart`} />

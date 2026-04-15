@@ -1,4 +1,5 @@
 export type AnalysisWindow = "5d" | "1m" | "3m" | "6m" | "1y" | "5y" | "10y";
+export type MarketCode = "us" | "bist";
 
 export type CategoryScores = {
   momentum_score: number;
@@ -78,6 +79,8 @@ export type ChartMapSection = {
 
 export type CombinedAnalysisResponse = {
   ticker: string;
+  normalized_ticker: string;
+  market: MarketCode;
   window: AnalysisWindow;
   as_of: string;
   chart: AnalysisChart;
@@ -151,6 +154,7 @@ export type BacktestResponse = {
 
 export type BacktestFromAnalysisRequest = {
   ticker: string;
+  market: MarketCode;
   window: AnalysisWindow;
   analysis_as_of: string;
   quantedge_final_score: number;
@@ -161,6 +165,8 @@ export type BacktestFromAnalysisRequest = {
 
 export type BacktestFromAnalysisResponse = {
   ticker: string;
+  normalized_ticker: string;
+  market: MarketCode;
   window: AnalysisWindow;
   generated_from_analysis: boolean;
   analysis_as_of: string;

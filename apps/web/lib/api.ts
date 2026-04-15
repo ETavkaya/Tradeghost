@@ -1,5 +1,6 @@
 import {
   AnalysisResponse,
+  MarketCode,
   AnalysisWindow,
   BacktestFromAnalysisRequest,
   BacktestFromAnalysisResponse,
@@ -20,13 +21,17 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   analyze: (ticker: string) => fetchJson<AnalysisResponse>(`/api/analyze?ticker=${encodeURIComponent(ticker)}`),
-  analyzeCombined: (ticker: string, window: AnalysisWindow) =>
-    fetchJson<CombinedAnalysisResponse>(`/api/analyze-combined?ticker=${encodeURIComponent(ticker)}&window=${encodeURIComponent(window)}`),
+  analyzeCombined: (ticker: string, market: MarketCode, window: AnalysisWindow) =>
+    fetchJson<CombinedAnalysisResponse>(
+      `/api/analyze-combined?ticker=${encodeURIComponent(ticker)}&market=${encodeURIComponent(market)}&window=${encodeURIComponent(window)}`
+    ),
   score: (ticker: string) => fetchJson<ScoreResponse>(`/api/score?ticker=${encodeURIComponent(ticker)}`),
   tradePlan: (ticker: string) =>
     fetchJson<TradePlanResponse>(`/api/trade-plan?ticker=${encodeURIComponent(ticker)}`),
-  backtest: (ticker: string, window: AnalysisWindow = "6m") =>
-    fetchJson<BacktestResponse>(`/api/backtest?ticker=${encodeURIComponent(ticker)}&window=${encodeURIComponent(window)}`),
+  backtest: (ticker: string, market: MarketCode, window: AnalysisWindow = "6m") =>
+    fetchJson<BacktestResponse>(
+      `/api/backtest?ticker=${encodeURIComponent(ticker)}&market=${encodeURIComponent(market)}&window=${encodeURIComponent(window)}`
+    ),
   backtestFromAnalysis: (payload: BacktestFromAnalysisRequest) =>
     fetchJson<BacktestFromAnalysisResponse>("/api/backtest-from-analysis", {
       method: "POST",

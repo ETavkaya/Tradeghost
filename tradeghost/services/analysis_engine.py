@@ -132,10 +132,10 @@ class AnalysisEngine:
             trade_plan_overlay=trade_plan,
         )
 
-    def analyze_combined(self, ticker: str, window: str | None = None) -> CombinedAnalysisResponse:
+    def analyze_combined(self, ticker: str, window: str | None = None, market: str | None = None) -> CombinedAnalysisResponse:
         normalized_window = self._normalize_window(window)
         period = _WINDOW_TO_PERIOD[normalized_window]
-        bundle = self.data_service.get_market_data(ticker, period=period)
+        bundle = self.data_service.get_market_data(ticker, market=market, period=period)
 
         snapshot = compute_indicator_snapshot(
             daily=bundle.daily,
@@ -194,6 +194,8 @@ class AnalysisEngine:
 
         return CombinedAnalysisResponse(
             ticker=bundle.ticker,
+            normalized_ticker=bundle.normalized_ticker,
+            market=bundle.market,
             window=normalized_window,
             as_of=bundle.daily.index[-1].date(),
             chart=chart,
@@ -236,8 +238,8 @@ class AnalysisEngine:
             ),
         )
 
-    def analyze(self, ticker: str) -> AnalysisResponse:
-        combined = self.analyze_combined(ticker=ticker, window="6m")
+    def analyze(self, ticker: str, market: str | None = None) -> AnalysisResponse:
+        combined = self.analyze_combined(ticker=ticker, window="6m", market=market)
         return AnalysisResponse(
             ticker=combined.ticker,
             as_of=combined.as_of,
@@ -249,8 +251,8 @@ class AnalysisEngine:
             trade_plan=combined.chart.trade_plan_overlay,
         )
 
-    def score_only(self, ticker: str) -> ScoreResponse:
-        analysis = self.analyze(ticker)
+    def score_only(self, ticker: str, market: str | None = None) -> ScoreResponse:
+        analysis = self.analyze(ticker, market=market)
         return ScoreResponse(
             ticker=analysis.ticker,
             as_of=analysis.as_of,
@@ -259,8 +261,8 @@ class AnalysisEngine:
             interpreted_signals=analysis.interpreted_signals,
         )
 
-    def trade_plan_only(self, ticker: str) -> TradePlanResponse:
-        analysis = self.analyze(ticker)
+    def trade_plan_only(self, ticker: str, market: str | None = None) -> TradePlanResponse:
+        analysis = self.analyze(ticker, market=market)
         return TradePlanResponse(
             ticker=analysis.ticker,
             as_of=analysis.as_of,

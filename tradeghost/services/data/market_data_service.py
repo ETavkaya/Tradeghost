@@ -25,17 +25,26 @@ class MarketDataService:
         self.default_period = settings.data_default_period
         self.default_interval = settings.data_default_interval
 
-    def get_market_data(self, ticker: str, use_cache: bool = True) -> MarketDataBundle:
+    def get_market_data(
+        self,
+        ticker: str,
+        period: str | None = None,
+        interval: str | None = None,
+        use_cache: bool = True,
+    ) -> MarketDataBundle:
         normalized_ticker = ticker.strip().upper()
+        resolved_period = period or self.default_period
+        resolved_interval = interval or self.default_interval
+        cache_key = f"{normalized_ticker}:{resolved_period}:{resolved_interval}"
         if use_cache:
-            cached = self._cache.get(normalized_ticker)
+            cached = self._cache.get(cache_key)
             if cached is not None:
                 return cached
 
         daily = self.provider.get_ohlcv(
             ticker=normalized_ticker,
-            period=self.default_period,
-            interval=self.default_interval,
+            period=resolved_period,
+            interval=resolved_interval,
         )
         weekly = self._to_weekly(daily)
         metadata = self.provider.get_metadata(normalized_ticker)
@@ -46,7 +55,7 @@ class MarketDataService:
             metadata=metadata,
         )
         if use_cache:
-            self._cache.set(normalized_ticker, bundle)
+            self._cache.set(cache_key, bundle)
         return bundle
 
     @staticmethod
@@ -60,4 +69,3 @@ class MarketDataService:
         }
         weekly = daily.resample("W-FRI").agg(agg_map).dropna()
         return weekly
-

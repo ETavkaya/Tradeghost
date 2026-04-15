@@ -72,18 +72,20 @@ Default threshold:
 ## Backend API Endpoints
 
 - `GET /health`
-- `GET /analyze?ticker=TSLA`
-- `GET /score?ticker=TSLA`
-- `GET /trade-plan?ticker=TSLA`
-- `GET /backtest?ticker=TSLA`
+- `GET /analyze-combined?ticker=TSLA&window=6m`
+- `POST /backtest-from-analysis`
+- Legacy compatibility endpoints remain available:
+  - `GET /analyze?ticker=TSLA`
+  - `GET /score?ticker=TSLA`
+  - `GET /trade-plan?ticker=TSLA`
+  - `GET /backtest?ticker=TSLA&window=6m`
 
-## Frontend Tabs
+## Frontend Navigation
 
-- `QuantEdge`
-- `SwingPulse`
-- `Temel Analiz`
-- `QE Backtest`
-- `SP Backtest`
+- `Analysis`
+- `Backtest` (enabled after a successful analysis context is created)
+
+Legacy routes (`/quantedge`, `/swingpulse`, `/temel-analiz`, `/qe-backtest`, `/sp-backtest`) now redirect to the unified flow.
 
 Frontend is served by Next.js at port `3000`.
 It uses internal Next API proxy routes (`/api/*`) to call FastAPI through `BACKEND_URL`.

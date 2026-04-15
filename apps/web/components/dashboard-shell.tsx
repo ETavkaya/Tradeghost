@@ -4,17 +4,16 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import clsx from "clsx";
 import type { ReactNode } from "react";
+import { useAnalysisContext } from "@/components/analysis-context";
 
 const tabs = [
-  { label: "QuantEdge", href: "/quantedge" },
-  { label: "SwingPulse", href: "/swingpulse" },
-  { label: "Temel Analiz", href: "/temel-analiz" },
-  { label: "QE Backtest", href: "/qe-backtest" },
-  { label: "SP Backtest", href: "/sp-backtest" }
+  { label: "Analysis", href: "/analysis" },
+  { label: "Backtest", href: "/backtest" }
 ];
 
 export function DashboardShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const { analysis } = useAnalysisContext();
   return (
     <div className="min-h-screen bg-bg text-slate-100">
       <div className="mx-auto max-w-7xl px-4 py-6 md:px-8">
@@ -28,18 +27,28 @@ export function DashboardShell({ children }: { children: ReactNode }) {
           </div>
           <nav className="flex flex-wrap gap-2">
             {tabs.map((tab) => (
-              <Link
-                key={tab.href}
-                href={tab.href}
-                className={clsx(
-                  "rounded-lg border px-4 py-2 text-sm font-medium transition",
-                  pathname === tab.href
-                    ? "border-cyan/50 bg-cyan/15 text-cyan"
-                    : "border-stroke bg-panel/80 text-slate-300 hover:border-cyan/30 hover:text-cyan"
-                )}
-              >
-                {tab.label}
-              </Link>
+              tab.href === "/backtest" && !analysis ? (
+                <span
+                  key={tab.href}
+                  className="cursor-not-allowed rounded-lg border border-stroke bg-panel/70 px-4 py-2 text-sm font-medium text-slate-500"
+                  title="Run analysis first to unlock backtest."
+                >
+                  {tab.label}
+                </span>
+              ) : (
+                <Link
+                  key={tab.href}
+                  href={tab.href}
+                  className={clsx(
+                    "rounded-lg border px-4 py-2 text-sm font-medium transition",
+                    pathname === tab.href
+                      ? "border-cyan/50 bg-cyan/15 text-cyan"
+                      : "border-stroke bg-panel/80 text-slate-300 hover:border-cyan/30 hover:text-cyan"
+                  )}
+                >
+                  {tab.label}
+                </Link>
+              )
             ))}
           </nav>
         </header>

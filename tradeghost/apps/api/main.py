@@ -5,7 +5,15 @@ from fastapi import FastAPI, HTTPException, Query
 from tradeghost.services.analysis_engine import AnalysisEngine
 from tradeghost.services.backtest.engine import BacktestEngine
 from tradeghost.shared.config.settings import get_settings
-from tradeghost.shared.models.schemas import AnalysisResponse, BacktestSummary, ScoreResponse, TradePlanResponse
+from tradeghost.shared.models.schemas import (
+    AnalysisResponse,
+    BacktestFromAnalysisRequest,
+    BacktestFromAnalysisResponse,
+    BacktestSummary,
+    CombinedAnalysisResponse,
+    ScoreResponse,
+    TradePlanResponse,
+)
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name, version="0.1.0")
@@ -27,6 +35,17 @@ def analyze(ticker: str = Query(..., min_length=1, max_length=10)) -> AnalysisRe
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/analyze-combined", response_model=CombinedAnalysisResponse)
+def analyze_combined(
+    ticker: str = Query(..., min_length=1, max_length=10),
+    window: str = Query(default="6m"),
+) -> CombinedAnalysisResponse:
+    try:
+        return analysis_engine.analyze_combined(ticker=ticker, window=window)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/score", response_model=ScoreResponse)
 def score(ticker: str = Query(..., min_length=1, max_length=10)) -> ScoreResponse:
     try:
@@ -44,9 +63,19 @@ def trade_plan(ticker: str = Query(..., min_length=1, max_length=10)) -> TradePl
 
 
 @app.get("/backtest", response_model=BacktestSummary)
-def backtest(ticker: str = Query(..., min_length=1, max_length=10)) -> BacktestSummary:
+def backtest(
+    ticker: str = Query(..., min_length=1, max_length=10),
+    window: str = Query(default="6m"),
+) -> BacktestSummary:
     try:
-        return backtest_engine.run(ticker)
+        return backtest_engine.run(ticker=ticker, window=window)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+
+@app.post("/backtest-from-analysis", response_model=BacktestFromAnalysisResponse)
+def backtest_from_analysis(payload: BacktestFromAnalysisRequest) -> BacktestFromAnalysisResponse:
+    try:
+        return backtest_engine.run_from_analysis(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

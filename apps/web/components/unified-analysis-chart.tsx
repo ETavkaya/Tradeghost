@@ -81,17 +81,38 @@ export function UnifiedAnalysisChart({ chart, title, markers = [] }: Props) {
       }
     : null;
 
-  const shapes: Shape[] = [];
+  const shapes: Partial<Shape>[] = [];
   const lineStyle = (color: string, dash: Shape["line"]["dash"] = "solid") => ({ color, width: 1.25, dash });
 
   for (const level of chart.support_levels) {
-    shapes.push({ type: "line", x0: x[0], x1: x[x.length - 1], y0: level, y1: level, line: lineStyle("#23D18B", "dot") });
+    shapes.push({
+      type: "line",
+      x0: x[0],
+      x1: x[x.length - 1],
+      y0: level,
+      y1: level,
+      line: lineStyle("#23D18B", "dot")
+    });
   }
   for (const level of chart.resistance_levels) {
-    shapes.push({ type: "line", x0: x[0], x1: x[x.length - 1], y0: level, y1: level, line: lineStyle("#F2545B", "dot") });
+    shapes.push({
+      type: "line",
+      x0: x[0],
+      x1: x[x.length - 1],
+      y0: level,
+      y1: level,
+      line: lineStyle("#F2545B", "dot")
+    });
   }
   for (const level of Object.values(chart.fibonacci_levels)) {
-    shapes.push({ type: "line", x0: x[0], x1: x[x.length - 1], y0: level, y1: level, line: lineStyle("#F2B94B", "dash") });
+    shapes.push({
+      type: "line",
+      x0: x[0],
+      x1: x[x.length - 1],
+      y0: level,
+      y1: level,
+      line: lineStyle("#F2B94B", "dash")
+    });
   }
 
   if (chart.trade_plan_overlay) {
@@ -137,7 +158,7 @@ export function UnifiedAnalysisChart({ chart, title, markers = [] }: Props) {
     title: { text: title, font: { size: 14, color: "#DCE6FF" } },
     xaxis: { ...premiumDarkPlotlyTemplate.xaxis, rangeslider: { visible: false } },
     yaxis: { ...premiumDarkPlotlyTemplate.yaxis, tickprefix: "$" },
-    shapes,
+    shapes: shapes as Layout["shapes"],
     hovermode: "x unified",
     autosize: true,
     height: 520

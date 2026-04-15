@@ -30,8 +30,8 @@ export function UnifiedAnalysisChart({ chart, title, markers = [] }: Props) {
     low: chart.candles.map((c) => c.low),
     close: chart.candles.map((c) => c.close),
     name: "Price",
-    increasing: { line: { color: "#23D18B", width: 1.2 }, fillcolor: "#23D18B" },
-    decreasing: { line: { color: "#F2545B", width: 1.2 }, fillcolor: "#F2545B" }
+    increasing: { line: { color: "#23D18B", width: 1.2 } },
+    decreasing: { line: { color: "#F2545B", width: 1.2 } }
   };
 
   const ema20: Data = {

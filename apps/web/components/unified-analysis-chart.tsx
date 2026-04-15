@@ -54,7 +54,7 @@ export function UnifiedAnalysisChart({ chart, title, markers = [] }: Props) {
 
   const currentPoint: Data = {
     type: "scatter",
-    mode: "markers+text",
+    mode: "text+markers",
     x: [x[x.length - 1]],
     y: [chart.current_price],
     name: "Current",

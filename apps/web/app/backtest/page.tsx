@@ -6,21 +6,13 @@ import { UnifiedAnalysisChart } from "@/components/unified-analysis-chart";
 import { Panel, SectionTitle, StatCard } from "@/components/ui";
 import { TradesTable } from "@/components/trades-table";
 import { api } from "@/lib/api";
-import { BacktestFromAnalysisResponse, StrategyMode } from "@/lib/types";
-
-const THRESHOLD_PRESETS = [
-  { label: "Aggressive", value: 40 },
-  { label: "Balanced", value: 60 },
-  { label: "Conservative", value: 75 }
-];
+import { BacktestFromAnalysisResponse } from "@/lib/types";
 
 export default function BacktestPage() {
   const { analysis } = useAnalysisContext();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BacktestFromAnalysisResponse | null>(null);
-  const [scoreThreshold, setScoreThreshold] = useState(60);
-  const [strategyMode, setStrategyMode] = useState<StrategyMode>(analysis?.strategy_mode_used ?? "balanced");
 
   const runBacktest = async () => {
     if (!analysis) return;
@@ -32,11 +24,12 @@ export default function BacktestPage() {
         market: analysis.market,
         window: analysis.window,
         analysis_as_of: analysis.as_of,
+        analysis_config: analysis.analysis_config,
         quantedge_final_score: analysis.quantedge.final_score,
         category_scores: analysis.quantedge.category_scores,
         swing_candidate: analysis.swingpulse.swing_candidate,
-        backtest_score_threshold: scoreThreshold,
-        strategy_mode: strategyMode,
+        backtest_score_threshold: analysis.analysis_config.score_threshold,
+        strategy_mode: analysis.analysis_config.strategy_mode,
         trade_plan:
           analysis.chart.trade_plan_overlay ?? {
             bias: "neutral",
@@ -66,68 +59,25 @@ export default function BacktestPage() {
       <Panel>
         <SectionTitle title="Backtest" subtitle="Runs from active analysis context only" />
         <p className="text-sm text-slate-300">{contextLabel}</p>
-
-        <div className="mt-4 rounded-xl border border-stroke/70 bg-panelSoft p-3">
-          <p className="text-xs text-slate-400">Strategy Mode</p>
-          <div className="mt-2 grid gap-2 sm:grid-cols-3">
-            <button
-              type="button"
-              onClick={() => setStrategyMode("aggressive")}
-              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
-                strategyMode === "aggressive" ? "bg-cyan text-bg" : "bg-bg text-slate-300 hover:bg-stroke/60"
-              }`}
-            >
-              Aggressive
-            </button>
-            <button
-              type="button"
-              onClick={() => setStrategyMode("balanced")}
-              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
-                strategyMode === "balanced" ? "bg-cyan text-bg" : "bg-bg text-slate-300 hover:bg-stroke/60"
-              }`}
-            >
-              Balanced
-            </button>
-            <button
-              type="button"
-              onClick={() => setStrategyMode("conservative")}
-              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
-                strategyMode === "conservative" ? "bg-cyan text-bg" : "bg-bg text-slate-300 hover:bg-stroke/60"
-              }`}
-            >
-              Conservative
-            </button>
-          </div>
-        </div>
-
-        <div className="mt-4 rounded-xl border border-stroke/70 bg-panelSoft p-3">
-          <p className="text-xs text-slate-400">Score Threshold (entry filter)</p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {THRESHOLD_PRESETS.map((preset) => (
-              <button
-                key={preset.label}
-                type="button"
-                onClick={() => setScoreThreshold(preset.value)}
-                className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
-                  scoreThreshold === preset.value ? "bg-cyan text-bg" : "bg-bg text-slate-300 hover:bg-stroke/60"
-                }`}
-              >
-                {preset.label} ({preset.value})
-              </button>
-            ))}
-          </div>
-          <div className="mt-3 grid gap-2 md:grid-cols-[1fr_auto] md:items-center">
-            <input
-              type="range"
-              min={20}
-              max={90}
-              value={scoreThreshold}
-              onChange={(event) => setScoreThreshold(Number(event.target.value))}
-              className="w-full"
-            />
-            <div className="rounded-md border border-stroke bg-bg px-3 py-1 text-sm font-semibold text-cyan">{scoreThreshold}</div>
-          </div>
-        </div>
+        {analysis ? (
+          <>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              <StatCard label="Market" value={analysis.analysis_config.market.toUpperCase()} />
+              <StatCard label="Window" value={analysis.analysis_config.lookback_window.toUpperCase()} />
+              <StatCard label="Mode" value={analysis.analysis_config.strategy_mode} />
+              <StatCard label="Threshold" value={`${analysis.analysis_config.score_threshold.toFixed(1)}`} />
+              <StatCard label="Warmup Bars" value={`${analysis.analysis_config.warmup_bars}`} />
+            </div>
+            <div className="mt-3 rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
+              Regime mode: {analysis.analysis_config.regime_filter.regime_mode}. Support max: {analysis.analysis_config.location_filter.max_support_distance_pct.toFixed(2)}%.
+              Resistance min room: {analysis.analysis_config.location_filter.min_resistance_room_pct.toFixed(2)}%. Overextension caps (EMA20/50/100):
+              {" "}{analysis.analysis_config.location_filter.max_overextension_ema20_pct.toFixed(2)}% /
+              {" "}{analysis.analysis_config.location_filter.max_overextension_ema50_pct.toFixed(2)}% /
+              {" "}{analysis.analysis_config.location_filter.max_overextension_ema100_pct.toFixed(2)}%.
+              Trigger minimum score: {analysis.analysis_config.trigger_filter.min_trigger_score.toFixed(1)}.
+            </div>
+          </>
+        ) : null}
 
         <button
           type="button"
@@ -150,8 +100,8 @@ export default function BacktestPage() {
         <>
           <Panel className="bg-panelSoft">
             <p className="text-sm text-slate-300">
-              Backtest for {result.ticker} ({result.window.toUpperCase()}) on {result.market.toUpperCase()} using {result.strategy_mode_used} mode and threshold {result.score_threshold_used.toFixed(0)}.
-              Visible range: {result.visible_start} to {result.visible_end}. Warm-up bars used: {result.warmup_bars_used}.
+              Backtest for {result.ticker} ({result.window.toUpperCase()}) on {result.market.toUpperCase()} using {result.strategy_mode_used} mode and threshold {result.score_threshold_used.toFixed(1)}.
+              Warmup bars {result.analysis_config.warmup_bars}. Visible range: {result.visible_start} to {result.visible_end}.
             </p>
           </Panel>
           <UnifiedAnalysisChart chart={result.chart} markers={result.markers} title={`${result.ticker} Backtest Chart`} />

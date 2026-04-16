@@ -1,77 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
-from tradeghost.shared.models.schemas import EntryGateDiagnostics, LocationDiagnostics, RegimeDiagnostics, StrategyMode, TriggerDiagnostics
+from tradeghost.shared.models.schemas import AnalysisConfig, EntryGateDiagnostics, LocationDiagnostics, RegimeDiagnostics, TriggerDiagnostics
 
 
-@dataclass(frozen=True)
-class StrategyModeConfig:
-    score_threshold: float
-    regime_mode: str
-    max_support_distance_pct: float
-    min_resistance_room_pct: float
-    max_overextension_ema20_pct: float
-    max_overextension_ema50_pct: float
-    max_overextension_ema100_pct: float
-    min_trigger_score: float
-
-
-_MODE_CONFIGS: dict[StrategyMode, StrategyModeConfig] = {
-    StrategyMode.AGGRESSIVE: StrategyModeConfig(
-        score_threshold=50.0,
-        regime_mode="relaxed",
-        max_support_distance_pct=7.5,
-        min_resistance_room_pct=1.5,
-        max_overextension_ema20_pct=7.0,
-        max_overextension_ema50_pct=10.0,
-        max_overextension_ema100_pct=14.0,
-        min_trigger_score=55.0,
-    ),
-    StrategyMode.BALANCED: StrategyModeConfig(
-        score_threshold=60.0,
-        regime_mode="medium",
-        max_support_distance_pct=5.0,
-        min_resistance_room_pct=2.5,
-        max_overextension_ema20_pct=5.0,
-        max_overextension_ema50_pct=8.0,
-        max_overextension_ema100_pct=11.0,
-        min_trigger_score=65.0,
-    ),
-    StrategyMode.CONSERVATIVE: StrategyModeConfig(
-        score_threshold=72.0,
-        regime_mode="strict",
-        max_support_distance_pct=3.5,
-        min_resistance_room_pct=3.5,
-        max_overextension_ema20_pct=3.0,
-        max_overextension_ema50_pct=5.0,
-        max_overextension_ema100_pct=8.0,
-        min_trigger_score=75.0,
-    ),
-}
-
-
-def normalize_strategy_mode(mode: StrategyMode | str | None) -> StrategyMode:
-    if isinstance(mode, StrategyMode):
-        return mode
-    if not mode:
-        return StrategyMode.BALANCED
-    raw = str(mode).strip().lower()
-    if raw == StrategyMode.AGGRESSIVE.value:
-        return StrategyMode.AGGRESSIVE
-    if raw == StrategyMode.CONSERVATIVE.value:
-        return StrategyMode.CONSERVATIVE
-    return StrategyMode.BALANCED
-
-
-def get_strategy_mode_config(mode: StrategyMode | str | None) -> StrategyModeConfig:
-    normalized = normalize_strategy_mode(mode)
-    return _MODE_CONFIGS[normalized]
-
-
-def evaluate_regime(snapshot: dict[str, Any], mode: StrategyMode | str | None) -> RegimeDiagnostics:
-    config = get_strategy_mode_config(mode)
+def evaluate_regime(snapshot: dict[str, Any], config: AnalysisConfig) -> RegimeDiagnostics:
     close = float(snapshot["close"])
     ema50 = float(snapshot["ema_50"])
     ema100 = float(snapshot["ema_100"])
@@ -87,10 +21,11 @@ def evaluate_regime(snapshot: dict[str, Any], mode: StrategyMode | str | None) -
     else:
         stack_quality = "weak"
 
-    if config.regime_mode == "strict":
+    regime_mode = config.regime_filter.regime_mode
+    if regime_mode == "strict":
         regime_valid = price_above_ema200 and ema100_above_ema200 and full_stack
         reason = "Strict regime requires price > EMA200 and EMA50 > EMA100 > EMA200."
-    elif config.regime_mode == "medium":
+    elif regime_mode == "medium":
         regime_valid = price_above_ema200 and ema100_above_ema200
         reason = "Medium regime requires price > EMA200 and EMA100 > EMA200."
     else:
@@ -99,7 +34,7 @@ def evaluate_regime(snapshot: dict[str, Any], mode: StrategyMode | str | None) -
 
     return RegimeDiagnostics(
         regime_valid=bool(regime_valid),
-        regime_mode_used=config.regime_mode,
+        regime_mode_used=regime_mode,
         price_above_ema200=price_above_ema200,
         ema100_above_ema200=ema100_above_ema200,
         ema_stack_quality=stack_quality,
@@ -107,8 +42,7 @@ def evaluate_regime(snapshot: dict[str, Any], mode: StrategyMode | str | None) -
     )
 
 
-def evaluate_location(snapshot: dict[str, Any], mode: StrategyMode | str | None) -> LocationDiagnostics:
-    config = get_strategy_mode_config(mode)
+def evaluate_location(snapshot: dict[str, Any], config: AnalysisConfig) -> LocationDiagnostics:
     close = max(float(snapshot["close"]), 0.01)
     support = float(snapshot["support_resistance"]["support"])
     resistance = float(snapshot["support_resistance"]["resistance"])
@@ -116,24 +50,25 @@ def evaluate_location(snapshot: dict[str, Any], mode: StrategyMode | str | None)
     ema50 = float(snapshot["ema_50"])
     ema100 = float(snapshot["ema_100"])
 
+    settings = config.location_filter
     support_distance_pct = max((close - support) / close * 100, 0.0)
     resistance_distance_pct = max((resistance - close) / close * 100, 0.0)
     ext20 = ((close - ema20) / max(ema20, 0.01)) * 100
     ext50 = ((close - ema50) / max(ema50, 0.01)) * 100
     ext100 = ((close - ema100) / max(ema100, 0.01)) * 100
 
-    support_ok = support_distance_pct <= config.max_support_distance_pct
-    resistance_ok = resistance_distance_pct >= config.min_resistance_room_pct
+    support_ok = support_distance_pct <= settings.max_support_distance_pct
+    resistance_ok = resistance_distance_pct >= settings.min_resistance_room_pct
     overextended = (
-        ext20 > config.max_overextension_ema20_pct
-        or ext50 > config.max_overextension_ema50_pct
-        or ext100 > config.max_overextension_ema100_pct
+        ext20 > settings.max_overextension_ema20_pct
+        or ext50 > settings.max_overextension_ema50_pct
+        or ext100 > settings.max_overextension_ema100_pct
     )
     location_valid = support_ok and resistance_ok and not overextended
 
     score = 100.0
-    score -= max(0.0, support_distance_pct - config.max_support_distance_pct) * 8.0
-    score -= max(0.0, config.min_resistance_room_pct - resistance_distance_pct) * 12.0
+    score -= max(0.0, support_distance_pct - settings.max_support_distance_pct) * 8.0
+    score -= max(0.0, settings.min_resistance_room_pct - resistance_distance_pct) * 12.0
     score -= 20.0 if overextended else 0.0
     score = max(0.0, min(100.0, score))
 
@@ -157,8 +92,7 @@ def evaluate_location(snapshot: dict[str, Any], mode: StrategyMode | str | None)
     )
 
 
-def evaluate_trigger(snapshot: dict[str, Any], mode: StrategyMode | str | None, location: LocationDiagnostics) -> TriggerDiagnostics:
-    config = get_strategy_mode_config(mode)
+def evaluate_trigger(snapshot: dict[str, Any], config: AnalysisConfig, location: LocationDiagnostics) -> TriggerDiagnostics:
     close = float(snapshot["close"])
     ema20 = float(snapshot["ema_20"])
     ema50 = float(snapshot["ema_50"])
@@ -187,9 +121,9 @@ def evaluate_trigger(snapshot: dict[str, Any], mode: StrategyMode | str | None, 
         trigger_score = 62.0
         reason = "Doji near support with short-term trend support."
 
-    trigger_valid = trigger_score >= config.min_trigger_score
+    trigger_valid = trigger_score >= config.trigger_filter.min_trigger_score
     if not trigger_valid:
-        reason = f"{reason} Trigger score {trigger_score:.1f} below {config.min_trigger_score:.1f}."
+        reason = f"{reason} Trigger score {trigger_score:.1f} below {config.trigger_filter.min_trigger_score:.1f}."
 
     return TriggerDiagnostics(
         trigger_valid=trigger_valid,
@@ -202,18 +136,18 @@ def evaluate_trigger(snapshot: dict[str, Any], mode: StrategyMode | str | None, 
 def evaluate_entry_gate(
     *,
     final_score: float,
-    score_threshold_used: float,
+    config: AnalysisConfig,
     regime: RegimeDiagnostics,
     location: LocationDiagnostics,
     trigger: TriggerDiagnostics,
 ) -> EntryGateDiagnostics:
-    score_passed = final_score >= score_threshold_used
+    score_passed = final_score >= config.score_threshold
     entry_quality_score = (
         (0.35 * final_score)
         + (0.2 * (100.0 if regime.regime_valid else 0.0))
         + (0.25 * location.location_score)
         + (0.2 * trigger.trigger_score)
-    ) / 1.0
+    )
     final_decision = bool(score_passed and regime.regime_valid and location.location_valid and trigger.trigger_valid)
 
     skip_reason = None
@@ -236,7 +170,7 @@ def evaluate_entry_gate(
 
     return EntryGateDiagnostics(
         final_score=round(final_score, 2),
-        score_threshold_used=round(score_threshold_used, 2),
+        score_threshold_used=round(config.score_threshold, 2),
         score_threshold_passed=score_passed,
         regime_valid=regime.regime_valid,
         location_valid=location.location_valid,
@@ -245,4 +179,3 @@ def evaluate_entry_gate(
         final_entry_decision=final_decision,
         skip_reason=skip_reason,
     )
-

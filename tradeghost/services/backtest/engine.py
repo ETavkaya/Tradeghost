@@ -7,18 +7,10 @@ from datetime import date
 import pandas as pd
 
 from tradeghost.services.analysis_engine import AnalysisEngine
-from tradeghost.services.charts.payloads import WINDOW_TO_BARS, WINDOW_TO_PERIOD, build_analysis_chart, normalize_window, visible_window_slice
+from tradeghost.services.charts.payloads import WINDOW_TO_BARS, WINDOW_TO_PERIOD, build_analysis_chart, visible_window_slice
 from tradeghost.services.indicators.calculations import compute_indicator_snapshot
-from tradeghost.services.interpretation.rules import interpret_snapshot
-from tradeghost.services.scoring.engine import score_analysis
-from tradeghost.services.strategy.filters import (
-    evaluate_entry_gate,
-    evaluate_location,
-    evaluate_regime,
-    evaluate_trigger,
-    get_strategy_mode_config,
-    normalize_strategy_mode,
-)
+from tradeghost.services.strategy.config import build_analysis_config
+from tradeghost.services.strategy.pipeline import run_analysis_pipeline
 from tradeghost.services.strategy.planner import build_trade_plan
 from tradeghost.shared.config.settings import get_settings
 from tradeghost.shared.models.schemas import (
@@ -29,6 +21,7 @@ from tradeghost.shared.models.schemas import (
     BacktestSummary,
     BacktestTrade,
     SkippedEntrySignal,
+    AnalysisConfig,
     StrategyMode,
 )
 
@@ -109,17 +102,15 @@ class BacktestEngine:
         daily: pd.DataFrame,
         weekly: pd.DataFrame,
         market_cap: float | None,
-        min_score_to_enter: float,
         max_hold_days: int,
-        window: str,
-        strategy_mode: StrategyMode,
+        config: AnalysisConfig,
     ) -> _SimulationResult:
         trades: list[BacktestTrade] = []
         position: _Position | None = None
 
-        bars = WINDOW_TO_BARS[window]
+        bars = WINDOW_TO_BARS[config.lookback_window]
         visible_start_idx = max(0, len(daily) - bars)
-        warmup = min(self.settings.backtest_warmup_bars, max(20, len(daily) // 3))
+        warmup = min(config.warmup_bars, max(20, len(daily) // 3))
         sim_start_idx = max(warmup, visible_start_idx)
 
         entries_considered = 0
@@ -142,9 +133,15 @@ class BacktestEngine:
             if len(current_weekly) < 10:
                 continue
 
-            snapshot = compute_indicator_snapshot(slice_daily, current_weekly, market_cap)
-            interpreted = interpret_snapshot(snapshot)
-            category_scores, final_score = score_analysis(interpreted)
+            pipeline = run_analysis_pipeline(
+                daily=slice_daily,
+                weekly=current_weekly,
+                market_cap=market_cap,
+                config=config,
+            )
+            snapshot = pipeline.snapshot
+            category_scores = pipeline.category_scores
+            final_score = pipeline.final_score
 
             if position is None:
                 entries_considered += 1
@@ -158,16 +155,10 @@ class BacktestEngine:
                     momentum_score=category_scores.momentum_score,
                 )
 
-                regime = evaluate_regime(snapshot, strategy_mode)
-                location = evaluate_location(snapshot, strategy_mode)
-                trigger = evaluate_trigger(snapshot, strategy_mode, location)
-                entry_gate = evaluate_entry_gate(
-                    final_score=final_score,
-                    score_threshold_used=min_score_to_enter,
-                    regime=regime,
-                    location=location,
-                    trigger=trigger,
-                )
+                regime = pipeline.regime
+                location = pipeline.location
+                trigger = pipeline.trigger
+                entry_gate = pipeline.entry_gate
 
                 if not entry_gate.final_entry_decision:
                     reason = entry_gate.skip_reason or "setup_filter"
@@ -191,10 +182,10 @@ class BacktestEngine:
                             SkippedEntrySignal(
                                 date=current_date.date(),
                                 final_score=round(final_score, 2),
-                                threshold_used=round(min_score_to_enter, 2),
+                                threshold_used=round(config.score_threshold, 2),
                                 reason=reason,
                                 swing_candidate=False,
-                                strategy_mode_used=strategy_mode,
+                                strategy_mode_used=config.strategy_mode,
                                 regime_valid=regime.regime_valid,
                                 location_valid=location.location_valid,
                                 trigger_valid=trigger.trigger_valid,
@@ -205,7 +196,7 @@ class BacktestEngine:
                 entry_price = float(current_row["close"])
                 major_conditions = self._format_major_conditions(final_score, entry_gate, regime, location, trigger)
                 entry_reason = (
-                    f"Entry gate passed ({strategy_mode.value}). Score {final_score:.2f}/{min_score_to_enter:.2f}; "
+                    f"Entry gate passed ({config.strategy_mode.value}). Score {final_score:.2f}/{config.score_threshold:.2f}; "
                     f"regime={regime.ema_stack_quality}, location={location.location_score:.1f}, trigger={trigger.trigger_type}."
                 )
                 position = _Position(
@@ -216,10 +207,10 @@ class BacktestEngine:
                     stop_loss=plan.stop_loss,
                     take_profit=plan.take_profit_1,
                     entry_reason=entry_reason,
-                    threshold_used=min_score_to_enter,
+                    threshold_used=config.score_threshold,
                     score_at_entry=final_score,
                     major_conditions_met=major_conditions,
-                    strategy_mode_used=strategy_mode,
+                    strategy_mode_used=config.strategy_mode,
                     regime_valid=regime.regime_valid,
                     location_valid=location.location_valid,
                     trigger_valid=trigger.trigger_valid,
@@ -470,68 +461,77 @@ class BacktestEngine:
         market: str | None = None,
         score_threshold: float | None = None,
         strategy_mode: StrategyMode | str | None = None,
+        warmup_bars: int | None = None,
     ) -> BacktestSummary:
-        normalized_window = normalize_window(window)
-        normalized_mode = normalize_strategy_mode(strategy_mode)
-        mode_config = get_strategy_mode_config(normalized_mode)
-        period = WINDOW_TO_PERIOD[normalized_window]
-        bundle = self.analysis_engine.data_service.get_market_data(ticker, market=market, period=period)
+        config = build_analysis_config(
+            ticker=ticker,
+            market=market,
+            lookback_window=window,
+            strategy_mode=strategy_mode,
+            score_threshold=score_threshold,
+            warmup_bars=warmup_bars,
+        )
+        period = WINDOW_TO_PERIOD[config.lookback_window]
+        bundle = self.analysis_engine.data_service.get_market_data(config.ticker, market=config.market, period=period)
 
-        min_score_to_enter = float(score_threshold) if score_threshold is not None else float(mode_config.score_threshold)
         sim = self._simulate(
             daily=bundle.daily,
             weekly=bundle.weekly,
             market_cap=bundle.metadata.market_cap,
-            min_score_to_enter=min_score_to_enter,
             max_hold_days=self.settings.backtest_max_hold_days,
-            window=normalized_window,
-            strategy_mode=normalized_mode,
+            config=config,
         )
         metrics = self._compute_metrics(sim.trades)
 
-        display = visible_window_slice(bundle.daily, normalized_window)
+        display = visible_window_slice(bundle.daily, config.lookback_window)
         return BacktestSummary(
             ticker=bundle.ticker,
             period_start=display.index[0].date(),
             period_end=display.index[-1].date(),
+            analysis_config=config,
             trades=int(metrics["trades"]),
             win_rate=metrics["win_rate"],
             average_return=metrics["average_return"],
             max_drawdown=metrics["max_drawdown"],
             average_hold_days=metrics["average_hold_days"],
             expectancy=metrics["expectancy"],
-            score_threshold_used=round(min_score_to_enter, 2),
-            strategy_mode_used=normalized_mode,
+            score_threshold_used=round(config.score_threshold, 2),
+            strategy_mode_used=config.strategy_mode,
             sample_trades=sim.trades[:20],
         )
 
     def run_from_analysis(self, context: BacktestFromAnalysisRequest) -> BacktestFromAnalysisResponse:
-        window = normalize_window(context.window)
-        strategy_mode = normalize_strategy_mode(context.strategy_mode)
-        mode_config = get_strategy_mode_config(strategy_mode)
-        period = WINDOW_TO_PERIOD[window]
-        bundle = self.analysis_engine.data_service.get_market_data(context.ticker, market=context.market, period=period)
+        if context.analysis_config is not None:
+            config = context.analysis_config
+        else:
+            config = build_analysis_config(
+                ticker=context.ticker,
+                market=context.market,
+                lookback_window=context.window,
+                strategy_mode=context.strategy_mode,
+                score_threshold=context.backtest_score_threshold,
+            )
+        period = WINDOW_TO_PERIOD[config.lookback_window]
+        bundle = self.analysis_engine.data_service.get_market_data(config.ticker, market=config.market, period=period)
 
-        min_score_to_enter = float(context.backtest_score_threshold) if context.backtest_score_threshold is not None else float(mode_config.score_threshold)
         sim = self._simulate(
             daily=bundle.daily,
             weekly=bundle.weekly,
             market_cap=bundle.metadata.market_cap,
-            min_score_to_enter=min_score_to_enter,
             max_hold_days=self.settings.backtest_max_hold_days,
-            window=window,
-            strategy_mode=strategy_mode,
+            config=config,
         )
         metrics = self._compute_metrics(sim.trades)
-        chart, markers, visible_start, visible_end = self._build_chart(bundle.daily, window, context.trade_plan, sim.trades)
+        chart, markers, visible_start, visible_end = self._build_chart(bundle.daily, config.lookback_window, context.trade_plan, sim.trades)
 
         return BacktestFromAnalysisResponse(
             ticker=bundle.ticker,
             normalized_ticker=bundle.normalized_ticker,
             market=bundle.market,
-            window=window,
+            window=config.lookback_window,
             generated_from_analysis=True,
             analysis_as_of=context.analysis_as_of or date.today(),
+            analysis_config=config,
             period_start=visible_start,
             period_end=visible_end,
             trades=int(metrics["trades"]),
@@ -540,8 +540,8 @@ class BacktestEngine:
             max_drawdown=metrics["max_drawdown"],
             average_hold_days=metrics["average_hold_days"],
             expectancy=metrics["expectancy"],
-            score_threshold_used=round(min_score_to_enter, 2),
-            strategy_mode_used=strategy_mode,
+            score_threshold_used=round(config.score_threshold, 2),
+            strategy_mode_used=config.strategy_mode,
             warmup_bars_used=sim.warmup_bars_used,
             visible_start=visible_start,
             visible_end=visible_end,

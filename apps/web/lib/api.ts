@@ -22,18 +22,34 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   analyze: (ticker: string) => fetchJson<AnalysisResponse>(`/api/analyze?ticker=${encodeURIComponent(ticker)}`),
-  analyzeCombined: (ticker: string, market: MarketCode, window: AnalysisWindow, strategyMode: StrategyMode = "balanced") =>
+  analyzeCombined: (
+    ticker: string,
+    market: MarketCode,
+    window: AnalysisWindow,
+    strategyMode: StrategyMode = "balanced",
+    scoreThreshold?: number,
+    warmupBars?: number
+  ) =>
     fetchJson<CombinedAnalysisResponse>(
-      `/api/analyze-combined?ticker=${encodeURIComponent(ticker)}&market=${encodeURIComponent(market)}&window=${encodeURIComponent(window)}&strategy_mode=${encodeURIComponent(strategyMode)}`
+      `/api/analyze-combined?ticker=${encodeURIComponent(ticker)}&market=${encodeURIComponent(market)}&window=${encodeURIComponent(window)}&strategy_mode=${encodeURIComponent(strategyMode)}${
+        scoreThreshold !== undefined ? `&score_threshold=${encodeURIComponent(scoreThreshold)}` : ""
+      }${warmupBars !== undefined ? `&warmup_bars=${encodeURIComponent(warmupBars)}` : ""}`
     ),
   score: (ticker: string) => fetchJson<ScoreResponse>(`/api/score?ticker=${encodeURIComponent(ticker)}`),
   tradePlan: (ticker: string) =>
     fetchJson<TradePlanResponse>(`/api/trade-plan?ticker=${encodeURIComponent(ticker)}`),
-  backtest: (ticker: string, market: MarketCode, window: AnalysisWindow = "6m", scoreThreshold?: number, strategyMode: StrategyMode = "balanced") =>
+  backtest: (
+    ticker: string,
+    market: MarketCode,
+    window: AnalysisWindow = "6m",
+    scoreThreshold?: number,
+    strategyMode: StrategyMode = "balanced",
+    warmupBars?: number
+  ) =>
     fetchJson<BacktestResponse>(
       `/api/backtest?ticker=${encodeURIComponent(ticker)}&market=${encodeURIComponent(market)}&window=${encodeURIComponent(window)}${
         scoreThreshold !== undefined ? `&score_threshold=${encodeURIComponent(scoreThreshold)}` : ""
-      }&strategy_mode=${encodeURIComponent(strategyMode)}`
+      }&strategy_mode=${encodeURIComponent(strategyMode)}${warmupBars !== undefined ? `&warmup_bars=${encodeURIComponent(warmupBars)}` : ""}`
     ),
   backtestFromAnalysis: (payload: BacktestFromAnalysisRequest) =>
     fetchJson<BacktestFromAnalysisResponse>("/api/backtest-from-analysis", {

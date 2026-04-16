@@ -14,6 +14,34 @@ class StrategyMode(str, Enum):
     CONSERVATIVE = "conservative"
 
 
+class RegimeFilterSettings(BaseModel):
+    regime_mode: str
+
+
+class LocationFilterSettings(BaseModel):
+    max_support_distance_pct: float
+    min_resistance_room_pct: float
+    max_overextension_ema20_pct: float
+    max_overextension_ema50_pct: float
+    max_overextension_ema100_pct: float
+
+
+class TriggerFilterSettings(BaseModel):
+    min_trigger_score: float
+
+
+class AnalysisConfig(BaseModel):
+    ticker: str
+    market: MarketCode
+    lookback_window: str
+    strategy_mode: StrategyMode
+    score_threshold: float
+    warmup_bars: int
+    regime_filter: RegimeFilterSettings
+    location_filter: LocationFilterSettings
+    trigger_filter: TriggerFilterSettings
+
+
 class CategoryScores(BaseModel):
     momentum_score: float
     trend_score: float
@@ -93,6 +121,17 @@ class EntryGateDiagnostics(BaseModel):
     skip_reason: str | None = None
 
 
+class AnalysisPipelineResult(BaseModel):
+    pipeline_order: list[str]
+    final_score: float
+    threshold_passed: bool
+    regime_valid: bool
+    location_valid: bool
+    trigger_valid: bool
+    final_entry_decision: bool
+    diagnostics: dict[str, Any]
+
+
 class DetectedLevel(BaseModel):
     level_name: str
     value: float
@@ -151,6 +190,7 @@ class CombinedAnalysisResponse(BaseModel):
     market: MarketCode
     window: str
     as_of: date
+    analysis_config: AnalysisConfig
     chart: AnalysisChart
     quantedge: QuantEdgeSection
     swingpulse: SwingPulseSection
@@ -159,6 +199,7 @@ class CombinedAnalysisResponse(BaseModel):
     location: LocationDiagnostics
     trigger: TriggerDiagnostics
     entry_gate: EntryGateDiagnostics
+    analysis_pipeline: AnalysisPipelineResult
     strategy_mode_used: StrategyMode
     interpreted_signals: dict[str, str]
     indicator_summary: dict[str, Any]
@@ -240,6 +281,7 @@ class BacktestSummary(BaseModel):
     ticker: str
     period_start: date
     period_end: date
+    analysis_config: AnalysisConfig
     trades: int
     win_rate: float
     average_return: float
@@ -257,6 +299,7 @@ class BacktestFromAnalysisRequest(BaseModel):
     market: MarketCode = MarketCode.US
     window: str
     analysis_as_of: date | None = None
+    analysis_config: AnalysisConfig | None = None
     quantedge_final_score: float
     category_scores: CategoryScores
     swing_candidate: bool
@@ -272,6 +315,7 @@ class BacktestFromAnalysisResponse(BaseModel):
     window: str
     generated_from_analysis: bool
     analysis_as_of: date
+    analysis_config: AnalysisConfig
     period_start: date
     period_end: date
     trades: int

@@ -3,19 +3,10 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from tradeghost.services.charts.payloads import WINDOW_TO_PERIOD, build_analysis_chart, normalize_window
+from tradeghost.services.charts.payloads import WINDOW_TO_PERIOD, build_analysis_chart
 from tradeghost.services.data.market_data_service import MarketDataService
-from tradeghost.services.indicators.calculations import compute_indicator_snapshot
-from tradeghost.services.interpretation.rules import interpret_snapshot
-from tradeghost.services.scoring.engine import score_analysis
-from tradeghost.services.strategy.filters import (
-    evaluate_entry_gate,
-    evaluate_location,
-    evaluate_regime,
-    evaluate_trigger,
-    get_strategy_mode_config,
-    normalize_strategy_mode,
-)
+from tradeghost.services.strategy.config import build_analysis_config
+from tradeghost.services.strategy.pipeline import run_analysis_pipeline
 from tradeghost.services.strategy.planner import build_trade_plan
 from tradeghost.shared.config.settings import get_settings
 from tradeghost.shared.models.schemas import (
@@ -75,20 +66,30 @@ class AnalysisEngine:
         window: str | None = None,
         market: str | None = None,
         strategy_mode: StrategyMode | str | None = None,
+        score_threshold: float | None = None,
+        warmup_bars: int | None = None,
     ) -> CombinedAnalysisResponse:
-        normalized_window = normalize_window(window)
-        normalized_mode = normalize_strategy_mode(strategy_mode)
-        mode_config = get_strategy_mode_config(normalized_mode)
-        period = WINDOW_TO_PERIOD[normalized_window]
-        bundle = self.data_service.get_market_data(ticker, market=market, period=period)
+        analysis_config = build_analysis_config(
+            ticker=ticker,
+            market=market,
+            lookback_window=window,
+            strategy_mode=strategy_mode,
+            score_threshold=score_threshold,
+            warmup_bars=warmup_bars,
+        )
+        period = WINDOW_TO_PERIOD[analysis_config.lookback_window]
+        bundle = self.data_service.get_market_data(analysis_config.ticker, market=analysis_config.market, period=period)
 
-        snapshot = compute_indicator_snapshot(
+        pipeline = run_analysis_pipeline(
             daily=bundle.daily,
             weekly=bundle.weekly,
             market_cap=bundle.metadata.market_cap,
+            config=analysis_config,
         )
-        interpreted = interpret_snapshot(snapshot)
-        category_scores, final_score = score_analysis(interpreted)
+        snapshot = pipeline.snapshot
+        interpreted = pipeline.interpreted
+        category_scores = pipeline.category_scores
+        final_score = pipeline.final_score
         support_resistance = snapshot["support_resistance"]
         _, trade_plan = build_trade_plan(
             final_score=final_score,
@@ -99,16 +100,10 @@ class AnalysisEngine:
             trend_score=category_scores.trend_score,
             momentum_score=category_scores.momentum_score,
         )
-        regime = evaluate_regime(snapshot, normalized_mode)
-        location = evaluate_location(snapshot, normalized_mode)
-        trigger = evaluate_trigger(snapshot, normalized_mode, location)
-        entry_gate = evaluate_entry_gate(
-            final_score=final_score,
-            score_threshold_used=mode_config.score_threshold,
-            regime=regime,
-            location=location,
-            trigger=trigger,
-        )
+        regime = pipeline.regime
+        location = pipeline.location
+        trigger = pipeline.trigger
+        entry_gate = pipeline.entry_gate
         swing_candidate = entry_gate.final_entry_decision and trade_plan.bias == "bullish"
 
         score_breakdown = {
@@ -154,14 +149,15 @@ class AnalysisEngine:
             f"Price {'is' if above_200 else 'is not'} above EMA200."
         )
 
-        chart = build_analysis_chart(bundle.daily, snapshot, trade_plan, normalized_window)
+        chart = build_analysis_chart(bundle.daily, snapshot, trade_plan, analysis_config.lookback_window)
 
         return CombinedAnalysisResponse(
             ticker=bundle.ticker,
             normalized_ticker=bundle.normalized_ticker,
             market=bundle.market,
-            window=normalized_window,
+            window=analysis_config.lookback_window,
             as_of=bundle.daily.index[-1].date(),
+            analysis_config=analysis_config,
             chart=chart,
             quantedge=QuantEdgeSection(
                 final_score=final_score,
@@ -177,8 +173,8 @@ class AnalysisEngine:
                 take_profit_levels=[trade_plan.take_profit_1, trade_plan.take_profit_2],
                 risk_reward=trade_plan.risk_reward,
                 invalidation_note=trade_plan.invalidation_note,
-                strategy_mode_used=normalized_mode,
-                score_threshold_used=mode_config.score_threshold,
+                strategy_mode_used=analysis_config.strategy_mode,
+                score_threshold_used=analysis_config.score_threshold,
             ),
             chartmap=ChartMapSection(
                 ema_proximity_summary=ema_summary,
@@ -200,7 +196,8 @@ class AnalysisEngine:
             location=location,
             trigger=trigger,
             entry_gate=entry_gate,
-            strategy_mode_used=normalized_mode,
+            analysis_pipeline=pipeline.pipeline_result,
+            strategy_mode_used=analysis_config.strategy_mode,
             interpreted_signals=interpreted["signals"],
             indicator_summary=self._sanitize(snapshot),
             trade_plan_summary=(

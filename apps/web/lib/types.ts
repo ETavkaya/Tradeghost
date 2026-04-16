@@ -2,6 +2,34 @@ export type AnalysisWindow = "5d" | "1m" | "3m" | "6m" | "1y" | "5y" | "10y";
 export type MarketCode = "us" | "bist";
 export type StrategyMode = "aggressive" | "balanced" | "conservative";
 
+export type RegimeFilterSettings = {
+  regime_mode: string;
+};
+
+export type LocationFilterSettings = {
+  max_support_distance_pct: number;
+  min_resistance_room_pct: number;
+  max_overextension_ema20_pct: number;
+  max_overextension_ema50_pct: number;
+  max_overextension_ema100_pct: number;
+};
+
+export type TriggerFilterSettings = {
+  min_trigger_score: number;
+};
+
+export type AnalysisConfig = {
+  ticker: string;
+  market: MarketCode;
+  lookback_window: AnalysisWindow;
+  strategy_mode: StrategyMode;
+  score_threshold: number;
+  warmup_bars: number;
+  regime_filter: RegimeFilterSettings;
+  location_filter: LocationFilterSettings;
+  trigger_filter: TriggerFilterSettings;
+};
+
 export type CategoryScores = {
   momentum_score: number;
   trend_score: number;
@@ -108,6 +136,17 @@ export type EntryGateDiagnostics = {
   skip_reason: string | null;
 };
 
+export type AnalysisPipelineResult = {
+  pipeline_order: string[];
+  final_score: number;
+  threshold_passed: boolean;
+  regime_valid: boolean;
+  location_valid: boolean;
+  trigger_valid: boolean;
+  final_entry_decision: boolean;
+  diagnostics: Record<string, unknown>;
+};
+
 export type DetectedLevel = {
   level_name: string;
   value: number;
@@ -130,6 +169,7 @@ export type CombinedAnalysisResponse = {
   market: MarketCode;
   window: AnalysisWindow;
   as_of: string;
+  analysis_config: AnalysisConfig;
   chart: AnalysisChart;
   quantedge: QuantEdgeSection;
   swingpulse: SwingPulseSection;
@@ -138,6 +178,7 @@ export type CombinedAnalysisResponse = {
   location: LocationDiagnostics;
   trigger: TriggerDiagnostics;
   entry_gate: EntryGateDiagnostics;
+  analysis_pipeline: AnalysisPipelineResult;
   strategy_mode_used: StrategyMode;
   interpreted_signals: Record<string, string>;
   indicator_summary: Record<string, unknown>;
@@ -228,6 +269,7 @@ export type BacktestResponse = {
   ticker: string;
   period_start: string;
   period_end: string;
+  analysis_config: AnalysisConfig;
   trades: number;
   win_rate: number;
   average_return: number;
@@ -245,6 +287,7 @@ export type BacktestFromAnalysisRequest = {
   market: MarketCode;
   window: AnalysisWindow;
   analysis_as_of: string;
+  analysis_config?: AnalysisConfig;
   quantedge_final_score: number;
   category_scores: CategoryScores;
   swing_candidate: boolean;
@@ -260,6 +303,7 @@ export type BacktestFromAnalysisResponse = {
   window: AnalysisWindow;
   generated_from_analysis: boolean;
   analysis_as_of: string;
+  analysis_config: AnalysisConfig;
   period_start: string;
   period_end: string;
   trades: number;

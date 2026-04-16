@@ -45,9 +45,18 @@ def analyze_combined(
     market: str = Query(default="us"),
     window: str = Query(default="6m"),
     strategy_mode: StrategyMode = Query(default=StrategyMode.BALANCED),
+    score_threshold: float | None = Query(default=None, ge=0, le=100),
+    warmup_bars: int | None = Query(default=None, ge=20, le=400),
 ) -> CombinedAnalysisResponse:
     try:
-        return analysis_engine.analyze_combined(ticker=ticker, window=window, market=market, strategy_mode=strategy_mode)
+        return analysis_engine.analyze_combined(
+            ticker=ticker,
+            window=window,
+            market=market,
+            strategy_mode=strategy_mode,
+            score_threshold=score_threshold,
+            warmup_bars=warmup_bars,
+        )
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -81,6 +90,7 @@ def backtest(
     window: str = Query(default="6m"),
     score_threshold: float | None = Query(default=None, ge=0, le=100),
     strategy_mode: StrategyMode = Query(default=StrategyMode.BALANCED),
+    warmup_bars: int | None = Query(default=None, ge=20, le=400),
 ) -> BacktestSummary:
     try:
         return backtest_engine.run(
@@ -89,6 +99,7 @@ def backtest(
             market=market,
             score_threshold=score_threshold,
             strategy_mode=strategy_mode,
+            warmup_bars=warmup_bars,
         )
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc

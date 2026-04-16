@@ -6,7 +6,7 @@ import { UnifiedAnalysisChart } from "@/components/unified-analysis-chart";
 import { ChartMapSectionCard, QuantEdgeSectionCard, SwingPulseSectionCard } from "@/components/unified-sections";
 import { useAnalysisContext } from "@/components/analysis-context";
 import { TickerControls } from "@/components/ticker-controls";
-import { Panel, SectionTitle } from "@/components/ui";
+import { Panel, SectionTitle, StatCard } from "@/components/ui";
 import { api } from "@/lib/api";
 import { AnalysisWindow, MarketCode, StrategyMode } from "@/lib/types";
 
@@ -99,6 +99,32 @@ export default function AnalysisPage() {
             >
               Open Backtest From This Analysis
             </button>
+          </Panel>
+
+          <Panel>
+            <SectionTitle title="Analysis Config" subtitle="Official shared config and entry gate result" />
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              <StatCard label="Market" value={analysis.analysis_config.market.toUpperCase()} />
+              <StatCard label="Window" value={analysis.analysis_config.lookback_window.toUpperCase()} />
+              <StatCard label="Mode" value={analysis.analysis_config.strategy_mode} />
+              <StatCard label="Threshold" value={`${analysis.analysis_config.score_threshold.toFixed(1)}`} />
+              <StatCard label="Warmup Bars" value={`${analysis.analysis_config.warmup_bars}`} />
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              <StatCard label="Threshold Passed" value={analysis.analysis_pipeline.threshold_passed ? "Yes" : "No"} />
+              <StatCard label="Regime Valid" value={analysis.analysis_pipeline.regime_valid ? "Yes" : "No"} />
+              <StatCard label="Location Valid" value={analysis.analysis_pipeline.location_valid ? "Yes" : "No"} />
+              <StatCard label="Trigger Valid" value={analysis.analysis_pipeline.trigger_valid ? "Yes" : "No"} />
+              <StatCard label="Final Entry" value={analysis.analysis_pipeline.final_entry_decision ? "Yes" : "No"} />
+            </div>
+            <div className="mt-3 rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
+              Regime mode: {analysis.analysis_config.regime_filter.regime_mode}. Support max: {analysis.analysis_config.location_filter.max_support_distance_pct.toFixed(2)}%.
+              Resistance min room: {analysis.analysis_config.location_filter.min_resistance_room_pct.toFixed(2)}%. Overextension caps (EMA20/50/100):
+              {" "}{analysis.analysis_config.location_filter.max_overextension_ema20_pct.toFixed(2)}% /
+              {" "}{analysis.analysis_config.location_filter.max_overextension_ema50_pct.toFixed(2)}% /
+              {" "}{analysis.analysis_config.location_filter.max_overextension_ema100_pct.toFixed(2)}%.
+              Trigger minimum score: {analysis.analysis_config.trigger_filter.min_trigger_score.toFixed(1)}.
+            </div>
           </Panel>
 
           <QuantEdgeSectionCard analysis={analysis} />

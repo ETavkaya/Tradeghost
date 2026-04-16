@@ -46,6 +46,71 @@ tradeghost/
   docs/                  # Architecture and scoring docs
 ```
 
+## Official Analysis Config (Shared)
+
+TradeGhost now uses one explicit `AnalysisConfig` as the single source of truth for both:
+- unified analysis
+- backtest-from-analysis
+
+`AnalysisConfig` fields:
+- `ticker`
+- `market`
+- `lookback_window`
+- `strategy_mode`
+- `score_threshold`
+- `warmup_bars`
+- `regime_filter`
+- `location_filter`
+- `trigger_filter`
+
+Backtest-from-analysis consumes the same `analysis_config` returned by analysis, preventing silent config drift.
+
+## Official Analysis Pipeline Order
+
+The deterministic pipeline is explicitly defined and shared:
+1. `fetch_data`
+2. `calculate_indicators`
+3. `calculate_category_scores`
+4. `evaluate_threshold_gate`
+5. `evaluate_regime_gate`
+6. `evaluate_location_gate`
+7. `evaluate_trigger_gate`
+8. `compute_final_entry_decision`
+
+Pipeline result is returned as structured diagnostics (`analysis_pipeline`) with:
+- `final_score`
+- `threshold_passed`
+- `regime_valid`
+- `location_valid`
+- `trigger_valid`
+- `final_entry_decision`
+- `diagnostics`
+
+## Strategy Modes (Explicit)
+
+Strategy mode presets are explicit and inspectable in backend config:
+
+- `aggressive`
+  - threshold: `50`
+  - regime: `relaxed`
+  - support max distance: `7.5%`
+  - min resistance room: `1.5%`
+  - trigger min score: `55`
+- `balanced`
+  - threshold: `60`
+  - regime: `medium`
+  - support max distance: `5.0%`
+  - min resistance room: `2.5%`
+  - trigger min score: `65`
+- `conservative`
+  - threshold: `72`
+  - regime: `strict`
+  - support max distance: `3.5%`
+  - min resistance room: `3.5%`
+  - trigger min score: `75`
+
+UI now displays effective config values (mode, threshold, warmup, filter settings) in analysis/backtest.
+
 ## Scoring Model
 
 Category scores are normalized to `0-100`:
@@ -169,6 +234,26 @@ BACKEND_URL=http://localhost:8000 npm run dev
 3. Run backend tests:
 ```bash
 pytest -q
+```
+
+## Quick Localhost Venv Test (Windows PowerShell)
+
+```powershell
+cd C:\repos\TradeGhOSt
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -e .
+pytest -q
+python -m uvicorn tradeghost.apps.api.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Then in a new terminal:
+```powershell
+cd C:\repos\TradeGhOSt\apps\web
+npm install
+$env:BACKEND_URL="http://127.0.0.1:8000"
+npm run dev
 ```
 
 ## Placeholder and Future Extensions

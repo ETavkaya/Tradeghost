@@ -20,4 +20,4 @@ def test_backtest_flow(market_data_service) -> None:
     assert summary.ticker == "MSFT"
     assert summary.trades >= 0
     assert 0 <= summary.win_rate <= 100
-
+    assert summary.score_threshold_used >= 0

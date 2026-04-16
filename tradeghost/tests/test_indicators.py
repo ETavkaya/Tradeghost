@@ -14,6 +14,8 @@ def test_indicator_snapshot_contains_expected_keys(market_data_service) -> None:
         "obv_slope",
         "ad_line_slope",
         "ema_20",
+        "ema_100",
+        "ema_200",
         "sma_50",
         "adx",
         "atr",
@@ -25,4 +27,3 @@ def test_indicator_snapshot_contains_expected_keys(market_data_service) -> None:
     }
     assert keys.issubset(set(snapshot.keys()))
     assert 0 <= snapshot["range_pos_52w"] <= 1
-

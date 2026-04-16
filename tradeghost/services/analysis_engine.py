@@ -3,20 +3,15 @@ from __future__ import annotations
 import math
 from typing import Any
 
-import pandas as pd
-
+from tradeghost.services.charts.payloads import WINDOW_TO_PERIOD, build_analysis_chart, normalize_window
 from tradeghost.services.data.market_data_service import MarketDataService
-from tradeghost.services.indicators.calculations import compute_indicator_snapshot, ema
+from tradeghost.services.indicators.calculations import compute_indicator_snapshot
 from tradeghost.services.interpretation.rules import interpret_snapshot
 from tradeghost.services.scoring.engine import score_analysis
 from tradeghost.services.strategy.planner import build_trade_plan
 from tradeghost.shared.config.settings import get_settings
 from tradeghost.shared.models.schemas import (
-    AnalysisChart,
     AnalysisResponse,
-    CategoryScores,
-    ChartCandle,
-    ChartLinePoint,
     ChartMapSection,
     CombinedAnalysisResponse,
     DetectedLevel,
@@ -26,35 +21,11 @@ from tradeghost.shared.models.schemas import (
     TradePlanResponse,
 )
 
-_WINDOW_TO_PERIOD = {
-    "5d": "6mo",
-    "1m": "1y",
-    "3m": "2y",
-    "6m": "2y",
-    "1y": "2y",
-    "5y": "5y",
-    "10y": "10y",
-}
-
-_WINDOW_TO_BARS = {
-    "5d": 5,
-    "1m": 22,
-    "3m": 66,
-    "6m": 132,
-    "1y": 252,
-    "5y": 1260,
-    "10y": 2520,
-}
-
 
 class AnalysisEngine:
     def __init__(self, data_service: MarketDataService | None = None) -> None:
         self.data_service = data_service or MarketDataService()
         self.settings = get_settings()
-
-    def _normalize_window(self, window: str | None) -> str:
-        raw = (window or "6m").strip().lower()
-        return raw if raw in _WINDOW_TO_PERIOD else "6m"
 
     @staticmethod
     def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -89,52 +60,9 @@ class AnalysisEngine:
             return "Mixed setup. Wait for stronger trend and momentum alignment."
         return "Weak setup. Risk dominates the reward profile under current rules."
 
-    @staticmethod
-    def _build_chart(
-        daily: pd.DataFrame,
-        snapshot: dict[str, Any],
-        trade_plan,
-        window: str,
-    ) -> AnalysisChart:
-        bars = _WINDOW_TO_BARS[window]
-        display = daily.tail(bars).copy()
-        close = daily["close"]
-        ema_20_series = ema(close, 20).tail(len(display))
-        ema_50_series = ema(close, 50).tail(len(display))
-
-        candles = [
-            ChartCandle(
-                date=idx.date(),
-                open=float(row["open"]),
-                high=float(row["high"]),
-                low=float(row["low"]),
-                close=float(row["close"]),
-                volume=float(row["volume"]),
-            )
-            for idx, row in display.iterrows()
-        ]
-        ema_20 = [ChartLinePoint(date=idx.date(), value=float(value)) for idx, value in ema_20_series.items()]
-        ema_50 = [ChartLinePoint(date=idx.date(), value=float(value)) for idx, value in ema_50_series.items()]
-
-        sr = snapshot.get("support_resistance", {})
-        fib = snapshot.get("fibonacci", {})
-        support = float(sr.get("support", 0.0)) if sr.get("support") is not None else 0.0
-        resistance = float(sr.get("resistance", 0.0)) if sr.get("resistance") is not None else 0.0
-
-        return AnalysisChart(
-            candles=candles,
-            ema_20=ema_20,
-            ema_50=ema_50,
-            current_price=float(snapshot.get("close", 0.0)),
-            support_levels=[support],
-            resistance_levels=[resistance],
-            fibonacci_levels={str(k): float(v) for k, v in fib.items()},
-            trade_plan_overlay=trade_plan,
-        )
-
     def analyze_combined(self, ticker: str, window: str | None = None, market: str | None = None) -> CombinedAnalysisResponse:
-        normalized_window = self._normalize_window(window)
-        period = _WINDOW_TO_PERIOD[normalized_window]
+        normalized_window = normalize_window(window)
+        period = WINDOW_TO_PERIOD[normalized_window]
         bundle = self.data_service.get_market_data(ticker, market=market, period=period)
 
         snapshot = compute_indicator_snapshot(
@@ -166,6 +94,8 @@ class AnalysisEngine:
         close = self._safe_float(snapshot.get("close"))
         ema20 = self._safe_float(snapshot.get("ema_20"), close)
         ema50 = self._safe_float(snapshot.get("ema_50"), close)
+        ema100 = self._safe_float(snapshot.get("ema_100"), close)
+        ema200 = self._safe_float(snapshot.get("ema_200"), close)
         nearest_support = self._safe_float(support_resistance.get("support"), close)
         nearest_resistance = self._safe_float(support_resistance.get("resistance"), close)
 
@@ -185,12 +115,18 @@ class AnalysisEngine:
 
         pattern = str(snapshot.get("candlestick_pattern", "none")).replace("_", " ")
         candle_summary = "No clean candle confirmation." if pattern == "none" else f"Pattern confirmation: {pattern}."
+        stack_ok = ema20 > ema50 > ema100 > ema200
+        above_200 = close > ema200
         ema_summary = (
             f"Price is {((close - ema20) / max(ema20, 0.01)) * 100:.2f}% vs EMA20 and "
-            f"{((close - ema50) / max(ema50, 0.01)) * 100:.2f}% vs EMA50."
+            f"{((close - ema50) / max(ema50, 0.01)) * 100:.2f}% vs EMA50, "
+            f"{((close - ema100) / max(ema100, 0.01)) * 100:.2f}% vs EMA100, "
+            f"and {((close - ema200) / max(ema200, 0.01)) * 100:.2f}% vs EMA200. "
+            f"EMA stack quality: {'strong bullish stack' if stack_ok else 'mixed stack'}. "
+            f"Price {'is' if above_200 else 'is not'} above EMA200."
         )
 
-        chart = self._build_chart(bundle.daily, snapshot, trade_plan, normalized_window)
+        chart = build_analysis_chart(bundle.daily, snapshot, trade_plan, normalized_window)
 
         return CombinedAnalysisResponse(
             ticker=bundle.ticker,

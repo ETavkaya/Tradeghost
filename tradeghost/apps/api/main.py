@@ -77,9 +77,10 @@ def backtest(
     ticker: str = Query(..., min_length=1, max_length=12),
     market: str = Query(default="us"),
     window: str = Query(default="6m"),
+    score_threshold: float | None = Query(default=None, ge=0, le=100),
 ) -> BacktestSummary:
     try:
-        return backtest_engine.run(ticker=ticker, window=window, market=market)
+        return backtest_engine.run(ticker=ticker, window=window, market=market, score_threshold=score_threshold)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

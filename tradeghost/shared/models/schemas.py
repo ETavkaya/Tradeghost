@@ -77,12 +77,16 @@ class BacktestMarker(BaseModel):
     price: float
     marker_type: str
     label: str
+    hover_text: str | None = None
+    trade_id: int | None = None
 
 
 class AnalysisChart(BaseModel):
     candles: list[ChartCandle]
     ema_20: list[ChartLinePoint]
     ema_50: list[ChartLinePoint]
+    ema_100: list[ChartLinePoint]
+    ema_200: list[ChartLinePoint]
     current_price: float
     support_levels: list[float]
     resistance_levels: list[float]
@@ -133,6 +137,7 @@ class TradePlanResponse(BaseModel):
 
 
 class BacktestTrade(BaseModel):
+    trade_id: int
     entry_date: date
     exit_date: date
     entry_price: float
@@ -142,6 +147,21 @@ class BacktestTrade(BaseModel):
     return_pct: float
     hold_days: int
     result: str
+    entry_reason: str | None = None
+    exit_reason: str | None = None
+    threshold_used: float | None = None
+    score_at_entry: float | None = None
+    score_at_exit: float | None = None
+    major_conditions_met: list[str] = Field(default_factory=list)
+    score_exit_threshold: float | None = None
+
+
+class SkippedEntrySignal(BaseModel):
+    date: date
+    final_score: float
+    threshold_used: float
+    reason: str
+    swing_candidate: bool
 
 
 class BacktestSummary(BaseModel):
@@ -154,6 +174,7 @@ class BacktestSummary(BaseModel):
     max_drawdown: float
     average_hold_days: float
     expectancy: float
+    score_threshold_used: float
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     sample_trades: list[BacktestTrade]
 
@@ -167,6 +188,7 @@ class BacktestFromAnalysisRequest(BaseModel):
     category_scores: CategoryScores
     swing_candidate: bool
     trade_plan: TradePlan
+    backtest_score_threshold: float | None = None
 
 
 class BacktestFromAnalysisResponse(BaseModel):
@@ -184,7 +206,16 @@ class BacktestFromAnalysisResponse(BaseModel):
     max_drawdown: float
     average_hold_days: float
     expectancy: float
+    score_threshold_used: float
+    warmup_bars_used: int
+    visible_start: date
+    visible_end: date
+    entries_considered: int
+    entries_triggered: int
+    skipped_due_to_threshold: int
+    skipped_due_to_setup: int
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     trades_table: list[BacktestTrade]
+    skipped_signals_sample: list[SkippedEntrySignal]
     chart: AnalysisChart
     markers: list[BacktestMarker]

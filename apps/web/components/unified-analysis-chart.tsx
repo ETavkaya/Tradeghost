@@ -13,12 +13,69 @@ type Props = {
   markers?: BacktestMarker[];
 };
 
-const markerColor: Record<string, string> = {
-  entry: "#23D18B",
-  exit: "#F2545B",
-  stop: "#F2545B",
-  take_profit: "#19D3F3"
+const markerStyle: Record<string, { color: string; symbol: string; name: string }> = {
+  entry: { color: "#23D18B", symbol: "diamond", name: "Entry" },
+  exit_stop: { color: "#F2545B", symbol: "x", name: "Stop Exit" },
+  exit_target: { color: "#19D3F3", symbol: "triangle-up", name: "Target Exit" },
+  exit_score: { color: "#F2B94B", symbol: "square", name: "Score Exit" },
+  exit_timeout: { color: "#B9C4D7", symbol: "circle", name: "Timeout Exit" },
+  exit_forced: { color: "#8FA1B8", symbol: "circle-open", name: "Forced Exit" },
+  exit: { color: "#F2545B", symbol: "diamond-open", name: "Exit" },
+  reference_stop: { color: "#F2545B", symbol: "circle-open", name: "Reference Stop" },
+  reference_target: { color: "#23D18B", symbol: "triangle-down-open", name: "Reference Target" }
 };
+
+function buildMarkerTraces(markers: BacktestMarker[]): Data[] {
+  const grouped = new Map<string, BacktestMarker[]>();
+  for (const marker of markers) {
+    const key = marker.marker_type;
+    if (!grouped.has(key)) {
+      grouped.set(key, []);
+    }
+    grouped.get(key)!.push(marker);
+  }
+
+  const traces: Data[] = [];
+  for (const [markerType, rows] of grouped.entries()) {
+    const style = markerStyle[markerType] ?? { color: "#F2B94B", symbol: "diamond", name: markerType };
+    traces.push({
+      type: "scatter",
+      mode: "markers",
+      x: rows.map((m) => m.date),
+      y: rows.map((m) => m.price),
+      name: style.name,
+      marker: {
+        size: 10,
+        symbol: style.symbol,
+        color: style.color,
+        line: { color: "#070B16", width: 1.2 }
+      },
+      text: rows.map((m) => m.hover_text ?? m.label),
+      hovertemplate: "%{text}<extra></extra>",
+      legendgroup: "markers"
+    });
+  }
+  return traces;
+}
+
+function buildLegendOnlyTrace(
+  name: string,
+  color: string,
+  dash: "solid" | "dot" | "dash",
+  sampleX: string,
+  sampleY: number
+): Data {
+  return {
+    type: "scatter",
+    mode: "lines",
+    x: [sampleX, sampleX],
+    y: [sampleY, sampleY],
+    name,
+    line: { color, width: 1.4, dash },
+    visible: "legendonly",
+    hoverinfo: "skip"
+  };
+}
 
 export function UnifiedAnalysisChart({ chart, title, markers = [] }: Props) {
   const x = chart.candles.map((c) => c.date);
@@ -49,7 +106,25 @@ export function UnifiedAnalysisChart({ chart, title, markers = [] }: Props) {
     x: chart.ema_50.map((p) => p.date),
     y: chart.ema_50.map((p) => p.value),
     name: "EMA 50",
-    line: { color: "#8F7CFF", width: 1.8 }
+    line: { color: "#9A8DFF", width: 1.8 }
+  };
+
+  const ema100: Data = {
+    type: "scatter",
+    mode: "lines",
+    x: chart.ema_100.map((p) => p.date),
+    y: chart.ema_100.map((p) => p.value),
+    name: "EMA 100",
+    line: { color: "#F2B94B", width: 1.7 }
+  };
+
+  const ema200: Data = {
+    type: "scatter",
+    mode: "lines",
+    x: chart.ema_200.map((p) => p.date),
+    y: chart.ema_200.map((p) => p.value),
+    name: "EMA 200",
+    line: { color: "#E06C9F", width: 1.7 }
   };
 
   const currentPoint: Data = {
@@ -62,24 +137,6 @@ export function UnifiedAnalysisChart({ chart, title, markers = [] }: Props) {
     textposition: "top right",
     marker: { size: 9, color: "#19D3F3", line: { color: "#070B16", width: 1.5 } }
   };
-
-  const markerTrace: Data | null = markers.length
-    ? {
-        type: "scatter",
-        mode: "markers",
-        x: markers.map((m) => m.date),
-        y: markers.map((m) => m.price),
-        name: "Backtest Markers",
-        marker: {
-          size: 10,
-          symbol: "diamond",
-          color: markers.map((m) => markerColor[m.marker_type] ?? "#F2B94B"),
-          line: { color: "#070B16", width: 1.2 }
-        },
-        text: markers.map((m) => m.label),
-        hovertemplate: "%{text}<br>%{x}<br>$%{y:.2f}<extra></extra>"
-      }
-    : null;
 
   const shapes: Partial<Shape>[] = [];
   const lineStyle = (color: string, dash: Shape["line"]["dash"] = "solid") => ({ color, width: 1.25, dash });
@@ -153,6 +210,18 @@ export function UnifiedAnalysisChart({ chart, title, markers = [] }: Props) {
     });
   }
 
+  const legendOverlayTraces: Data[] = [
+    buildLegendOnlyTrace("Support (dotted)", "#23D18B", "dot", x[0], chart.current_price),
+    buildLegendOnlyTrace("Resistance (dotted)", "#F2545B", "dot", x[0], chart.current_price),
+    buildLegendOnlyTrace("Reference/Fib (dashed)", "#F2B94B", "dash", x[0], chart.current_price)
+  ];
+
+  if (chart.trade_plan_overlay) {
+    legendOverlayTraces.push(buildLegendOnlyTrace("Trade Plan Stop", "#F2545B", "solid", x[0], chart.current_price));
+    legendOverlayTraces.push(buildLegendOnlyTrace("Trade Plan Target", "#23D18B", "solid", x[0], chart.current_price));
+  }
+
+  const markerTraces = buildMarkerTraces(markers);
   const layout: Partial<Layout> = {
     ...premiumDarkPlotlyTemplate,
     title: { text: title, font: { size: 14, color: "#DCE6FF" } },
@@ -161,13 +230,20 @@ export function UnifiedAnalysisChart({ chart, title, markers = [] }: Props) {
     shapes: shapes as Layout["shapes"],
     hovermode: "x unified",
     autosize: true,
-    height: 520
+    height: 520,
+    legend: {
+      ...premiumDarkPlotlyTemplate.legend,
+      orientation: "h",
+      yanchor: "bottom",
+      y: 1.02,
+      x: 0
+    }
   };
 
   return (
     <div className="overflow-hidden rounded-2xl border border-stroke bg-panel p-2 md:p-3">
       <Plot
-        data={markerTrace ? [candlestick, ema20, ema50, currentPoint, markerTrace] : [candlestick, ema20, ema50, currentPoint]}
+        data={[candlestick, ema20, ema50, ema100, ema200, currentPoint, ...legendOverlayTraces, ...markerTraces]}
         layout={layout}
         config={{ displaylogo: false, responsive: true, modeBarButtonsToRemove: ["lasso2d", "select2d"] }}
         style={{ width: "100%", height: "100%" }}

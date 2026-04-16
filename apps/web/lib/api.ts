@@ -28,9 +28,11 @@ export const api = {
   score: (ticker: string) => fetchJson<ScoreResponse>(`/api/score?ticker=${encodeURIComponent(ticker)}`),
   tradePlan: (ticker: string) =>
     fetchJson<TradePlanResponse>(`/api/trade-plan?ticker=${encodeURIComponent(ticker)}`),
-  backtest: (ticker: string, market: MarketCode, window: AnalysisWindow = "6m") =>
+  backtest: (ticker: string, market: MarketCode, window: AnalysisWindow = "6m", scoreThreshold?: number) =>
     fetchJson<BacktestResponse>(
-      `/api/backtest?ticker=${encodeURIComponent(ticker)}&market=${encodeURIComponent(market)}&window=${encodeURIComponent(window)}`
+      `/api/backtest?ticker=${encodeURIComponent(ticker)}&market=${encodeURIComponent(market)}&window=${encodeURIComponent(window)}${
+        scoreThreshold !== undefined ? `&score_threshold=${encodeURIComponent(scoreThreshold)}` : ""
+      }`
     ),
   backtestFromAnalysis: (payload: BacktestFromAnalysisRequest) =>
     fetchJson<BacktestFromAnalysisResponse>("/api/backtest-from-analysis", {

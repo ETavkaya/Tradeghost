@@ -7,7 +7,8 @@ from datetime import date
 import pandas as pd
 
 from tradeghost.services.analysis_engine import AnalysisEngine
-from tradeghost.services.indicators.calculations import compute_indicator_snapshot, ema
+from tradeghost.services.charts.payloads import WINDOW_TO_BARS, WINDOW_TO_PERIOD, build_analysis_chart, normalize_window, visible_window_slice
+from tradeghost.services.indicators.calculations import compute_indicator_snapshot
 from tradeghost.services.interpretation.rules import interpret_snapshot
 from tradeghost.services.scoring.engine import score_analysis
 from tradeghost.services.strategy.planner import build_trade_plan
@@ -19,38 +20,33 @@ from tradeghost.shared.models.schemas import (
     BacktestMarker,
     BacktestSummary,
     BacktestTrade,
-    ChartCandle,
-    ChartLinePoint,
+    SkippedEntrySignal,
 )
-
-_WINDOW_TO_PERIOD = {
-    "5d": "6mo",
-    "1m": "1y",
-    "3m": "2y",
-    "6m": "2y",
-    "1y": "2y",
-    "5y": "5y",
-    "10y": "10y",
-}
-
-_WINDOW_TO_BARS = {
-    "5d": 5,
-    "1m": 22,
-    "3m": 66,
-    "6m": 132,
-    "1y": 252,
-    "5y": 1260,
-    "10y": 2520,
-}
 
 
 @dataclass
 class _Position:
+    trade_id: int
     entry_idx: int
     entry_date: pd.Timestamp
     entry_price: float
     stop_loss: float
     take_profit: float
+    entry_reason: str
+    threshold_used: float
+    score_at_entry: float
+    major_conditions_met: list[str]
+
+
+@dataclass
+class _SimulationResult:
+    trades: list[BacktestTrade]
+    entries_considered: int
+    entries_triggered: int
+    skipped_due_to_threshold: int
+    skipped_due_to_setup: int
+    skipped_signals_sample: list[SkippedEntrySignal]
+    warmup_bars_used: int
 
 
 class BacktestEngine:
@@ -59,9 +55,29 @@ class BacktestEngine:
         self.settings = get_settings()
 
     @staticmethod
-    def _normalize_window(window: str | None) -> str:
-        raw = (window or "6m").strip().lower()
-        return raw if raw in _WINDOW_TO_PERIOD else "6m"
+    def _exit_marker_type(result: str) -> str:
+        mapping = {
+            "stop_exit": "exit_stop",
+            "target_exit": "exit_target",
+            "score_exit": "exit_score",
+            "timeout_exit": "exit_timeout",
+            "forced_close": "exit_forced",
+        }
+        return mapping.get(result, "exit")
+
+    @staticmethod
+    def _format_major_conditions(snapshot: dict[str, float], category_scores, swing_candidate: bool) -> list[str]:
+        return [
+            f"Swing candidate: {'yes' if swing_candidate else 'no'}",
+            f"Trend score: {category_scores.trend_score:.2f}",
+            f"Momentum score: {category_scores.momentum_score:.2f}",
+            f"Price {'above' if snapshot['close'] > snapshot['ema_200'] else 'below'} EMA200",
+            (
+                "EMA stack bullish"
+                if snapshot["ema_20"] > snapshot["ema_50"] > snapshot["ema_100"] > snapshot["ema_200"]
+                else "EMA stack mixed"
+            ),
+        ]
 
     def _simulate(
         self,
@@ -70,12 +86,24 @@ class BacktestEngine:
         market_cap: float | None,
         min_score_to_enter: float,
         max_hold_days: int,
-    ) -> list[BacktestTrade]:
+        window: str,
+    ) -> _SimulationResult:
         trades: list[BacktestTrade] = []
         position: _Position | None = None
-        warmup = min(self.settings.backtest_warmup_bars, max(20, len(daily) // 3))
 
-        for i in range(warmup, len(daily)):
+        bars = WINDOW_TO_BARS[window]
+        visible_start_idx = max(0, len(daily) - bars)
+        warmup = min(self.settings.backtest_warmup_bars, max(20, len(daily) // 3))
+        sim_start_idx = max(warmup, visible_start_idx)
+
+        entries_considered = 0
+        entries_triggered = 0
+        skipped_due_to_threshold = 0
+        skipped_due_to_setup = 0
+        skipped_signals_sample: list[SkippedEntrySignal] = []
+        next_trade_id = 1
+
+        for i in range(sim_start_idx, len(daily)):
             slice_daily = daily.iloc[: i + 1]
             current_row = slice_daily.iloc[-1]
             current_date = slice_daily.index[-1]
@@ -83,10 +111,12 @@ class BacktestEngine:
             if len(current_weekly) < 10:
                 continue
 
+            snapshot = compute_indicator_snapshot(slice_daily, current_weekly, market_cap)
+            interpreted = interpret_snapshot(snapshot)
+            category_scores, final_score = score_analysis(interpreted)
+
             if position is None:
-                snapshot = compute_indicator_snapshot(slice_daily, current_weekly, market_cap)
-                interpreted = interpret_snapshot(snapshot)
-                category_scores, final_score = score_analysis(interpreted)
+                entries_considered += 1
                 swing_candidate, plan = build_trade_plan(
                     final_score=final_score,
                     close=snapshot["close"],
@@ -96,49 +126,111 @@ class BacktestEngine:
                     trend_score=category_scores.trend_score,
                     momentum_score=category_scores.momentum_score,
                 )
-                if swing_candidate and final_score >= min_score_to_enter:
-                    entry_price = float(current_row["close"])
-                    position = _Position(
-                        entry_idx=i,
-                        entry_date=current_date,
-                        entry_price=entry_price,
-                        stop_loss=plan.stop_loss,
-                        take_profit=plan.take_profit_1,
-                    )
-            else:
-                low = float(current_row["low"])
-                high = float(current_row["high"])
-                close = float(current_row["close"])
-                hold_days = i - position.entry_idx
 
-                exit_price = None
-                exit_reason = None
-                if low <= position.stop_loss:
-                    exit_price = position.stop_loss
-                    exit_reason = "loss"
-                elif high >= position.take_profit:
-                    exit_price = position.take_profit
-                    exit_reason = "win"
-                elif hold_days >= max_hold_days:
-                    exit_price = close
-                    exit_reason = "timeout"
-
-                if exit_price is not None:
-                    ret = (exit_price - position.entry_price) / position.entry_price
-                    trades.append(
-                        BacktestTrade(
-                            entry_date=position.entry_date.date(),
-                            exit_date=current_date.date(),
-                            entry_price=round(position.entry_price, 2),
-                            exit_price=round(exit_price, 2),
-                            stop_loss=round(position.stop_loss, 2),
-                            take_profit=round(position.take_profit, 2),
-                            return_pct=round(ret * 100, 2),
-                            hold_days=hold_days,
-                            result=exit_reason,
+                if not swing_candidate:
+                    skipped_due_to_setup += 1
+                    if len(skipped_signals_sample) < 25:
+                        skipped_signals_sample.append(
+                            SkippedEntrySignal(
+                                date=current_date.date(),
+                                final_score=round(final_score, 2),
+                                threshold_used=round(min_score_to_enter, 2),
+                                reason="setup_not_valid",
+                                swing_candidate=False,
+                            )
                         )
-                    )
-                    position = None
+                    continue
+
+                if final_score < min_score_to_enter:
+                    skipped_due_to_threshold += 1
+                    if len(skipped_signals_sample) < 25:
+                        skipped_signals_sample.append(
+                            SkippedEntrySignal(
+                                date=current_date.date(),
+                                final_score=round(final_score, 2),
+                                threshold_used=round(min_score_to_enter, 2),
+                                reason="below_threshold",
+                                swing_candidate=True,
+                            )
+                        )
+                    continue
+
+                entry_price = float(current_row["close"])
+                major_conditions = self._format_major_conditions(snapshot, category_scores, swing_candidate)
+                entry_reason = (
+                    f"Score {final_score:.2f} met threshold {min_score_to_enter:.2f} with valid swing setup; "
+                    f"trend {category_scores.trend_score:.2f}, momentum {category_scores.momentum_score:.2f}."
+                )
+                position = _Position(
+                    trade_id=next_trade_id,
+                    entry_idx=i,
+                    entry_date=current_date,
+                    entry_price=entry_price,
+                    stop_loss=plan.stop_loss,
+                    take_profit=plan.take_profit_1,
+                    entry_reason=entry_reason,
+                    threshold_used=min_score_to_enter,
+                    score_at_entry=final_score,
+                    major_conditions_met=major_conditions,
+                )
+                entries_triggered += 1
+                next_trade_id += 1
+                continue
+
+            low = float(current_row["low"])
+            high = float(current_row["high"])
+            close = float(current_row["close"])
+            hold_days = i - position.entry_idx
+
+            exit_price: float | None = None
+            result = ""
+            exit_reason = ""
+
+            if low <= position.stop_loss:
+                exit_price = position.stop_loss
+                result = "stop_exit"
+                exit_reason = "Price hit stop-loss level."
+            elif high >= position.take_profit:
+                exit_price = position.take_profit
+                result = "target_exit"
+                exit_reason = "Price reached take-profit target."
+            elif final_score < (position.threshold_used * 0.7):
+                exit_price = close
+                result = "score_exit"
+                exit_reason = (
+                    f"Score deterioration: {final_score:.2f} dropped below maintenance level {(position.threshold_used * 0.7):.2f}."
+                )
+            elif hold_days >= max_hold_days:
+                exit_price = close
+                result = "timeout_exit"
+                exit_reason = f"Max hold of {max_hold_days} bars reached."
+
+            if exit_price is None:
+                continue
+
+            ret = (exit_price - position.entry_price) / position.entry_price
+            trades.append(
+                BacktestTrade(
+                    trade_id=position.trade_id,
+                    entry_date=position.entry_date.date(),
+                    exit_date=current_date.date(),
+                    entry_price=round(position.entry_price, 2),
+                    exit_price=round(exit_price, 2),
+                    stop_loss=round(position.stop_loss, 2),
+                    take_profit=round(position.take_profit, 2),
+                    return_pct=round(ret * 100, 2),
+                    hold_days=hold_days,
+                    result=result,
+                    entry_reason=position.entry_reason,
+                    exit_reason=exit_reason,
+                    threshold_used=round(position.threshold_used, 2),
+                    score_at_entry=round(position.score_at_entry, 2),
+                    score_at_exit=round(final_score, 2),
+                    major_conditions_met=position.major_conditions_met,
+                    score_exit_threshold=round(position.threshold_used * 0.7, 2),
+                )
+            )
+            position = None
 
         if position is not None:
             last_date = daily.index[-1]
@@ -146,6 +238,7 @@ class BacktestEngine:
             ret = (last_close - position.entry_price) / position.entry_price
             trades.append(
                 BacktestTrade(
+                    trade_id=position.trade_id,
                     entry_date=position.entry_date.date(),
                     exit_date=last_date.date(),
                     entry_price=round(position.entry_price, 2),
@@ -155,10 +248,24 @@ class BacktestEngine:
                     return_pct=round(ret * 100, 2),
                     hold_days=len(daily) - 1 - position.entry_idx,
                     result="forced_close",
+                    entry_reason=position.entry_reason,
+                    exit_reason="Position closed on final available bar.",
+                    threshold_used=round(position.threshold_used, 2),
+                    score_at_entry=round(position.score_at_entry, 2),
+                    major_conditions_met=position.major_conditions_met,
+                    score_exit_threshold=round(position.threshold_used * 0.7, 2),
                 )
             )
 
-        return trades
+        return _SimulationResult(
+            trades=trades,
+            entries_considered=entries_considered,
+            entries_triggered=entries_triggered,
+            skipped_due_to_threshold=skipped_due_to_threshold,
+            skipped_due_to_setup=skipped_due_to_setup,
+            skipped_signals_sample=skipped_signals_sample,
+            warmup_bars_used=warmup,
+        )
 
     @staticmethod
     def _compute_metrics(trades: list[BacktestTrade]) -> dict[str, float]:
@@ -191,27 +298,29 @@ class BacktestEngine:
             "expectancy": round(expectancy * 100, 2),
         }
 
-    def _build_chart(self, daily: pd.DataFrame, window: str, trade_plan, trades: list[BacktestTrade]) -> tuple[AnalysisChart, list[BacktestMarker]]:
-        bars = _WINDOW_TO_BARS[window]
-        display = daily.tail(bars)
-        dates_in_window = {idx.date() for idx in display.index}
+    @staticmethod
+    def _trade_hover_text(trade: BacktestTrade, side: str) -> str:
+        reason = trade.entry_reason if side == "entry" else trade.exit_reason
+        score = trade.score_at_entry if side == "entry" else trade.score_at_exit
+        score_text = f"{score:.2f}" if score is not None else "n/a"
+        threshold_text = f"{trade.threshold_used:.2f}" if trade.threshold_used is not None else "n/a"
+        return (
+            f"Trade #{trade.trade_id}<br>"
+            f"Entry: {trade.entry_date} @ ${trade.entry_price:.2f}<br>"
+            f"Exit: {trade.exit_date} @ ${trade.exit_price:.2f}<br>"
+            f"Return: {trade.return_pct:.2f}%<br>"
+            f"Score: {score_text}<br>"
+            f"Threshold: {threshold_text}<br>"
+            f"Reason: {reason or 'n/a'}"
+        )
 
-        candles = [
-            ChartCandle(
-                date=idx.date(),
-                open=float(row["open"]),
-                high=float(row["high"]),
-                low=float(row["low"]),
-                close=float(row["close"]),
-                volume=float(row["volume"]),
-            )
-            for idx, row in display.iterrows()
-        ]
-        ema_20 = [ChartLinePoint(date=idx.date(), value=float(value)) for idx, value in ema(daily["close"], 20).tail(len(display)).items()]
-        ema_50 = [ChartLinePoint(date=idx.date(), value=float(value)) for idx, value in ema(daily["close"], 50).tail(len(display)).items()]
+    def _build_chart(self, daily: pd.DataFrame, window: str, trade_plan, trades: list[BacktestTrade]) -> tuple[AnalysisChart, list[BacktestMarker], date, date]:
+        display = visible_window_slice(daily, window)
+        dates_in_window = {idx.date() for idx in display.index}
 
         weekly = daily.resample("W-FRI").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
         snapshot = compute_indicator_snapshot(daily, weekly)
+        chart = build_analysis_chart(daily=daily, snapshot=snapshot, trade_plan=trade_plan, window=window)
 
         markers: list[BacktestMarker] = []
         for trade in trades:
@@ -221,94 +330,104 @@ class BacktestEngine:
                         date=trade.entry_date,
                         price=trade.entry_price,
                         marker_type="entry",
-                        label="Entry",
+                        label=f"Entry #{trade.trade_id}",
+                        hover_text=self._trade_hover_text(trade, "entry"),
+                        trade_id=trade.trade_id,
                     )
                 )
+
             if trade.exit_date in dates_in_window:
                 markers.append(
                     BacktestMarker(
                         date=trade.exit_date,
                         price=trade.exit_price,
-                        marker_type="exit",
-                        label=f"Exit ({trade.result})",
+                        marker_type=self._exit_marker_type(trade.result),
+                        label=f"Exit #{trade.trade_id}",
+                        hover_text=self._trade_hover_text(trade, "exit"),
+                        trade_id=trade.trade_id,
                     )
                 )
 
         if not math.isnan(trade_plan.stop_loss):
+            last_visible_date = display.index[-1].date()
             markers.append(
                 BacktestMarker(
-                    date=display.index[-1].date(),
+                    date=last_visible_date,
                     price=trade_plan.stop_loss,
-                    marker_type="stop",
+                    marker_type="reference_stop",
                     label="Reference Stop",
+                    hover_text=f"Reference stop from active trade plan: ${trade_plan.stop_loss:.2f}",
                 )
             )
             markers.append(
                 BacktestMarker(
-                    date=display.index[-1].date(),
+                    date=last_visible_date,
                     price=trade_plan.take_profit_1,
-                    marker_type="take_profit",
+                    marker_type="reference_target",
                     label="Reference TP1",
+                    hover_text=f"Reference target from active trade plan: ${trade_plan.take_profit_1:.2f}",
                 )
             )
 
-        chart = AnalysisChart(
-            candles=candles,
-            ema_20=ema_20,
-            ema_50=ema_50,
-            current_price=float(daily.iloc[-1]["close"]),
-            support_levels=[float(snapshot["support_resistance"]["support"])],
-            resistance_levels=[float(snapshot["support_resistance"]["resistance"])],
-            fibonacci_levels={str(k): float(v) for k, v in snapshot["fibonacci"].items()},
-            trade_plan_overlay=trade_plan,
-        )
-        return chart, markers
+        return chart, markers, display.index[0].date(), display.index[-1].date()
 
-    def run(self, ticker: str, window: str | None = None, market: str | None = None) -> BacktestSummary:
-        normalized_window = self._normalize_window(window)
-        period = _WINDOW_TO_PERIOD[normalized_window]
+    def run(
+        self,
+        ticker: str,
+        window: str | None = None,
+        market: str | None = None,
+        score_threshold: float | None = None,
+    ) -> BacktestSummary:
+        normalized_window = normalize_window(window)
+        period = WINDOW_TO_PERIOD[normalized_window]
         bundle = self.analysis_engine.data_service.get_market_data(ticker, market=market, period=period)
 
-        trades = self._simulate(
+        min_score_to_enter = float(score_threshold) if score_threshold is not None else float(self.settings.backtest_min_score_to_enter)
+        sim = self._simulate(
             daily=bundle.daily,
             weekly=bundle.weekly,
             market_cap=bundle.metadata.market_cap,
-            min_score_to_enter=self.settings.backtest_min_score_to_enter,
+            min_score_to_enter=min_score_to_enter,
             max_hold_days=self.settings.backtest_max_hold_days,
+            window=normalized_window,
         )
-        metrics = self._compute_metrics(trades)
+        metrics = self._compute_metrics(sim.trades)
 
+        display = visible_window_slice(bundle.daily, normalized_window)
         return BacktestSummary(
             ticker=bundle.ticker,
-            period_start=bundle.daily.index[0].date(),
-            period_end=bundle.daily.index[-1].date(),
+            period_start=display.index[0].date(),
+            period_end=display.index[-1].date(),
             trades=int(metrics["trades"]),
             win_rate=metrics["win_rate"],
             average_return=metrics["average_return"],
             max_drawdown=metrics["max_drawdown"],
             average_hold_days=metrics["average_hold_days"],
             expectancy=metrics["expectancy"],
-            sample_trades=trades[:20],
+            score_threshold_used=round(min_score_to_enter, 2),
+            sample_trades=sim.trades[:20],
         )
 
     def run_from_analysis(self, context: BacktestFromAnalysisRequest) -> BacktestFromAnalysisResponse:
-        window = self._normalize_window(context.window)
-        period = _WINDOW_TO_PERIOD[window]
+        window = normalize_window(context.window)
+        period = WINDOW_TO_PERIOD[window]
         bundle = self.analysis_engine.data_service.get_market_data(context.ticker, market=context.market, period=period)
 
-        min_score_to_enter = max(self.settings.backtest_min_score_to_enter, context.quantedge_final_score * 0.85)
-        if not context.swing_candidate:
-            min_score_to_enter += 2.0
-
-        trades = self._simulate(
+        min_score_to_enter = (
+            float(context.backtest_score_threshold)
+            if context.backtest_score_threshold is not None
+            else float(self.settings.backtest_min_score_to_enter)
+        )
+        sim = self._simulate(
             daily=bundle.daily,
             weekly=bundle.weekly,
             market_cap=bundle.metadata.market_cap,
             min_score_to_enter=min_score_to_enter,
             max_hold_days=self.settings.backtest_max_hold_days,
+            window=window,
         )
-        metrics = self._compute_metrics(trades)
-        chart, markers = self._build_chart(bundle.daily, window, context.trade_plan, trades)
+        metrics = self._compute_metrics(sim.trades)
+        chart, markers, visible_start, visible_end = self._build_chart(bundle.daily, window, context.trade_plan, sim.trades)
 
         return BacktestFromAnalysisResponse(
             ticker=bundle.ticker,
@@ -317,15 +436,24 @@ class BacktestEngine:
             window=window,
             generated_from_analysis=True,
             analysis_as_of=context.analysis_as_of or date.today(),
-            period_start=bundle.daily.index[0].date(),
-            period_end=bundle.daily.index[-1].date(),
+            period_start=visible_start,
+            period_end=visible_end,
             trades=int(metrics["trades"]),
             win_rate=metrics["win_rate"],
             average_return=metrics["average_return"],
             max_drawdown=metrics["max_drawdown"],
             average_hold_days=metrics["average_hold_days"],
             expectancy=metrics["expectancy"],
-            trades_table=trades,
+            score_threshold_used=round(min_score_to_enter, 2),
+            warmup_bars_used=sim.warmup_bars_used,
+            visible_start=visible_start,
+            visible_end=visible_end,
+            entries_considered=sim.entries_considered,
+            entries_triggered=sim.entries_triggered,
+            skipped_due_to_threshold=sim.skipped_due_to_threshold,
+            skipped_due_to_setup=sim.skipped_due_to_setup,
+            trades_table=sim.trades,
+            skipped_signals_sample=sim.skipped_signals_sample,
             chart=chart,
             markers=markers,
         )

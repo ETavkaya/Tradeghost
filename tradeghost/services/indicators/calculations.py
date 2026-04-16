@@ -181,6 +181,8 @@ def compute_indicator_snapshot(
     adl_series = ad_line(high, low, close, volume)
     ema_20 = ema(close, 20)
     ema_50 = ema(close, 50)
+    ema_100 = ema(close, 100)
+    ema_200 = ema(close, 200)
     sma_20 = sma(close, 20)
     sma_50 = sma(close, 50)
     fib = fibonacci_levels(high, low)
@@ -202,6 +204,8 @@ def compute_indicator_snapshot(
         "ad_line_slope": float(adl_series.tail(20).diff().mean()),
         "ema_20": float(ema_20.iloc[-1]),
         "ema_50": float(ema_50.iloc[-1]),
+        "ema_100": float(ema_100.iloc[-1]),
+        "ema_200": float(ema_200.iloc[-1]),
         "sma_20": float(sma_20.iloc[-1]),
         "sma_50": float(sma_50.iloc[-1]),
         "adx": float(adx_series.iloc[-1]),
@@ -220,4 +224,3 @@ def compute_indicator_snapshot(
         "weekly_trend_aligned": bool(weekly_ema_20.iloc[-1] > weekly_ema_50.iloc[-1]),
     }
     return snapshot
-

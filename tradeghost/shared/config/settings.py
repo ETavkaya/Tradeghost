@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     strategy_tp1_rr: float = Field(default=1.8)
     strategy_tp2_rr: float = Field(default=3.0)
 
-    backtest_min_score_to_enter: float = Field(default=68.0)
+    backtest_min_score_to_enter: float = Field(default=60.0)
     backtest_max_hold_days: int = Field(default=15)
     backtest_warmup_bars: int = Field(default=120)
 

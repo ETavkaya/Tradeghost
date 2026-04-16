@@ -20,6 +20,8 @@ def _score_from_state(state: str) -> float:
         "no": -0.1,
         "aligned": 0.6,
         "not_aligned": -0.4,
+        "stacked_bullish": 0.8,
+        "stacked_bearish": -0.8,
     }
     return mapping.get(state, 0.0)
 
@@ -28,6 +30,8 @@ def interpret_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     close = snapshot["close"]
     ema_20 = snapshot["ema_20"]
     ema_50 = snapshot["ema_50"]
+    ema_100 = snapshot["ema_100"]
+    ema_200 = snapshot["ema_200"]
     sma_20 = snapshot["sma_20"]
     sma_50 = snapshot["sma_50"]
 
@@ -48,6 +52,8 @@ def interpret_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     volume_state = "strong" if snapshot["volume"]["volume_ratio"] >= 1.2 else "weak"
 
     ma_alignment = "bullish" if (ema_20 > ema_50 and sma_20 > sma_50 and close > ema_20) else "bearish"
+    long_trend_state = "bullish" if close > ema_200 else "bearish"
+    ema_stack_state = "stacked_bullish" if (ema_20 > ema_50 > ema_100 > ema_200) else "stacked_bearish"
     adx_state = "strong" if snapshot["adx"] >= 25 else "weak"
     weekly_alignment = "aligned" if snapshot["weekly_trend_aligned"] else "not_aligned"
 
@@ -87,6 +93,8 @@ def interpret_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "ad_state": ad_state,
         "volume_state": volume_state,
         "ma_alignment_state": ma_alignment,
+        "long_trend_state": long_trend_state,
+        "ema_stack_state": ema_stack_state,
         "adx_state": adx_state,
         "weekly_alignment_state": weekly_alignment,
         "bollinger_state": bb_state,
@@ -109,7 +117,13 @@ def interpret_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         signals["volume_state"],
         signals["divergence_state"],
     ]
-    trend_inputs = [signals["ma_alignment_state"], signals["adx_state"], signals["weekly_alignment_state"]]
+    trend_inputs = [
+        signals["ma_alignment_state"],
+        signals["long_trend_state"],
+        signals["ema_stack_state"],
+        signals["adx_state"],
+        signals["weekly_alignment_state"],
+    ]
     volatility_inputs = [signals["bollinger_state"], signals["atr_state"], signals["fibonacci_state"]]
     structure_inputs = [signals["structure_state"], signals["candle_state"], signals["breakout_state"]]
     context_inputs = [signals["range_state"], signals["market_cap_state"]]
@@ -122,4 +136,3 @@ def interpret_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "context_raw": sum(_score_from_state(s) for s in context_inputs) / len(context_inputs),
     }
     return {"signals": signals, "category_raw": category_raw}
-

@@ -8,11 +8,18 @@ import { TradesTable } from "@/components/trades-table";
 import { api } from "@/lib/api";
 import { BacktestFromAnalysisResponse } from "@/lib/types";
 
+const THRESHOLD_PRESETS = [
+  { label: "Aggressive", value: 40 },
+  { label: "Balanced", value: 60 },
+  { label: "Conservative", value: 75 }
+];
+
 export default function BacktestPage() {
   const { analysis } = useAnalysisContext();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BacktestFromAnalysisResponse | null>(null);
+  const [scoreThreshold, setScoreThreshold] = useState(60);
 
   const runBacktest = async () => {
     if (!analysis) return;
@@ -27,6 +34,7 @@ export default function BacktestPage() {
         quantedge_final_score: analysis.quantedge.final_score,
         category_scores: analysis.quantedge.category_scores,
         swing_candidate: analysis.swingpulse.swing_candidate,
+        backtest_score_threshold: scoreThreshold,
         trade_plan: analysis.chart.trade_plan_overlay ?? {
           bias: "neutral",
           entry_zone: [0, 0],
@@ -55,6 +63,36 @@ export default function BacktestPage() {
       <Panel>
         <SectionTitle title="Backtest" subtitle="Runs from active analysis context only" />
         <p className="text-sm text-slate-300">{contextLabel}</p>
+
+        <div className="mt-4 rounded-xl border border-stroke/70 bg-panelSoft p-3">
+          <p className="text-xs text-slate-400">Score Threshold (entry filter)</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {THRESHOLD_PRESETS.map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                onClick={() => setScoreThreshold(preset.value)}
+                className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                  scoreThreshold === preset.value ? "bg-cyan text-bg" : "bg-bg text-slate-300 hover:bg-stroke/60"
+                }`}
+              >
+                {preset.label} ({preset.value})
+              </button>
+            ))}
+          </div>
+          <div className="mt-3 grid gap-2 md:grid-cols-[1fr_auto] md:items-center">
+            <input
+              type="range"
+              min={20}
+              max={90}
+              value={scoreThreshold}
+              onChange={(event) => setScoreThreshold(Number(event.target.value))}
+              className="w-full"
+            />
+            <div className="rounded-md border border-stroke bg-bg px-3 py-1 text-sm font-semibold text-cyan">{scoreThreshold}</div>
+          </div>
+        </div>
+
         <button
           type="button"
           onClick={runBacktest}
@@ -76,19 +114,30 @@ export default function BacktestPage() {
         <>
           <Panel className="bg-panelSoft">
             <p className="text-sm text-slate-300">
-              This backtest was generated from the current analysis configuration for {result.ticker} ({result.window.toUpperCase()})
-              {" "}on {result.market.toUpperCase()}, anchored to analysis date {result.analysis_as_of}.
+              Backtest for {result.ticker} ({result.window.toUpperCase()}) on {result.market.toUpperCase()} using threshold {result.score_threshold_used.toFixed(0)}.
+              Visible range: {result.visible_start} to {result.visible_end}. Warm-up bars used: {result.warmup_bars_used}.
             </p>
           </Panel>
           <UnifiedAnalysisChart chart={result.chart} markers={result.markers} title={`${result.ticker} Backtest Chart`} />
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <StatCard label="Trades" value={`${result.trades}`} />
             <StatCard label="Win Rate" value={`${result.win_rate.toFixed(2)}%`} />
             <StatCard label="Average Return" value={`${result.average_return.toFixed(2)}%`} />
             <StatCard label="Max Drawdown" value={`${result.max_drawdown.toFixed(2)}%`} />
             <StatCard label="Average Hold" value={`${result.average_hold_days.toFixed(2)} days`} />
             <StatCard label="Expectancy" value={`${result.expectancy.toFixed(2)}%`} />
+            <StatCard label="Entries Checked" value={`${result.entries_considered}`} />
+            <StatCard label="Triggered Entries" value={`${result.entries_triggered}`} />
           </div>
+          <Panel>
+            <SectionTitle title="Scan Diagnostics" subtitle="Why setups were skipped" />
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <StatCard label="Skipped: Threshold" value={`${result.skipped_due_to_threshold}`} />
+              <StatCard label="Skipped: Setup" value={`${result.skipped_due_to_setup}`} />
+              <StatCard label="Visible Start" value={result.visible_start} />
+              <StatCard label="Visible End" value={result.visible_end} />
+            </div>
+          </Panel>
           <TradesTable trades={result.trades_table} />
         </>
       ) : null}

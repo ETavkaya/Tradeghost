@@ -37,6 +37,8 @@ export type AnalysisChart = {
   candles: ChartCandle[];
   ema_20: ChartLinePoint[];
   ema_50: ChartLinePoint[];
+  ema_100: ChartLinePoint[];
+  ema_200: ChartLinePoint[];
   current_price: number;
   support_levels: number[];
   resistance_levels: number[];
@@ -120,6 +122,7 @@ export type TradePlanResponse = {
 };
 
 export type BacktestTrade = {
+  trade_id: number;
   entry_date: string;
   exit_date: string;
   entry_price: number;
@@ -129,6 +132,13 @@ export type BacktestTrade = {
   return_pct: number;
   hold_days: number;
   result: string;
+  entry_reason: string | null;
+  exit_reason: string | null;
+  threshold_used: number | null;
+  score_at_entry: number | null;
+  score_at_exit: number | null;
+  major_conditions_met: string[];
+  score_exit_threshold: number | null;
 };
 
 export type BacktestMarker = {
@@ -136,6 +146,16 @@ export type BacktestMarker = {
   price: number;
   marker_type: string;
   label: string;
+  hover_text: string | null;
+  trade_id: number | null;
+};
+
+export type SkippedEntrySignal = {
+  date: string;
+  final_score: number;
+  threshold_used: number;
+  reason: string;
+  swing_candidate: boolean;
 };
 
 export type BacktestResponse = {
@@ -148,6 +168,7 @@ export type BacktestResponse = {
   max_drawdown: number;
   average_hold_days: number;
   expectancy: number;
+  score_threshold_used: number;
   generated_at: string;
   sample_trades: BacktestTrade[];
 };
@@ -161,6 +182,7 @@ export type BacktestFromAnalysisRequest = {
   category_scores: CategoryScores;
   swing_candidate: boolean;
   trade_plan: TradePlan;
+  backtest_score_threshold?: number;
 };
 
 export type BacktestFromAnalysisResponse = {
@@ -178,8 +200,17 @@ export type BacktestFromAnalysisResponse = {
   max_drawdown: number;
   average_hold_days: number;
   expectancy: number;
+  score_threshold_used: number;
+  warmup_bars_used: number;
+  visible_start: string;
+  visible_end: string;
+  entries_considered: number;
+  entries_triggered: number;
+  skipped_due_to_threshold: number;
+  skipped_due_to_setup: number;
   generated_at: string;
   trades_table: BacktestTrade[];
+  skipped_signals_sample: SkippedEntrySignal[];
   chart: AnalysisChart;
   markers: BacktestMarker[];
 };

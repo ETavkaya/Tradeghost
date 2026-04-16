@@ -12,6 +12,7 @@ from tradeghost.shared.models.schemas import (
     BacktestSummary,
     CombinedAnalysisResponse,
     ScoreResponse,
+    StrategyMode,
     TradePlanResponse,
 )
 
@@ -43,9 +44,10 @@ def analyze_combined(
     ticker: str = Query(..., min_length=1, max_length=12),
     market: str = Query(default="us"),
     window: str = Query(default="6m"),
+    strategy_mode: StrategyMode = Query(default=StrategyMode.BALANCED),
 ) -> CombinedAnalysisResponse:
     try:
-        return analysis_engine.analyze_combined(ticker=ticker, window=window, market=market)
+        return analysis_engine.analyze_combined(ticker=ticker, window=window, market=market, strategy_mode=strategy_mode)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -78,9 +80,16 @@ def backtest(
     market: str = Query(default="us"),
     window: str = Query(default="6m"),
     score_threshold: float | None = Query(default=None, ge=0, le=100),
+    strategy_mode: StrategyMode = Query(default=StrategyMode.BALANCED),
 ) -> BacktestSummary:
     try:
-        return backtest_engine.run(ticker=ticker, window=window, market=market, score_threshold=score_threshold)
+        return backtest_engine.run(
+            ticker=ticker,
+            window=window,
+            market=market,
+            score_threshold=score_threshold,
+            strategy_mode=strategy_mode,
+        )
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

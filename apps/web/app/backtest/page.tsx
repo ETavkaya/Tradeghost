@@ -6,7 +6,7 @@ import { UnifiedAnalysisChart } from "@/components/unified-analysis-chart";
 import { Panel, SectionTitle, StatCard } from "@/components/ui";
 import { TradesTable } from "@/components/trades-table";
 import { api } from "@/lib/api";
-import { BacktestFromAnalysisResponse } from "@/lib/types";
+import { BacktestFromAnalysisResponse, StrategyMode } from "@/lib/types";
 
 const THRESHOLD_PRESETS = [
   { label: "Aggressive", value: 40 },
@@ -20,6 +20,7 @@ export default function BacktestPage() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BacktestFromAnalysisResponse | null>(null);
   const [scoreThreshold, setScoreThreshold] = useState(60);
+  const [strategyMode, setStrategyMode] = useState<StrategyMode>(analysis?.strategy_mode_used ?? "balanced");
 
   const runBacktest = async () => {
     if (!analysis) return;
@@ -35,6 +36,7 @@ export default function BacktestPage() {
         category_scores: analysis.quantedge.category_scores,
         swing_candidate: analysis.swingpulse.swing_candidate,
         backtest_score_threshold: scoreThreshold,
+        strategy_mode: strategyMode,
         trade_plan: analysis.chart.trade_plan_overlay ?? {
           bias: "neutral",
           entry_zone: [0, 0],
@@ -63,6 +65,39 @@ export default function BacktestPage() {
       <Panel>
         <SectionTitle title="Backtest" subtitle="Runs from active analysis context only" />
         <p className="text-sm text-slate-300">{contextLabel}</p>
+
+        <div className="mt-4 rounded-xl border border-stroke/70 bg-panelSoft p-3">
+          <p className="text-xs text-slate-400">Strategy Mode</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-3">
+            <button
+              type="button"
+              onClick={() => setStrategyMode("aggressive")}
+              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                strategyMode === "aggressive" ? "bg-cyan text-bg" : "bg-bg text-slate-300 hover:bg-stroke/60"
+              }`}
+            >
+              Aggressive
+            </button>
+            <button
+              type="button"
+              onClick={() => setStrategyMode("balanced")}
+              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                strategyMode === "balanced" ? "bg-cyan text-bg" : "bg-bg text-slate-300 hover:bg-stroke/60"
+              }`}
+            >
+              Balanced
+            </button>
+            <button
+              type="button"
+              onClick={() => setStrategyMode("conservative")}
+              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                strategyMode === "conservative" ? "bg-cyan text-bg" : "bg-bg text-slate-300 hover:bg-stroke/60"
+              }`}
+            >
+              Conservative
+            </button>
+          </div>
+        </div>
 
         <div className="mt-4 rounded-xl border border-stroke/70 bg-panelSoft p-3">
           <p className="text-xs text-slate-400">Score Threshold (entry filter)</p>
@@ -114,7 +149,7 @@ export default function BacktestPage() {
         <>
           <Panel className="bg-panelSoft">
             <p className="text-sm text-slate-300">
-              Backtest for {result.ticker} ({result.window.toUpperCase()}) on {result.market.toUpperCase()} using threshold {result.score_threshold_used.toFixed(0)}.
+              Backtest for {result.ticker} ({result.window.toUpperCase()}) on {result.market.toUpperCase()} using {result.strategy_mode_used} mode and threshold {result.score_threshold_used.toFixed(0)}.
               Visible range: {result.visible_start} to {result.visible_end}. Warm-up bars used: {result.warmup_bars_used}.
             </p>
           </Panel>
@@ -133,9 +168,13 @@ export default function BacktestPage() {
             <SectionTitle title="Scan Diagnostics" subtitle="Why setups were skipped" />
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <StatCard label="Skipped: Threshold" value={`${result.skipped_due_to_threshold}`} />
+              <StatCard label="Skipped: Regime" value={`${result.skipped_regime}`} />
+              <StatCard label="Skipped: Location" value={`${result.skipped_location}`} />
+              <StatCard label="Skipped: Trigger" value={`${result.skipped_trigger}`} />
+              <StatCard label="Skipped: Overextended" value={`${result.skipped_overextended}`} />
+              <StatCard label="Skipped: Resist. Room" value={`${result.skipped_resistance_room}`} />
               <StatCard label="Skipped: Setup" value={`${result.skipped_due_to_setup}`} />
-              <StatCard label="Visible Start" value={result.visible_start} />
-              <StatCard label="Visible End" value={result.visible_end} />
+              <StatCard label="Visible" value={`${result.visible_start} › ${result.visible_end}`} />
             </div>
           </Panel>
           <TradesTable trades={result.trades_table} />

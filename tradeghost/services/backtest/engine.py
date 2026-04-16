@@ -11,6 +11,14 @@ from tradeghost.services.charts.payloads import WINDOW_TO_BARS, WINDOW_TO_PERIOD
 from tradeghost.services.indicators.calculations import compute_indicator_snapshot
 from tradeghost.services.interpretation.rules import interpret_snapshot
 from tradeghost.services.scoring.engine import score_analysis
+from tradeghost.services.strategy.filters import (
+    evaluate_entry_gate,
+    evaluate_location,
+    evaluate_regime,
+    evaluate_trigger,
+    get_strategy_mode_config,
+    normalize_strategy_mode,
+)
 from tradeghost.services.strategy.planner import build_trade_plan
 from tradeghost.shared.config.settings import get_settings
 from tradeghost.shared.models.schemas import (
@@ -21,6 +29,7 @@ from tradeghost.shared.models.schemas import (
     BacktestSummary,
     BacktestTrade,
     SkippedEntrySignal,
+    StrategyMode,
 )
 
 
@@ -36,6 +45,18 @@ class _Position:
     threshold_used: float
     score_at_entry: float
     major_conditions_met: list[str]
+    strategy_mode_used: StrategyMode
+    regime_valid: bool
+    location_valid: bool
+    trigger_valid: bool
+    trigger_type: str
+    regime_reason: str
+    location_reason: str
+    trigger_reason: str
+    support_distance_pct: float
+    resistance_distance_pct: float
+    overextended_flag: bool
+    entry_quality_score: float
 
 
 @dataclass
@@ -45,6 +66,11 @@ class _SimulationResult:
     entries_triggered: int
     skipped_due_to_threshold: int
     skipped_due_to_setup: int
+    skipped_regime: int
+    skipped_location: int
+    skipped_trigger: int
+    skipped_overextended: int
+    skipped_resistance_room: int
     skipped_signals_sample: list[SkippedEntrySignal]
     warmup_bars_used: int
 
@@ -66,17 +92,16 @@ class BacktestEngine:
         return mapping.get(result, "exit")
 
     @staticmethod
-    def _format_major_conditions(snapshot: dict[str, float], category_scores, swing_candidate: bool) -> list[str]:
+    def _format_major_conditions(final_score: float, entry_gate, regime, location, trigger) -> list[str]:
         return [
-            f"Swing candidate: {'yes' if swing_candidate else 'no'}",
-            f"Trend score: {category_scores.trend_score:.2f}",
-            f"Momentum score: {category_scores.momentum_score:.2f}",
-            f"Price {'above' if snapshot['close'] > snapshot['ema_200'] else 'below'} EMA200",
-            (
-                "EMA stack bullish"
-                if snapshot["ema_20"] > snapshot["ema_50"] > snapshot["ema_100"] > snapshot["ema_200"]
-                else "EMA stack mixed"
-            ),
+            f"Final score: {final_score:.2f}",
+            f"Threshold pass: {'yes' if entry_gate.score_threshold_passed else 'no'}",
+            f"Regime valid: {'yes' if regime.regime_valid else 'no'} ({regime.regime_mode_used})",
+            f"Location valid: {'yes' if location.location_valid else 'no'}",
+            f"Trigger valid: {'yes' if trigger.trigger_valid else 'no'} ({trigger.trigger_type})",
+            f"Support distance: {location.support_distance_pct:.2f}%",
+            f"Resistance room: {location.resistance_distance_pct:.2f}%",
+            f"Overextended: {'yes' if location.overextended_flag else 'no'}",
         ]
 
     def _simulate(
@@ -87,6 +112,7 @@ class BacktestEngine:
         min_score_to_enter: float,
         max_hold_days: int,
         window: str,
+        strategy_mode: StrategyMode,
     ) -> _SimulationResult:
         trades: list[BacktestTrade] = []
         position: _Position | None = None
@@ -100,6 +126,11 @@ class BacktestEngine:
         entries_triggered = 0
         skipped_due_to_threshold = 0
         skipped_due_to_setup = 0
+        skipped_regime = 0
+        skipped_location = 0
+        skipped_trigger = 0
+        skipped_overextended = 0
+        skipped_resistance_room = 0
         skipped_signals_sample: list[SkippedEntrySignal] = []
         next_trade_id = 1
 
@@ -117,7 +148,7 @@ class BacktestEngine:
 
             if position is None:
                 entries_considered += 1
-                swing_candidate, plan = build_trade_plan(
+                _, plan = build_trade_plan(
                     final_score=final_score,
                     close=snapshot["close"],
                     atr=max(snapshot["atr"], 0.01),
@@ -127,39 +158,55 @@ class BacktestEngine:
                     momentum_score=category_scores.momentum_score,
                 )
 
-                if not swing_candidate:
-                    skipped_due_to_setup += 1
-                    if len(skipped_signals_sample) < 25:
-                        skipped_signals_sample.append(
-                            SkippedEntrySignal(
-                                date=current_date.date(),
-                                final_score=round(final_score, 2),
-                                threshold_used=round(min_score_to_enter, 2),
-                                reason="setup_not_valid",
-                                swing_candidate=False,
-                            )
-                        )
-                    continue
+                regime = evaluate_regime(snapshot, strategy_mode)
+                location = evaluate_location(snapshot, strategy_mode)
+                trigger = evaluate_trigger(snapshot, strategy_mode, location)
+                entry_gate = evaluate_entry_gate(
+                    final_score=final_score,
+                    score_threshold_used=min_score_to_enter,
+                    regime=regime,
+                    location=location,
+                    trigger=trigger,
+                )
 
-                if final_score < min_score_to_enter:
-                    skipped_due_to_threshold += 1
-                    if len(skipped_signals_sample) < 25:
+                if not entry_gate.final_entry_decision:
+                    reason = entry_gate.skip_reason or "setup_filter"
+                    if reason == "score_threshold":
+                        skipped_due_to_threshold += 1
+                    elif reason == "regime_filter":
+                        skipped_regime += 1
+                    elif reason in {"location_filter", "overextended_filter", "resistance_room_filter"}:
+                        skipped_location += 1
+                        if reason == "overextended_filter":
+                            skipped_overextended += 1
+                        if reason == "resistance_room_filter":
+                            skipped_resistance_room += 1
+                    elif reason == "trigger_filter":
+                        skipped_trigger += 1
+                    else:
+                        skipped_due_to_setup += 1
+
+                    if len(skipped_signals_sample) < 30:
                         skipped_signals_sample.append(
                             SkippedEntrySignal(
                                 date=current_date.date(),
                                 final_score=round(final_score, 2),
                                 threshold_used=round(min_score_to_enter, 2),
-                                reason="below_threshold",
-                                swing_candidate=True,
+                                reason=reason,
+                                swing_candidate=False,
+                                strategy_mode_used=strategy_mode,
+                                regime_valid=regime.regime_valid,
+                                location_valid=location.location_valid,
+                                trigger_valid=trigger.trigger_valid,
                             )
                         )
                     continue
 
                 entry_price = float(current_row["close"])
-                major_conditions = self._format_major_conditions(snapshot, category_scores, swing_candidate)
+                major_conditions = self._format_major_conditions(final_score, entry_gate, regime, location, trigger)
                 entry_reason = (
-                    f"Score {final_score:.2f} met threshold {min_score_to_enter:.2f} with valid swing setup; "
-                    f"trend {category_scores.trend_score:.2f}, momentum {category_scores.momentum_score:.2f}."
+                    f"Entry gate passed ({strategy_mode.value}). Score {final_score:.2f}/{min_score_to_enter:.2f}; "
+                    f"regime={regime.ema_stack_quality}, location={location.location_score:.1f}, trigger={trigger.trigger_type}."
                 )
                 position = _Position(
                     trade_id=next_trade_id,
@@ -172,6 +219,18 @@ class BacktestEngine:
                     threshold_used=min_score_to_enter,
                     score_at_entry=final_score,
                     major_conditions_met=major_conditions,
+                    strategy_mode_used=strategy_mode,
+                    regime_valid=regime.regime_valid,
+                    location_valid=location.location_valid,
+                    trigger_valid=trigger.trigger_valid,
+                    trigger_type=trigger.trigger_type,
+                    regime_reason=regime.regime_reason,
+                    location_reason=location.location_reason,
+                    trigger_reason=trigger.trigger_reason,
+                    support_distance_pct=location.support_distance_pct,
+                    resistance_distance_pct=location.resistance_distance_pct,
+                    overextended_flag=location.overextended_flag,
+                    entry_quality_score=entry_gate.entry_quality_score,
                 )
                 entries_triggered += 1
                 next_trade_id += 1
@@ -228,6 +287,18 @@ class BacktestEngine:
                     score_at_exit=round(final_score, 2),
                     major_conditions_met=position.major_conditions_met,
                     score_exit_threshold=round(position.threshold_used * 0.7, 2),
+                    strategy_mode_used=position.strategy_mode_used,
+                    regime_valid=position.regime_valid,
+                    location_valid=position.location_valid,
+                    trigger_valid=position.trigger_valid,
+                    trigger_type=position.trigger_type,
+                    regime_reason=position.regime_reason,
+                    location_reason=position.location_reason,
+                    trigger_reason=position.trigger_reason,
+                    support_distance_pct=position.support_distance_pct,
+                    resistance_distance_pct=position.resistance_distance_pct,
+                    overextended_flag=position.overextended_flag,
+                    entry_quality_score=position.entry_quality_score,
                 )
             )
             position = None
@@ -254,6 +325,18 @@ class BacktestEngine:
                     score_at_entry=round(position.score_at_entry, 2),
                     major_conditions_met=position.major_conditions_met,
                     score_exit_threshold=round(position.threshold_used * 0.7, 2),
+                    strategy_mode_used=position.strategy_mode_used,
+                    regime_valid=position.regime_valid,
+                    location_valid=position.location_valid,
+                    trigger_valid=position.trigger_valid,
+                    trigger_type=position.trigger_type,
+                    regime_reason=position.regime_reason,
+                    location_reason=position.location_reason,
+                    trigger_reason=position.trigger_reason,
+                    support_distance_pct=position.support_distance_pct,
+                    resistance_distance_pct=position.resistance_distance_pct,
+                    overextended_flag=position.overextended_flag,
+                    entry_quality_score=position.entry_quality_score,
                 )
             )
 
@@ -263,6 +346,11 @@ class BacktestEngine:
             entries_triggered=entries_triggered,
             skipped_due_to_threshold=skipped_due_to_threshold,
             skipped_due_to_setup=skipped_due_to_setup,
+            skipped_regime=skipped_regime,
+            skipped_location=skipped_location,
+            skipped_trigger=skipped_trigger,
+            skipped_overextended=skipped_overextended,
+            skipped_resistance_room=skipped_resistance_room,
             skipped_signals_sample=skipped_signals_sample,
             warmup_bars_used=warmup,
         )
@@ -306,11 +394,15 @@ class BacktestEngine:
         threshold_text = f"{trade.threshold_used:.2f}" if trade.threshold_used is not None else "n/a"
         return (
             f"Trade #{trade.trade_id}<br>"
+            f"Mode: {trade.strategy_mode_used.value}<br>"
             f"Entry: {trade.entry_date} @ ${trade.entry_price:.2f}<br>"
             f"Exit: {trade.exit_date} @ ${trade.exit_price:.2f}<br>"
             f"Return: {trade.return_pct:.2f}%<br>"
             f"Score: {score_text}<br>"
             f"Threshold: {threshold_text}<br>"
+            f"Trigger: {trade.trigger_type or 'n/a'}<br>"
+            f"Support dist: {trade.support_distance_pct if trade.support_distance_pct is not None else 'n/a'}%<br>"
+            f"Resistance room: {trade.resistance_distance_pct if trade.resistance_distance_pct is not None else 'n/a'}%<br>"
             f"Reason: {reason or 'n/a'}"
         )
 
@@ -377,12 +469,15 @@ class BacktestEngine:
         window: str | None = None,
         market: str | None = None,
         score_threshold: float | None = None,
+        strategy_mode: StrategyMode | str | None = None,
     ) -> BacktestSummary:
         normalized_window = normalize_window(window)
+        normalized_mode = normalize_strategy_mode(strategy_mode)
+        mode_config = get_strategy_mode_config(normalized_mode)
         period = WINDOW_TO_PERIOD[normalized_window]
         bundle = self.analysis_engine.data_service.get_market_data(ticker, market=market, period=period)
 
-        min_score_to_enter = float(score_threshold) if score_threshold is not None else float(self.settings.backtest_min_score_to_enter)
+        min_score_to_enter = float(score_threshold) if score_threshold is not None else float(mode_config.score_threshold)
         sim = self._simulate(
             daily=bundle.daily,
             weekly=bundle.weekly,
@@ -390,6 +485,7 @@ class BacktestEngine:
             min_score_to_enter=min_score_to_enter,
             max_hold_days=self.settings.backtest_max_hold_days,
             window=normalized_window,
+            strategy_mode=normalized_mode,
         )
         metrics = self._compute_metrics(sim.trades)
 
@@ -405,19 +501,18 @@ class BacktestEngine:
             average_hold_days=metrics["average_hold_days"],
             expectancy=metrics["expectancy"],
             score_threshold_used=round(min_score_to_enter, 2),
+            strategy_mode_used=normalized_mode,
             sample_trades=sim.trades[:20],
         )
 
     def run_from_analysis(self, context: BacktestFromAnalysisRequest) -> BacktestFromAnalysisResponse:
         window = normalize_window(context.window)
+        strategy_mode = normalize_strategy_mode(context.strategy_mode)
+        mode_config = get_strategy_mode_config(strategy_mode)
         period = WINDOW_TO_PERIOD[window]
         bundle = self.analysis_engine.data_service.get_market_data(context.ticker, market=context.market, period=period)
 
-        min_score_to_enter = (
-            float(context.backtest_score_threshold)
-            if context.backtest_score_threshold is not None
-            else float(self.settings.backtest_min_score_to_enter)
-        )
+        min_score_to_enter = float(context.backtest_score_threshold) if context.backtest_score_threshold is not None else float(mode_config.score_threshold)
         sim = self._simulate(
             daily=bundle.daily,
             weekly=bundle.weekly,
@@ -425,6 +520,7 @@ class BacktestEngine:
             min_score_to_enter=min_score_to_enter,
             max_hold_days=self.settings.backtest_max_hold_days,
             window=window,
+            strategy_mode=strategy_mode,
         )
         metrics = self._compute_metrics(sim.trades)
         chart, markers, visible_start, visible_end = self._build_chart(bundle.daily, window, context.trade_plan, sim.trades)
@@ -445,6 +541,7 @@ class BacktestEngine:
             average_hold_days=metrics["average_hold_days"],
             expectancy=metrics["expectancy"],
             score_threshold_used=round(min_score_to_enter, 2),
+            strategy_mode_used=strategy_mode,
             warmup_bars_used=sim.warmup_bars_used,
             visible_start=visible_start,
             visible_end=visible_end,
@@ -452,6 +549,11 @@ class BacktestEngine:
             entries_triggered=sim.entries_triggered,
             skipped_due_to_threshold=sim.skipped_due_to_threshold,
             skipped_due_to_setup=sim.skipped_due_to_setup,
+            skipped_regime=sim.skipped_regime,
+            skipped_location=sim.skipped_location,
+            skipped_trigger=sim.skipped_trigger,
+            skipped_overextended=sim.skipped_overextended,
+            skipped_resistance_room=sim.skipped_resistance_room,
             trades_table=sim.trades,
             skipped_signals_sample=sim.skipped_signals_sample,
             chart=chart,

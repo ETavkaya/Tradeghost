@@ -34,6 +34,10 @@ export function QuantEdgeSectionCard({ analysis }: { analysis: CombinedAnalysisR
 
 export function SwingPulseSectionCard({ analysis }: { analysis: CombinedAnalysisResponse }) {
   const swing = analysis.swingpulse;
+  const regime = analysis.regime;
+  const location = analysis.location;
+  const trigger = analysis.trigger;
+  const gate = analysis.entry_gate;
   return (
     <Panel>
       <SectionTitle title="SwingPulse" subtitle="Setup and trade levels" />
@@ -69,6 +73,43 @@ export function SwingPulseSectionCard({ analysis }: { analysis: CombinedAnalysis
         <Panel className="bg-panelSoft">
           <p className="text-xs text-slate-400">Invalidation</p>
           <p className="mt-1 text-sm text-slate-200">{swing.invalidation_note}</p>
+        </Panel>
+      </div>
+      <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <Panel className="bg-panelSoft">
+          <p className="text-xs text-slate-400">Regime</p>
+          <p className={`mt-1 text-sm font-semibold ${regime.regime_valid ? "text-green" : "text-red"}`}>
+            {regime.regime_valid ? "Valid" : "Invalid"} ({regime.regime_mode_used})
+          </p>
+          <p className="mt-1 text-xs text-slate-300">{regime.regime_reason}</p>
+        </Panel>
+        <Panel className="bg-panelSoft">
+          <p className="text-xs text-slate-400">Location</p>
+          <p className={`mt-1 text-sm font-semibold ${location.location_valid ? "text-green" : "text-red"}`}>
+            {location.location_valid ? "Valid" : "Invalid"} ({fmtNumber(location.location_score, 1)})
+          </p>
+          <p className="mt-1 text-xs text-slate-300">
+            Support {fmtNumber(location.support_distance_pct, 2)}% • Resistance room {fmtNumber(location.resistance_distance_pct, 2)}%
+          </p>
+        </Panel>
+        <Panel className="bg-panelSoft">
+          <p className="text-xs text-slate-400">Trigger</p>
+          <p className={`mt-1 text-sm font-semibold ${trigger.trigger_valid ? "text-green" : "text-red"}`}>
+            {trigger.trigger_valid ? "Valid" : "Invalid"} ({trigger.trigger_type})
+          </p>
+          <p className="mt-1 text-xs text-slate-300">Score {fmtNumber(trigger.trigger_score, 1)} • {trigger.trigger_reason}</p>
+        </Panel>
+        <Panel className="bg-panelSoft">
+          <p className="text-xs text-slate-400">Entry Gate</p>
+          <p className={`mt-1 text-sm font-semibold ${gate.final_entry_decision ? "text-green" : "text-red"}`}>
+            {gate.final_entry_decision ? "Pass" : "Fail"} • {analysis.strategy_mode_used}
+          </p>
+          <p className="mt-1 text-xs text-slate-300">
+            Score {fmtNumber(gate.final_score, 1)}/{fmtNumber(gate.score_threshold_used, 1)} • Quality {fmtNumber(gate.entry_quality_score, 1)}
+          </p>
+          {!gate.final_entry_decision && gate.skip_reason ? (
+            <p className="mt-1 text-xs text-red">Skip reason: {gate.skip_reason.replaceAll("_", " ")}</p>
+          ) : null}
         </Panel>
       </div>
     </Panel>

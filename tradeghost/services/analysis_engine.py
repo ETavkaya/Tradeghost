@@ -8,6 +8,14 @@ from tradeghost.services.data.market_data_service import MarketDataService
 from tradeghost.services.indicators.calculations import compute_indicator_snapshot
 from tradeghost.services.interpretation.rules import interpret_snapshot
 from tradeghost.services.scoring.engine import score_analysis
+from tradeghost.services.strategy.filters import (
+    evaluate_entry_gate,
+    evaluate_location,
+    evaluate_regime,
+    evaluate_trigger,
+    get_strategy_mode_config,
+    normalize_strategy_mode,
+)
 from tradeghost.services.strategy.planner import build_trade_plan
 from tradeghost.shared.config.settings import get_settings
 from tradeghost.shared.models.schemas import (
@@ -17,6 +25,7 @@ from tradeghost.shared.models.schemas import (
     DetectedLevel,
     QuantEdgeSection,
     ScoreResponse,
+    StrategyMode,
     SwingPulseSection,
     TradePlanResponse,
 )
@@ -60,8 +69,16 @@ class AnalysisEngine:
             return "Mixed setup. Wait for stronger trend and momentum alignment."
         return "Weak setup. Risk dominates the reward profile under current rules."
 
-    def analyze_combined(self, ticker: str, window: str | None = None, market: str | None = None) -> CombinedAnalysisResponse:
+    def analyze_combined(
+        self,
+        ticker: str,
+        window: str | None = None,
+        market: str | None = None,
+        strategy_mode: StrategyMode | str | None = None,
+    ) -> CombinedAnalysisResponse:
         normalized_window = normalize_window(window)
+        normalized_mode = normalize_strategy_mode(strategy_mode)
+        mode_config = get_strategy_mode_config(normalized_mode)
         period = WINDOW_TO_PERIOD[normalized_window]
         bundle = self.data_service.get_market_data(ticker, market=market, period=period)
 
@@ -73,7 +90,7 @@ class AnalysisEngine:
         interpreted = interpret_snapshot(snapshot)
         category_scores, final_score = score_analysis(interpreted)
         support_resistance = snapshot["support_resistance"]
-        swing_candidate, trade_plan = build_trade_plan(
+        _, trade_plan = build_trade_plan(
             final_score=final_score,
             close=self._safe_float(snapshot.get("close")),
             atr=max(self._safe_float(snapshot.get("atr"), 1.0), 0.01),
@@ -82,6 +99,17 @@ class AnalysisEngine:
             trend_score=category_scores.trend_score,
             momentum_score=category_scores.momentum_score,
         )
+        regime = evaluate_regime(snapshot, normalized_mode)
+        location = evaluate_location(snapshot, normalized_mode)
+        trigger = evaluate_trigger(snapshot, normalized_mode, location)
+        entry_gate = evaluate_entry_gate(
+            final_score=final_score,
+            score_threshold_used=mode_config.score_threshold,
+            regime=regime,
+            location=location,
+            trigger=trigger,
+        )
+        swing_candidate = entry_gate.final_entry_decision and trade_plan.bias == "bullish"
 
         score_breakdown = {
             "momentum": round(category_scores.momentum_score * self.settings.score_momentum_weight / 100, 4),
@@ -149,6 +177,8 @@ class AnalysisEngine:
                 take_profit_levels=[trade_plan.take_profit_1, trade_plan.take_profit_2],
                 risk_reward=trade_plan.risk_reward,
                 invalidation_note=trade_plan.invalidation_note,
+                strategy_mode_used=normalized_mode,
+                score_threshold_used=mode_config.score_threshold,
             ),
             chartmap=ChartMapSection(
                 ema_proximity_summary=ema_summary,
@@ -166,6 +196,11 @@ class AnalysisEngine:
                     ],
                 ],
             ),
+            regime=regime,
+            location=location,
+            trigger=trigger,
+            entry_gate=entry_gate,
+            strategy_mode_used=normalized_mode,
             interpreted_signals=interpreted["signals"],
             indicator_summary=self._sanitize(snapshot),
             trade_plan_summary=(
@@ -174,8 +209,13 @@ class AnalysisEngine:
             ),
         )
 
-    def analyze(self, ticker: str, market: str | None = None) -> AnalysisResponse:
-        combined = self.analyze_combined(ticker=ticker, window="6m", market=market)
+    def analyze(
+        self,
+        ticker: str,
+        market: str | None = None,
+        strategy_mode: StrategyMode | str | None = None,
+    ) -> AnalysisResponse:
+        combined = self.analyze_combined(ticker=ticker, window="6m", market=market, strategy_mode=strategy_mode)
         return AnalysisResponse(
             ticker=combined.ticker,
             as_of=combined.as_of,
@@ -188,7 +228,7 @@ class AnalysisEngine:
         )
 
     def score_only(self, ticker: str, market: str | None = None) -> ScoreResponse:
-        analysis = self.analyze(ticker, market=market)
+        analysis = self.analyze(ticker, market=market, strategy_mode=StrategyMode.BALANCED)
         return ScoreResponse(
             ticker=analysis.ticker,
             as_of=analysis.as_of,
@@ -198,7 +238,7 @@ class AnalysisEngine:
         )
 
     def trade_plan_only(self, ticker: str, market: str | None = None) -> TradePlanResponse:
-        analysis = self.analyze(ticker, market=market)
+        analysis = self.analyze(ticker, market=market, strategy_mode=StrategyMode.BALANCED)
         return TradePlanResponse(
             ticker=analysis.ticker,
             as_of=analysis.as_of,

@@ -8,7 +8,7 @@ import { useAnalysisContext } from "@/components/analysis-context";
 import { TickerControls } from "@/components/ticker-controls";
 import { Panel, SectionTitle } from "@/components/ui";
 import { api } from "@/lib/api";
-import { AnalysisWindow, MarketCode } from "@/lib/types";
+import { AnalysisWindow, MarketCode, StrategyMode } from "@/lib/types";
 
 export default function AnalysisPage() {
   const router = useRouter();
@@ -16,6 +16,7 @@ export default function AnalysisPage() {
   const [ticker, setTicker] = useState(analysis?.ticker ?? "TSLA");
   const [market, setMarket] = useState<MarketCode>(analysis?.market ?? "us");
   const [window, setWindow] = useState<AnalysisWindow>(analysis?.window ?? "6m");
+  const [strategyMode, setStrategyMode] = useState<StrategyMode>(analysis?.strategy_mode_used ?? "balanced");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,7 +24,7 @@ export default function AnalysisPage() {
     setLoading(true);
     setError(null);
     try {
-      const result = await api.analyzeCombined(ticker, market, window);
+      const result = await api.analyzeCombined(ticker, market, window, strategyMode);
       setAnalysis(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to run analysis.");
@@ -49,6 +50,18 @@ export default function AnalysisPage() {
         onSubmit={onAnalyze}
         loading={loading}
         buttonLabel="Analyze"
+        extraControls={
+          <select
+            value={strategyMode}
+            onChange={(event) => setStrategyMode(event.target.value as StrategyMode)}
+            className="h-11 rounded-lg border border-stroke bg-bg px-3 text-sm"
+            aria-label="Strategy mode"
+          >
+            <option value="aggressive">Aggressive</option>
+            <option value="balanced">Balanced</option>
+            <option value="conservative">Conservative</option>
+          </select>
+        }
       />
 
       {error ? (
@@ -69,15 +82,14 @@ export default function AnalysisPage() {
         <>
           <UnifiedAnalysisChart
             chart={analysis.chart}
-            title={`${analysis.ticker} Unified Analysis (${analysis.market.toUpperCase()} â€¢ ${analysis.window.toUpperCase()})`}
+            title={`${analysis.ticker} Unified Analysis (${analysis.market.toUpperCase()} • ${analysis.window.toUpperCase()})`}
           />
 
           <Panel className="flex flex-col gap-3 bg-gradient-to-r from-panelSoft to-panel md:flex-row md:items-center md:justify-between">
             <div>
               <p className="text-sm text-slate-400">Context</p>
               <p className="text-sm text-slate-200">
-                Combined analysis generated for {analysis.ticker} ({analysis.market.toUpperCase()} â€¢ {analysis.window.toUpperCase()}) as of{" "}
-                {analysis.as_of}
+                Combined analysis generated for {analysis.ticker} ({analysis.market.toUpperCase()} • {analysis.window.toUpperCase()}) as of {analysis.as_of}. Strategy mode: {analysis.strategy_mode_used}.
               </p>
             </div>
             <button

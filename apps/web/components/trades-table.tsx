@@ -17,6 +17,10 @@ export function TradesTable({ trades }: { trades: BacktestTrade[] }) {
               <th className="px-2 py-2">Return %</th>
               <th className="px-2 py-2">Score@Entry</th>
               <th className="px-2 py-2">Threshold</th>
+              <th className="px-2 py-2">Mode</th>
+              <th className="px-2 py-2">Trigger</th>
+              <th className="px-2 py-2">Support%</th>
+              <th className="px-2 py-2">Room%</th>
               <th className="px-2 py-2">Hold</th>
               <th className="px-2 py-2">Result</th>
               <th className="px-2 py-2">Entry Reason</th>
@@ -26,7 +30,7 @@ export function TradesTable({ trades }: { trades: BacktestTrade[] }) {
           <tbody>
             {trades.length === 0 ? (
               <tr>
-                <td colSpan={12} className="px-2 py-4 text-slate-400">
+                <td colSpan={16} className="px-2 py-4 text-slate-400">
                   No trades found for current sample.
                 </td>
               </tr>
@@ -43,6 +47,10 @@ export function TradesTable({ trades }: { trades: BacktestTrade[] }) {
                   </td>
                   <td className="px-2 py-2">{trade.score_at_entry?.toFixed(2) ?? "N/A"}</td>
                   <td className="px-2 py-2">{trade.threshold_used?.toFixed(2) ?? "N/A"}</td>
+                  <td className="px-2 py-2 capitalize">{trade.strategy_mode_used}</td>
+                  <td className="px-2 py-2">{trade.trigger_type ?? "N/A"}</td>
+                  <td className="px-2 py-2">{trade.support_distance_pct?.toFixed(2) ?? "N/A"}</td>
+                  <td className="px-2 py-2">{trade.resistance_distance_pct?.toFixed(2) ?? "N/A"}</td>
                   <td className="px-2 py-2">{trade.hold_days}d</td>
                   <td className="px-2 py-2 capitalize">{trade.result.replaceAll("_", " ")}</td>
                   <td className="max-w-[280px] px-2 py-2 text-xs text-slate-300">{trade.entry_reason ?? "N/A"}</td>

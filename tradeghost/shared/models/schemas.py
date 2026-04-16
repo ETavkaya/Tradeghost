@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
 from tradeghost.shared.market import MarketCode
+
+
+class StrategyMode(str, Enum):
+    AGGRESSIVE = "aggressive"
+    BALANCED = "balanced"
+    CONSERVATIVE = "conservative"
 
 
 class CategoryScores(BaseModel):
@@ -40,6 +47,50 @@ class SwingPulseSection(BaseModel):
     take_profit_levels: list[float]
     risk_reward: float
     invalidation_note: str
+    strategy_mode_used: StrategyMode
+    score_threshold_used: float
+
+
+class RegimeDiagnostics(BaseModel):
+    regime_valid: bool
+    regime_mode_used: str
+    price_above_ema200: bool
+    ema100_above_ema200: bool
+    ema_stack_quality: str
+    regime_reason: str
+
+
+class LocationDiagnostics(BaseModel):
+    location_valid: bool
+    location_score: float
+    support_proximity_ok: bool
+    resistance_room_ok: bool
+    overextended_flag: bool
+    support_distance_pct: float
+    resistance_distance_pct: float
+    overextension_ema20_pct: float
+    overextension_ema50_pct: float
+    overextension_ema100_pct: float
+    location_reason: str
+
+
+class TriggerDiagnostics(BaseModel):
+    trigger_valid: bool
+    trigger_type: str
+    trigger_score: float
+    trigger_reason: str
+
+
+class EntryGateDiagnostics(BaseModel):
+    final_score: float
+    score_threshold_used: float
+    score_threshold_passed: bool
+    regime_valid: bool
+    location_valid: bool
+    trigger_valid: bool
+    entry_quality_score: float
+    final_entry_decision: bool
+    skip_reason: str | None = None
 
 
 class DetectedLevel(BaseModel):
@@ -104,6 +155,11 @@ class CombinedAnalysisResponse(BaseModel):
     quantedge: QuantEdgeSection
     swingpulse: SwingPulseSection
     chartmap: ChartMapSection
+    regime: RegimeDiagnostics
+    location: LocationDiagnostics
+    trigger: TriggerDiagnostics
+    entry_gate: EntryGateDiagnostics
+    strategy_mode_used: StrategyMode
     interpreted_signals: dict[str, str]
     indicator_summary: dict[str, Any]
     trade_plan_summary: str
@@ -154,6 +210,18 @@ class BacktestTrade(BaseModel):
     score_at_exit: float | None = None
     major_conditions_met: list[str] = Field(default_factory=list)
     score_exit_threshold: float | None = None
+    strategy_mode_used: StrategyMode = StrategyMode.BALANCED
+    regime_valid: bool = False
+    location_valid: bool = False
+    trigger_valid: bool = False
+    trigger_type: str | None = None
+    regime_reason: str | None = None
+    location_reason: str | None = None
+    trigger_reason: str | None = None
+    support_distance_pct: float | None = None
+    resistance_distance_pct: float | None = None
+    overextended_flag: bool = False
+    entry_quality_score: float | None = None
 
 
 class SkippedEntrySignal(BaseModel):
@@ -162,6 +230,10 @@ class SkippedEntrySignal(BaseModel):
     threshold_used: float
     reason: str
     swing_candidate: bool
+    strategy_mode_used: StrategyMode = StrategyMode.BALANCED
+    regime_valid: bool | None = None
+    location_valid: bool | None = None
+    trigger_valid: bool | None = None
 
 
 class BacktestSummary(BaseModel):
@@ -175,6 +247,7 @@ class BacktestSummary(BaseModel):
     average_hold_days: float
     expectancy: float
     score_threshold_used: float
+    strategy_mode_used: StrategyMode
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     sample_trades: list[BacktestTrade]
 
@@ -189,6 +262,7 @@ class BacktestFromAnalysisRequest(BaseModel):
     swing_candidate: bool
     trade_plan: TradePlan
     backtest_score_threshold: float | None = None
+    strategy_mode: StrategyMode | None = None
 
 
 class BacktestFromAnalysisResponse(BaseModel):
@@ -207,6 +281,7 @@ class BacktestFromAnalysisResponse(BaseModel):
     average_hold_days: float
     expectancy: float
     score_threshold_used: float
+    strategy_mode_used: StrategyMode
     warmup_bars_used: int
     visible_start: date
     visible_end: date
@@ -214,6 +289,11 @@ class BacktestFromAnalysisResponse(BaseModel):
     entries_triggered: int
     skipped_due_to_threshold: int
     skipped_due_to_setup: int
+    skipped_regime: int
+    skipped_location: int
+    skipped_trigger: int
+    skipped_overextended: int
+    skipped_resistance_room: int
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     trades_table: list[BacktestTrade]
     skipped_signals_sample: list[SkippedEntrySignal]

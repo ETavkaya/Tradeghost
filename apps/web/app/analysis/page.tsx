@@ -60,6 +60,7 @@ export default function AnalysisPage() {
             <option value="aggressive">Aggressive</option>
             <option value="balanced">Balanced</option>
             <option value="conservative">Conservative</option>
+            <option value="custom">Custom</option>
           </select>
         }
       />
@@ -116,6 +117,12 @@ export default function AnalysisPage() {
               <StatCard label="Location Valid" value={analysis.analysis_pipeline.location_valid ? "Yes" : "No"} />
               <StatCard label="Trigger Valid" value={analysis.analysis_pipeline.trigger_valid ? "Yes" : "No"} />
               <StatCard label="Final Entry" value={analysis.analysis_pipeline.final_entry_decision ? "Yes" : "No"} />
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <StatCard label="Trend State" value={analysis.setup_interpretation.trend_state} />
+              <StatCard label="Pullback State" value={analysis.setup_interpretation.pullback_state} />
+              <StatCard label="Trigger State" value={analysis.setup_interpretation.trigger_state} />
+              <StatCard label="Setup Status" value={analysis.setup_interpretation.setup_status} />
             </div>
             <div className="mt-3 rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
               Regime mode: {analysis.analysis_config.regime_filter.regime_mode}. Support max: {analysis.analysis_config.location_filter.max_support_distance_pct.toFixed(2)}%.

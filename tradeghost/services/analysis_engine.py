@@ -103,6 +103,7 @@ class AnalysisEngine:
         regime = pipeline.regime
         location = pipeline.location
         trigger = pipeline.trigger
+        setup_interpretation = pipeline.setup_interpretation
         entry_gate = pipeline.entry_gate
         swing_candidate = entry_gate.final_entry_decision and trade_plan.bias == "bullish"
 
@@ -195,6 +196,7 @@ class AnalysisEngine:
             regime=regime,
             location=location,
             trigger=trigger,
+            setup_interpretation=setup_interpretation,
             entry_gate=entry_gate,
             analysis_pipeline=pipeline.pipeline_result,
             strategy_mode_used=analysis_config.strategy_mode,

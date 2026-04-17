@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+from typing import Any
+
+from tradeghost.shared.models.schemas import LocationDiagnostics, RegimeDiagnostics, SetupInterpretation, TriggerDiagnostics
+
+
+def _safe_pct(value: float) -> float:
+    return round(float(value), 2)
+
+
+def classify_setup(
+    *,
+    snapshot: dict[str, Any],
+    regime: RegimeDiagnostics,
+    location: LocationDiagnostics,
+    trigger: TriggerDiagnostics,
+    threshold_passed: bool,
+    final_entry_decision: bool,
+) -> SetupInterpretation:
+    close = float(snapshot["close"])
+    ema20 = float(snapshot["ema_20"])
+    ema50 = float(snapshot["ema_50"])
+    ema100 = float(snapshot["ema_100"])
+    ema200 = float(snapshot["ema_200"])
+
+    if close > ema200 and ema50 > ema100 > ema200:
+        trend_state = "bullish_trend"
+    elif close > ema200 and ema100 > ema200:
+        trend_state = "weakening_trend"
+    elif close > ema100:
+        trend_state = "sideways"
+    else:
+        trend_state = "damaged_trend"
+
+    abs20 = abs(location.distance_to_ema20_pct)
+    abs50 = abs(location.distance_to_ema50_pct)
+    abs100 = abs(location.distance_to_ema100_pct)
+    if abs20 <= 1.5:
+        pullback_state = "at_ema20"
+    elif abs50 <= 1.5:
+        pullback_state = "at_ema50"
+    elif abs100 <= 1.5:
+        pullback_state = "at_ema100"
+    elif close > ema20:
+        pullback_state = "shallow_pullback"
+    elif close > ema100:
+        pullback_state = "deep_pullback"
+    else:
+        pullback_state = "no_pullback"
+
+    room = location.resistance_room_pct
+    if room >= 4.0:
+        resistance_test_state = "clear_room"
+    elif room >= 2.0:
+        resistance_test_state = "approaching_resistance"
+    else:
+        resistance_test_state = "at_resistance"
+
+    if final_entry_decision:
+        setup_status = "actionable"
+    elif threshold_passed and regime.regime_valid and location.location_valid:
+        setup_status = "watchlist"
+    elif regime.regime_valid and not location.overextended_flag and resistance_test_state != "at_resistance":
+        setup_status = "watchlist"
+    else:
+        setup_status = "avoid"
+
+    tags: list[str] = []
+    if close > ema20:
+        tags.append("above_ema20")
+    if close > ema50:
+        tags.append("above_ema50")
+    if pullback_state in {"at_ema20", "at_ema50", "at_ema100"}:
+        tags.append(f"{pullback_state}_pullback")
+    if location.support_proximity_ok:
+        tags.append("near_support")
+    if not location.resistance_room_ok:
+        tags.append("limited_resistance_room")
+    if location.extension_state in {"stretched", "overextended"}:
+        tags.append(f"{location.extension_state}_from_ema20")
+    if trigger.trigger_type != "none":
+        tags.append(trigger.trigger_type)
+    if trigger.trigger_state != "confirmed":
+        tags.append("breakout_not_confirmed")
+
+    return SetupInterpretation(
+        trend_state=trend_state,
+        pullback_state=pullback_state,
+        extension_state=location.extension_state,
+        resistance_test_state=resistance_test_state,
+        trigger_state=trigger.trigger_state,
+        trigger_type=trigger.trigger_type,
+        setup_status=setup_status,
+        reasoning_tags=tags,
+    )

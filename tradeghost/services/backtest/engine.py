@@ -50,6 +50,10 @@ class _Position:
     resistance_distance_pct: float
     overextended_flag: bool
     entry_quality_score: float
+    trend_state: str
+    setup_status: str
+    trigger_state: str
+    reasoning_tags: list[str]
 
 
 @dataclass
@@ -64,6 +68,9 @@ class _SimulationResult:
     skipped_trigger: int
     skipped_overextended: int
     skipped_resistance_room: int
+    actionable_setups: int
+    watchlist_setups: int
+    avoid_setups: int
     skipped_signals_sample: list[SkippedEntrySignal]
     warmup_bars_used: int
 
@@ -97,6 +104,41 @@ class BacktestEngine:
             f"Overextended: {'yes' if location.overextended_flag else 'no'}",
         ]
 
+    @staticmethod
+    def _build_reason_detail(
+        *,
+        reason: str,
+        final_score: float,
+        threshold: float,
+        location,
+        trigger,
+        min_resistance_room: float,
+        min_trigger_score: float,
+    ) -> str:
+        if reason == "score_threshold":
+            return f"final score {final_score:.2f} < threshold {threshold:.2f}"
+        if reason == "regime_filter":
+            return "EMA200 regime condition not met for active mode"
+        if reason == "overextended_filter":
+            return (
+                f"overextended: EMA20 {location.overextension_ema20_pct:.2f}% / "
+                f"EMA50 {location.overextension_ema50_pct:.2f}% / "
+                f"EMA100 {location.overextension_ema100_pct:.2f}% above caps"
+            )
+        if reason == "resistance_room_filter":
+            return (
+                f"resistance room {location.resistance_room_pct:.2f}% < "
+                f"required {min_resistance_room:.2f}%"
+            )
+        if reason == "location_filter":
+            return (
+                f"support distance {location.distance_to_support_pct:.2f}% and room "
+                f"{location.resistance_room_pct:.2f}% failed location constraints"
+            )
+        if reason == "trigger_filter":
+            return f"trigger score {trigger.trigger_score:.2f} < minimum {min_trigger_score:.2f}"
+        return "did not pass entry gate"
+
     def _simulate(
         self,
         daily: pd.DataFrame,
@@ -122,6 +164,9 @@ class BacktestEngine:
         skipped_trigger = 0
         skipped_overextended = 0
         skipped_resistance_room = 0
+        actionable_setups = 0
+        watchlist_setups = 0
+        avoid_setups = 0
         skipped_signals_sample: list[SkippedEntrySignal] = []
         next_trade_id = 1
 
@@ -158,7 +203,15 @@ class BacktestEngine:
                 regime = pipeline.regime
                 location = pipeline.location
                 trigger = pipeline.trigger
+                setup = pipeline.setup_interpretation
                 entry_gate = pipeline.entry_gate
+
+                if setup.setup_status == "actionable":
+                    actionable_setups += 1
+                elif setup.setup_status == "watchlist":
+                    watchlist_setups += 1
+                else:
+                    avoid_setups += 1
 
                 if not entry_gate.final_entry_decision:
                     reason = entry_gate.skip_reason or "setup_filter"
@@ -183,12 +236,28 @@ class BacktestEngine:
                                 date=current_date.date(),
                                 final_score=round(final_score, 2),
                                 threshold_used=round(config.score_threshold, 2),
+                                setup_status=setup.setup_status,
+                                first_failed_gate=reason,
                                 reason=reason,
+                                reason_detail=self._build_reason_detail(
+                                    reason=reason,
+                                    final_score=final_score,
+                                    threshold=config.score_threshold,
+                                    location=location,
+                                    trigger=trigger,
+                                    min_resistance_room=config.location_filter.min_resistance_room_pct,
+                                    min_trigger_score=config.trigger_filter.min_trigger_score,
+                                ),
                                 swing_candidate=False,
                                 strategy_mode_used=config.strategy_mode,
                                 regime_valid=regime.regime_valid,
                                 location_valid=location.location_valid,
                                 trigger_valid=trigger.trigger_valid,
+                                trigger_state=trigger.trigger_state,
+                                trigger_score=trigger.trigger_score,
+                                trend_state=setup.trend_state,
+                                support_distance_pct=location.distance_to_support_pct,
+                                resistance_room_pct=location.resistance_room_pct,
                             )
                         )
                     continue
@@ -222,6 +291,10 @@ class BacktestEngine:
                     resistance_distance_pct=location.resistance_distance_pct,
                     overextended_flag=location.overextended_flag,
                     entry_quality_score=entry_gate.entry_quality_score,
+                    trend_state=setup.trend_state,
+                    setup_status=setup.setup_status,
+                    trigger_state=trigger.trigger_state,
+                    reasoning_tags=setup.reasoning_tags,
                 )
                 entries_triggered += 1
                 next_trade_id += 1
@@ -290,6 +363,10 @@ class BacktestEngine:
                     resistance_distance_pct=position.resistance_distance_pct,
                     overextended_flag=position.overextended_flag,
                     entry_quality_score=position.entry_quality_score,
+                    trend_state=position.trend_state,
+                    setup_status=position.setup_status,
+                    trigger_state=position.trigger_state,
+                    reasoning_tags=position.reasoning_tags,
                 )
             )
             position = None
@@ -328,6 +405,10 @@ class BacktestEngine:
                     resistance_distance_pct=position.resistance_distance_pct,
                     overextended_flag=position.overextended_flag,
                     entry_quality_score=position.entry_quality_score,
+                    trend_state=position.trend_state,
+                    setup_status=position.setup_status,
+                    trigger_state=position.trigger_state,
+                    reasoning_tags=position.reasoning_tags,
                 )
             )
 
@@ -342,6 +423,9 @@ class BacktestEngine:
             skipped_trigger=skipped_trigger,
             skipped_overextended=skipped_overextended,
             skipped_resistance_room=skipped_resistance_room,
+            actionable_setups=actionable_setups,
+            watchlist_setups=watchlist_setups,
+            avoid_setups=avoid_setups,
             skipped_signals_sample=skipped_signals_sample,
             warmup_bars_used=warmup,
         )
@@ -386,12 +470,13 @@ class BacktestEngine:
         return (
             f"Trade #{trade.trade_id}<br>"
             f"Mode: {trade.strategy_mode_used.value}<br>"
+            f"Setup: {trade.setup_status or 'n/a'} ({trade.trend_state or 'n/a'})<br>"
             f"Entry: {trade.entry_date} @ ${trade.entry_price:.2f}<br>"
             f"Exit: {trade.exit_date} @ ${trade.exit_price:.2f}<br>"
             f"Return: {trade.return_pct:.2f}%<br>"
             f"Score: {score_text}<br>"
             f"Threshold: {threshold_text}<br>"
-            f"Trigger: {trade.trigger_type or 'n/a'}<br>"
+            f"Trigger: {trade.trigger_type or 'n/a'} ({trade.trigger_state or 'n/a'})<br>"
             f"Support dist: {trade.support_distance_pct if trade.support_distance_pct is not None else 'n/a'}%<br>"
             f"Resistance room: {trade.resistance_distance_pct if trade.resistance_distance_pct is not None else 'n/a'}%<br>"
             f"Reason: {reason or 'n/a'}"
@@ -554,8 +639,12 @@ class BacktestEngine:
             skipped_trigger=sim.skipped_trigger,
             skipped_overextended=sim.skipped_overextended,
             skipped_resistance_room=sim.skipped_resistance_room,
+            actionable_setups=sim.actionable_setups,
+            watchlist_setups=sim.watchlist_setups,
+            avoid_setups=sim.avoid_setups,
             trades_table=sim.trades,
             skipped_signals_sample=sim.skipped_signals_sample,
+            decision_log_sample=sim.skipped_signals_sample,
             chart=chart,
             markers=markers,
         )

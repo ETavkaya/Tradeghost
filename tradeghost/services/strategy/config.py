@@ -55,6 +55,17 @@ MODE_PRESETS: dict[StrategyMode, dict[str, Any]] = {
         "max_overextension_ema100_pct": 8.0,
         "min_trigger_score": 75.0,
     },
+    StrategyMode.CUSTOM: {
+        # Custom inherits balanced defaults unless user overrides threshold/warmup.
+        "score_threshold": 60.0,
+        "regime_mode": "medium",
+        "max_support_distance_pct": 5.0,
+        "min_resistance_room_pct": 2.5,
+        "max_overextension_ema20_pct": 5.0,
+        "max_overextension_ema50_pct": 8.0,
+        "max_overextension_ema100_pct": 11.0,
+        "min_trigger_score": 65.0,
+    },
 }
 
 
@@ -66,6 +77,8 @@ def normalize_strategy_mode(mode: StrategyMode | str | None) -> StrategyMode:
         return StrategyMode.AGGRESSIVE
     if raw == StrategyMode.CONSERVATIVE.value:
         return StrategyMode.CONSERVATIVE
+    if raw == StrategyMode.CUSTOM.value:
+        return StrategyMode.CUSTOM
     return StrategyMode.BALANCED
 
 
@@ -104,4 +117,3 @@ def build_analysis_config(
         ),
         trigger_filter=TriggerFilterSettings(min_trigger_score=float(preset["min_trigger_score"])),
     )
-

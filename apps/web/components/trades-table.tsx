@@ -18,6 +18,8 @@ export function TradesTable({ trades }: { trades: BacktestTrade[] }) {
               <th className="px-2 py-2">Score@Entry</th>
               <th className="px-2 py-2">Threshold</th>
               <th className="px-2 py-2">Mode</th>
+              <th className="px-2 py-2">Setup</th>
+              <th className="px-2 py-2">Trend</th>
               <th className="px-2 py-2">Trigger</th>
               <th className="px-2 py-2">Support%</th>
               <th className="px-2 py-2">Room%</th>
@@ -30,9 +32,9 @@ export function TradesTable({ trades }: { trades: BacktestTrade[] }) {
           <tbody>
             {trades.length === 0 ? (
               <tr>
-                <td colSpan={16} className="px-2 py-4 text-slate-400">
-                  No trades found for current sample.
-                </td>
+              <td colSpan={18} className="px-2 py-4 text-slate-400">
+                No trades found for current sample.
+              </td>
               </tr>
             ) : (
               trades.map((trade, index) => (
@@ -48,7 +50,9 @@ export function TradesTable({ trades }: { trades: BacktestTrade[] }) {
                   <td className="px-2 py-2">{trade.score_at_entry?.toFixed(2) ?? "N/A"}</td>
                   <td className="px-2 py-2">{trade.threshold_used?.toFixed(2) ?? "N/A"}</td>
                   <td className="px-2 py-2 capitalize">{trade.strategy_mode_used}</td>
-                  <td className="px-2 py-2">{trade.trigger_type ?? "N/A"}</td>
+                  <td className="px-2 py-2 capitalize">{trade.setup_status?.replaceAll("_", " ") ?? "N/A"}</td>
+                  <td className="px-2 py-2">{trade.trend_state ?? "N/A"}</td>
+                  <td className="px-2 py-2">{trade.trigger_type ?? "N/A"} ({trade.trigger_state ?? "n/a"})</td>
                   <td className="px-2 py-2">{trade.support_distance_pct?.toFixed(2) ?? "N/A"}</td>
                   <td className="px-2 py-2">{trade.resistance_distance_pct?.toFixed(2) ?? "N/A"}</td>
                   <td className="px-2 py-2">{trade.hold_days}d</td>

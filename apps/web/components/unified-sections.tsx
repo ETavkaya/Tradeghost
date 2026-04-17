@@ -1,4 +1,4 @@
-import { CombinedAnalysisResponse } from "@/lib/types";
+﻿import { CombinedAnalysisResponse } from "@/lib/types";
 import { fmtNumber } from "@/lib/format";
 import { Panel, Pill, SectionTitle } from "@/components/ui";
 import { ScoreBars } from "@/components/score-bars";
@@ -37,7 +37,9 @@ export function SwingPulseSectionCard({ analysis }: { analysis: CombinedAnalysis
   const regime = analysis.regime;
   const location = analysis.location;
   const trigger = analysis.trigger;
+  const setup = analysis.setup_interpretation;
   const gate = analysis.entry_gate;
+
   return (
     <Panel>
       <SectionTitle title="SwingPulse" subtitle="Setup and trade levels" />
@@ -75,6 +77,7 @@ export function SwingPulseSectionCard({ analysis }: { analysis: CombinedAnalysis
           <p className="mt-1 text-sm text-slate-200">{swing.invalidation_note}</p>
         </Panel>
       </div>
+
       <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <Panel className="bg-panelSoft">
           <p className="text-xs text-slate-400">Regime</p>
@@ -89,7 +92,7 @@ export function SwingPulseSectionCard({ analysis }: { analysis: CombinedAnalysis
             {location.location_valid ? "Valid" : "Invalid"} ({fmtNumber(location.location_score, 1)})
           </p>
           <p className="mt-1 text-xs text-slate-300">
-            Support {fmtNumber(location.support_distance_pct, 2)}% • Resistance room {fmtNumber(location.resistance_distance_pct, 2)}%
+            Support {fmtNumber(location.support_distance_pct, 2)}% | Resistance room {fmtNumber(location.resistance_distance_pct, 2)}%
           </p>
         </Panel>
         <Panel className="bg-panelSoft">
@@ -97,19 +100,42 @@ export function SwingPulseSectionCard({ analysis }: { analysis: CombinedAnalysis
           <p className={`mt-1 text-sm font-semibold ${trigger.trigger_valid ? "text-green" : "text-red"}`}>
             {trigger.trigger_valid ? "Valid" : "Invalid"} ({trigger.trigger_type})
           </p>
-          <p className="mt-1 text-xs text-slate-300">Score {fmtNumber(trigger.trigger_score, 1)} • {trigger.trigger_reason}</p>
+          <p className="mt-1 text-xs text-slate-300">State {trigger.trigger_state} | Score {fmtNumber(trigger.trigger_score, 1)}</p>
+          <p className="mt-1 text-xs text-slate-300">{trigger.trigger_reason}</p>
         </Panel>
         <Panel className="bg-panelSoft">
           <p className="text-xs text-slate-400">Entry Gate</p>
           <p className={`mt-1 text-sm font-semibold ${gate.final_entry_decision ? "text-green" : "text-red"}`}>
-            {gate.final_entry_decision ? "Pass" : "Fail"} • {analysis.strategy_mode_used}
+            {gate.final_entry_decision ? "Pass" : "Fail"} | {analysis.strategy_mode_used}
           </p>
           <p className="mt-1 text-xs text-slate-300">
-            Score {fmtNumber(gate.final_score, 1)}/{fmtNumber(gate.score_threshold_used, 1)} • Quality {fmtNumber(gate.entry_quality_score, 1)}
+            Score {fmtNumber(gate.final_score, 1)}/{fmtNumber(gate.score_threshold_used, 1)} | Quality {fmtNumber(gate.entry_quality_score, 1)}
           </p>
-          {!gate.final_entry_decision && gate.skip_reason ? (
-            <p className="mt-1 text-xs text-red">Skip reason: {gate.skip_reason.replaceAll("_", " ")}</p>
-          ) : null}
+          {!gate.final_entry_decision && gate.skip_reason ? <p className="mt-1 text-xs text-red">Skip reason: {gate.skip_reason.replaceAll("_", " ")}</p> : null}
+        </Panel>
+      </div>
+
+      <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <Panel className="bg-panelSoft">
+          <p className="text-xs text-slate-400">Setup Status</p>
+          <p className="mt-1 text-sm font-semibold capitalize text-cyan">{setup.setup_status}</p>
+          <p className="mt-1 text-xs text-slate-300">Trend {setup.trend_state} | Pullback {setup.pullback_state}</p>
+        </Panel>
+        <Panel className="bg-panelSoft">
+          <p className="text-xs text-slate-400">Location Detail</p>
+          <p className="mt-1 text-xs text-slate-300">
+            Dist EMA20/50/100: {fmtNumber(location.distance_to_ema20_pct, 2)}% / {fmtNumber(location.distance_to_ema50_pct, 2)}% / {fmtNumber(location.distance_to_ema100_pct, 2)}%
+          </p>
+          <p className="mt-1 text-xs text-slate-300">Pullback {location.pullback_depth} | Extension {location.extension_state}</p>
+        </Panel>
+        <Panel className="bg-panelSoft">
+          <p className="text-xs text-slate-400">Resistance Test</p>
+          <p className="mt-1 text-xs text-slate-300">State {setup.resistance_test_state}</p>
+          <p className="mt-1 text-xs text-slate-300">Room {fmtNumber(location.resistance_room_pct, 2)}% | Support quality {fmtNumber(location.support_quality_score, 1)}</p>
+        </Panel>
+        <Panel className="bg-panelSoft">
+          <p className="text-xs text-slate-400">Reasoning Tags</p>
+          <p className="mt-1 text-xs text-slate-300">{setup.reasoning_tags.length > 0 ? setup.reasoning_tags.join(", ") : "none"}</p>
         </Panel>
       </div>
     </Panel>

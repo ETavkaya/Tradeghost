@@ -12,6 +12,7 @@ class StrategyMode(str, Enum):
     AGGRESSIVE = "aggressive"
     BALANCED = "balanced"
     CONSERVATIVE = "conservative"
+    CUSTOM = "custom"
 
 
 class RegimeFilterSettings(BaseModel):
@@ -99,14 +100,34 @@ class LocationDiagnostics(BaseModel):
     overextension_ema20_pct: float
     overextension_ema50_pct: float
     overextension_ema100_pct: float
+    distance_to_ema20_pct: float
+    distance_to_ema50_pct: float
+    distance_to_ema100_pct: float
+    distance_to_support_pct: float
+    resistance_room_pct: float
+    support_quality_score: float
+    pullback_depth: str
+    extension_state: str
     location_reason: str
 
 
 class TriggerDiagnostics(BaseModel):
     trigger_valid: bool
+    trigger_state: str
     trigger_type: str
     trigger_score: float
     trigger_reason: str
+
+
+class SetupInterpretation(BaseModel):
+    trend_state: str
+    pullback_state: str
+    extension_state: str
+    resistance_test_state: str
+    trigger_state: str
+    trigger_type: str
+    setup_status: str
+    reasoning_tags: list[str] = Field(default_factory=list)
 
 
 class EntryGateDiagnostics(BaseModel):
@@ -129,6 +150,7 @@ class AnalysisPipelineResult(BaseModel):
     location_valid: bool
     trigger_valid: bool
     final_entry_decision: bool
+    setup_status: str
     diagnostics: dict[str, Any]
 
 
@@ -198,6 +220,7 @@ class CombinedAnalysisResponse(BaseModel):
     regime: RegimeDiagnostics
     location: LocationDiagnostics
     trigger: TriggerDiagnostics
+    setup_interpretation: SetupInterpretation
     entry_gate: EntryGateDiagnostics
     analysis_pipeline: AnalysisPipelineResult
     strategy_mode_used: StrategyMode
@@ -263,18 +286,30 @@ class BacktestTrade(BaseModel):
     resistance_distance_pct: float | None = None
     overextended_flag: bool = False
     entry_quality_score: float | None = None
+    trend_state: str | None = None
+    setup_status: str | None = None
+    trigger_state: str | None = None
+    reasoning_tags: list[str] = Field(default_factory=list)
 
 
 class SkippedEntrySignal(BaseModel):
     date: date
     final_score: float
     threshold_used: float
+    setup_status: str = "watchlist"
+    first_failed_gate: str | None = None
     reason: str
+    reason_detail: str | None = None
     swing_candidate: bool
     strategy_mode_used: StrategyMode = StrategyMode.BALANCED
     regime_valid: bool | None = None
     location_valid: bool | None = None
     trigger_valid: bool | None = None
+    trigger_state: str | None = None
+    trigger_score: float | None = None
+    trend_state: str | None = None
+    support_distance_pct: float | None = None
+    resistance_room_pct: float | None = None
 
 
 class BacktestSummary(BaseModel):
@@ -338,8 +373,12 @@ class BacktestFromAnalysisResponse(BaseModel):
     skipped_trigger: int
     skipped_overextended: int
     skipped_resistance_room: int
+    actionable_setups: int
+    watchlist_setups: int
+    avoid_setups: int
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     trades_table: list[BacktestTrade]
     skipped_signals_sample: list[SkippedEntrySignal]
+    decision_log_sample: list[SkippedEntrySignal]
     chart: AnalysisChart
     markers: list[BacktestMarker]

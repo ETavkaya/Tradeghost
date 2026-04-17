@@ -1,6 +1,6 @@
 export type AnalysisWindow = "5d" | "1m" | "3m" | "6m" | "1y" | "5y" | "10y";
 export type MarketCode = "us" | "bist";
-export type StrategyMode = "aggressive" | "balanced" | "conservative";
+export type StrategyMode = "aggressive" | "balanced" | "conservative" | "custom";
 
 export type RegimeFilterSettings = {
   regime_mode: string;
@@ -114,14 +114,34 @@ export type LocationDiagnostics = {
   overextension_ema20_pct: number;
   overextension_ema50_pct: number;
   overextension_ema100_pct: number;
+  distance_to_ema20_pct: number;
+  distance_to_ema50_pct: number;
+  distance_to_ema100_pct: number;
+  distance_to_support_pct: number;
+  resistance_room_pct: number;
+  support_quality_score: number;
+  pullback_depth: string;
+  extension_state: string;
   location_reason: string;
 };
 
 export type TriggerDiagnostics = {
   trigger_valid: boolean;
+  trigger_state: string;
   trigger_type: string;
   trigger_score: number;
   trigger_reason: string;
+};
+
+export type SetupInterpretation = {
+  trend_state: string;
+  pullback_state: string;
+  extension_state: string;
+  resistance_test_state: string;
+  trigger_state: string;
+  trigger_type: string;
+  setup_status: string;
+  reasoning_tags: string[];
 };
 
 export type EntryGateDiagnostics = {
@@ -144,6 +164,7 @@ export type AnalysisPipelineResult = {
   location_valid: boolean;
   trigger_valid: boolean;
   final_entry_decision: boolean;
+  setup_status: string;
   diagnostics: Record<string, unknown>;
 };
 
@@ -177,6 +198,7 @@ export type CombinedAnalysisResponse = {
   regime: RegimeDiagnostics;
   location: LocationDiagnostics;
   trigger: TriggerDiagnostics;
+  setup_interpretation: SetupInterpretation;
   entry_gate: EntryGateDiagnostics;
   analysis_pipeline: AnalysisPipelineResult;
   strategy_mode_used: StrategyMode;
@@ -242,6 +264,10 @@ export type BacktestTrade = {
   resistance_distance_pct: number | null;
   overextended_flag: boolean;
   entry_quality_score: number | null;
+  trend_state: string | null;
+  setup_status: string | null;
+  trigger_state: string | null;
+  reasoning_tags: string[];
 };
 
 export type BacktestMarker = {
@@ -257,12 +283,20 @@ export type SkippedEntrySignal = {
   date: string;
   final_score: number;
   threshold_used: number;
+  setup_status: string;
+  first_failed_gate: string | null;
   reason: string;
+  reason_detail: string | null;
   swing_candidate: boolean;
   strategy_mode_used: StrategyMode;
   regime_valid: boolean | null;
   location_valid: boolean | null;
   trigger_valid: boolean | null;
+  trigger_state: string | null;
+  trigger_score: number | null;
+  trend_state: string | null;
+  support_distance_pct: number | null;
+  resistance_room_pct: number | null;
 };
 
 export type BacktestResponse = {
@@ -326,9 +360,13 @@ export type BacktestFromAnalysisResponse = {
   skipped_trigger: number;
   skipped_overextended: number;
   skipped_resistance_room: number;
+  actionable_setups: number;
+  watchlist_setups: number;
+  avoid_setups: number;
   generated_at: string;
   trades_table: BacktestTrade[];
   skipped_signals_sample: SkippedEntrySignal[];
+  decision_log_sample: SkippedEntrySignal[];
   chart: AnalysisChart;
   markers: BacktestMarker[];
 };

@@ -84,7 +84,18 @@ Pipeline result is returned as structured diagnostics (`analysis_pipeline`) with
 - `location_valid`
 - `trigger_valid`
 - `final_entry_decision`
+- `setup_status`
 - `diagnostics`
+
+Analysis also returns a deterministic `setup_interpretation` block:
+- `trend_state`
+- `pullback_state`
+- `extension_state`
+- `resistance_test_state`
+- `trigger_state`
+- `trigger_type`
+- `setup_status` (`actionable`, `watchlist`, `avoid`)
+- `reasoning_tags`
 
 ## Strategy Modes (Explicit)
 
@@ -108,6 +119,9 @@ Strategy mode presets are explicit and inspectable in backend config:
   - support max distance: `3.5%`
   - min resistance room: `3.5%`
   - trigger min score: `75`
+- `custom`
+  - inherits `balanced` defaults initially
+  - can be extended with explicit user overrides
 
 UI now displays effective config values (mode, threshold, warmup, filter settings) in analysis/backtest.
 
@@ -149,6 +163,16 @@ Default threshold:
 
 - `Analysis`
 - `Backtest` (enabled after a successful analysis context is created)
+- `Logic` (pipeline + mode + setup-status transparency page)
+
+## Decision Log / Backtest Diagnostics
+
+Backtest now exposes both trade outcomes and setup decisions:
+- `entries_considered`, `entries_triggered`
+- skip counters by gate (`threshold`, `regime`, `location`, `trigger`)
+- focused counters (`skipped_overextended`, `skipped_resistance_room`)
+- setup-status counters (`actionable_setups`, `watchlist_setups`, `avoid_setups`)
+- sampled decision log rows with numeric reason details
 
 ## Market Support (Phase 1)
 

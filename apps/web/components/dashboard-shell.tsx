@@ -8,7 +8,8 @@ import { useAnalysisContext } from "@/components/analysis-context";
 
 const tabs = [
   { label: "Analysis", href: "/analysis" },
-  { label: "Backtest", href: "/backtest" }
+  { label: "Backtest", href: "/backtest" },
+  { label: "Logic", href: "/logic" }
 ];
 
 export function DashboardShell({ children }: { children: ReactNode }) {

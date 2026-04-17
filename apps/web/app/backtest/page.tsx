@@ -127,8 +127,59 @@ export default function BacktestPage() {
               <StatCard label="Skipped: Setup" value={`${result.skipped_due_to_setup}`} />
               <StatCard label="Visible" value={`${result.visible_start} > ${result.visible_end}`} />
             </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <StatCard label="Actionable Setups" value={`${result.actionable_setups}`} />
+              <StatCard label="Watchlist Setups" value={`${result.watchlist_setups}`} />
+              <StatCard label="Avoid Setups" value={`${result.avoid_setups}`} />
+              <StatCard label="Pipeline Setup Status" value={analysis?.analysis_pipeline.setup_status ?? "n/a"} />
+            </div>
           </Panel>
           <TradesTable trades={result.trades_table} />
+          <Panel>
+            <SectionTitle title="Decision Log (Sample)" subtitle="Skipped setups with numeric reasons" />
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="border-b border-stroke text-left text-slate-400">
+                    <th className="px-2 py-2">Date</th>
+                    <th className="px-2 py-2">Score</th>
+                    <th className="px-2 py-2">Mode</th>
+                    <th className="px-2 py-2">Threshold</th>
+                    <th className="px-2 py-2">Setup</th>
+                    <th className="px-2 py-2">Failed Gate</th>
+                    <th className="px-2 py-2">Reason</th>
+                    <th className="px-2 py-2">Support%</th>
+                    <th className="px-2 py-2">Room%</th>
+                    <th className="px-2 py-2">Trigger</th>
+                    <th className="px-2 py-2">Trend</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.decision_log_sample.length === 0 ? (
+                    <tr>
+                      <td className="px-2 py-3 text-slate-400" colSpan={11}>No skipped setups sampled.</td>
+                    </tr>
+                  ) : (
+                    result.decision_log_sample.map((row, idx) => (
+                      <tr key={`${row.date}-${idx}`} className="border-b border-stroke/50">
+                        <td className="px-2 py-2">{row.date}</td>
+                        <td className="px-2 py-2">{row.final_score.toFixed(2)}</td>
+                        <td className="px-2 py-2 capitalize">{row.strategy_mode_used}</td>
+                        <td className="px-2 py-2">{row.threshold_used.toFixed(2)}</td>
+                        <td className="px-2 py-2 capitalize">{row.setup_status.replaceAll("_", " ")}</td>
+                        <td className="px-2 py-2">{row.first_failed_gate ?? "n/a"}</td>
+                        <td className="max-w-[360px] px-2 py-2 text-xs text-slate-300">{row.reason_detail ?? row.reason}</td>
+                        <td className="px-2 py-2">{row.support_distance_pct?.toFixed(2) ?? "n/a"}</td>
+                        <td className="px-2 py-2">{row.resistance_room_pct?.toFixed(2) ?? "n/a"}</td>
+                        <td className="px-2 py-2">{row.trigger_state ?? "n/a"} ({row.trigger_score?.toFixed(1) ?? "n/a"})</td>
+                        <td className="px-2 py-2">{row.trend_state ?? "n/a"}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
         </>
       ) : null}
     </main>

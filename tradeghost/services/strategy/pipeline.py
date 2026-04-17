@@ -10,7 +10,16 @@ from tradeghost.services.interpretation.rules import interpret_snapshot
 from tradeghost.services.scoring.engine import score_analysis
 from tradeghost.services.strategy.config import ANALYSIS_PIPELINE_ORDER
 from tradeghost.services.strategy.filters import evaluate_entry_gate, evaluate_location, evaluate_regime, evaluate_trigger
-from tradeghost.shared.models.schemas import AnalysisConfig, AnalysisPipelineResult, EntryGateDiagnostics, LocationDiagnostics, RegimeDiagnostics, TriggerDiagnostics
+from tradeghost.services.strategy.setup_interpretation import classify_setup
+from tradeghost.shared.models.schemas import (
+    AnalysisConfig,
+    AnalysisPipelineResult,
+    EntryGateDiagnostics,
+    LocationDiagnostics,
+    RegimeDiagnostics,
+    SetupInterpretation,
+    TriggerDiagnostics,
+)
 
 
 @dataclass
@@ -23,6 +32,7 @@ class StrategyPipelineState:
     regime: RegimeDiagnostics
     location: LocationDiagnostics
     trigger: TriggerDiagnostics
+    setup_interpretation: SetupInterpretation
     entry_gate: EntryGateDiagnostics
     pipeline_result: AnalysisPipelineResult
 
@@ -57,6 +67,14 @@ def run_analysis_pipeline(
         location=location,
         trigger=trigger,
     )
+    setup_interpretation = classify_setup(
+        snapshot=snapshot,
+        regime=regime,
+        location=location,
+        trigger=trigger,
+        threshold_passed=threshold_passed,
+        final_entry_decision=entry_gate.final_entry_decision,
+    )
 
     pipeline_result = AnalysisPipelineResult(
         pipeline_order=list(ANALYSIS_PIPELINE_ORDER),
@@ -66,11 +84,13 @@ def run_analysis_pipeline(
         location_valid=location.location_valid,
         trigger_valid=trigger.trigger_valid,
         final_entry_decision=entry_gate.final_entry_decision,
+        setup_status=setup_interpretation.setup_status,
         diagnostics={
             "skip_reason": entry_gate.skip_reason,
             "regime_reason": regime.regime_reason,
             "location_reason": location.location_reason,
             "trigger_reason": trigger.trigger_reason,
+            "reasoning_tags": setup_interpretation.reasoning_tags,
         },
     )
 
@@ -83,7 +103,7 @@ def run_analysis_pipeline(
         regime=regime,
         location=location,
         trigger=trigger,
+        setup_interpretation=setup_interpretation,
         entry_gate=entry_gate,
         pipeline_result=pipeline_result,
     )
-

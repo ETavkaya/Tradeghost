@@ -66,6 +66,27 @@ def evaluate_location(snapshot: dict[str, Any], config: AnalysisConfig) -> Locat
     )
     location_valid = support_ok and resistance_ok and not overextended
 
+    extension_state = "normal"
+    if overextended:
+        extension_state = "overextended"
+    elif ext20 > (settings.max_overextension_ema20_pct * 0.7):
+        extension_state = "stretched"
+
+    if abs(ext20) <= 1.5:
+        pullback_depth = "at_ema20"
+    elif abs(ext50) <= 1.5:
+        pullback_depth = "at_ema50"
+    elif abs(ext100) <= 1.5:
+        pullback_depth = "at_ema100"
+    elif close > ema20:
+        pullback_depth = "shallow_pullback"
+    elif close > ema100:
+        pullback_depth = "deep_pullback"
+    else:
+        pullback_depth = "no_pullback"
+
+    support_quality_score = max(0.0, min(100.0, 100.0 - (support_distance_pct * 12.0)))
+
     score = 100.0
     score -= max(0.0, support_distance_pct - settings.max_support_distance_pct) * 8.0
     score -= max(0.0, settings.min_resistance_room_pct - resistance_distance_pct) * 12.0
@@ -88,6 +109,14 @@ def evaluate_location(snapshot: dict[str, Any], config: AnalysisConfig) -> Locat
         overextension_ema20_pct=round(ext20, 2),
         overextension_ema50_pct=round(ext50, 2),
         overextension_ema100_pct=round(ext100, 2),
+        distance_to_ema20_pct=round(ext20, 2),
+        distance_to_ema50_pct=round(ext50, 2),
+        distance_to_ema100_pct=round(ext100, 2),
+        distance_to_support_pct=round(support_distance_pct, 2),
+        resistance_room_pct=round(resistance_distance_pct, 2),
+        support_quality_score=round(support_quality_score, 2),
+        pullback_depth=pullback_depth,
+        extension_state=extension_state,
         location_reason="; ".join(reasons),
     )
 
@@ -102,31 +131,38 @@ def evaluate_trigger(snapshot: dict[str, Any], config: AnalysisConfig, location:
 
     trigger_type = "none"
     trigger_score = 35.0
-    reason = "No high-quality trigger confirmation."
+    trigger_state = "absent"
+    reason = "No trigger confirmation yet."
 
     if pattern == "bullish_engulfing":
-        trigger_type = "bullish_rejection"
+        trigger_type = "bullish_engulfing"
         trigger_score = 84.0
-        reason = "Bullish engulfing confirms rejection and demand response."
+        trigger_state = "confirmed"
+        reason = "Bullish reversal candle near support context."
     elif breakout_candidate and volume_ratio >= 1.2:
-        trigger_type = "breakout_continuation"
+        trigger_type = "breakout_confirmation"
         trigger_score = 76.0
-        reason = "Breakout candidate with supportive volume ratio."
+        trigger_state = "confirmed"
+        reason = "Breakout confirmation with supportive volume ratio."
     elif close > ema20 and close > ema50 and location.support_proximity_ok:
         trigger_type = "pullback_continuation"
         trigger_score = 67.0
-        reason = "Continuation trigger after pullback while trend MAs hold."
+        trigger_state = "pending"
+        reason = "Bullish continuation after pullback while EMA support holds."
     elif pattern == "doji" and location.support_proximity_ok and close > ema20:
-        trigger_type = "support_reaction"
+        trigger_type = "reclaim_after_shakeout"
         trigger_score = 62.0
-        reason = "Doji near support with short-term trend support."
+        trigger_state = "pending"
+        reason = "Reclaim above EMA20 after shakeout-like candle."
 
     trigger_valid = trigger_score >= config.trigger_filter.min_trigger_score
     if not trigger_valid:
+        trigger_state = "failed" if trigger_type != "none" else "absent"
         reason = f"{reason} Trigger score {trigger_score:.1f} below {config.trigger_filter.min_trigger_score:.1f}."
 
     return TriggerDiagnostics(
         trigger_valid=trigger_valid,
+        trigger_state=trigger_state,
         trigger_type=trigger_type,
         trigger_score=round(trigger_score, 2),
         trigger_reason=reason,

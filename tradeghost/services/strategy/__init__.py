@@ -6,6 +6,7 @@ from tradeghost.services.strategy.filters import (
     evaluate_trigger,
 )
 from tradeghost.services.strategy.pipeline import run_analysis_pipeline
+from tradeghost.services.strategy.setup_interpretation import classify_setup
 
 __all__ = [
     "ANALYSIS_PIPELINE_ORDER",
@@ -17,4 +18,5 @@ __all__ = [
     "evaluate_trigger",
     "evaluate_entry_gate",
     "run_analysis_pipeline",
+    "classify_setup",
 ]

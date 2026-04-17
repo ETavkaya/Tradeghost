@@ -6,10 +6,31 @@ import { UnifiedAnalysisChart } from "@/components/unified-analysis-chart";
 import { Panel, SectionTitle, StatCard } from "@/components/ui";
 import { TradesTable } from "@/components/trades-table";
 import { api } from "@/lib/api";
-import { AnalysisConfig, BacktestFromAnalysisResponse, BacktestHistoryWindow, BacktestMarker, SkippedEntrySignal } from "@/lib/types";
+import {
+  AnalysisConfig,
+  AnalysisWindow,
+  BacktestFromAnalysisResponse,
+  BacktestHistoryWindow,
+  BacktestMarker,
+  BacktestSnapshot,
+  SkippedEntrySignal
+} from "@/lib/types";
 
 type ChartTab = "trades" | "decision";
 type DecisionFilter = "all" | "watchlist" | "threshold" | "regime" | "location" | "trigger";
+type ReviewStatus = "exploratory" | "candidate_strategy" | "issue_detected" | "approved_baseline";
+
+function InfoHint({ label, text }: { label: string; text: string }) {
+  return (
+    <div className="group relative">
+      <span className="text-xs text-slate-400">{label}</span>
+      <span className="ml-1 inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-stroke text-[10px] text-slate-300">?</span>
+      <div className="pointer-events-none absolute left-0 top-5 z-10 hidden w-64 rounded-lg border border-stroke bg-bg p-2 text-xs text-slate-300 shadow-2xl group-hover:block">
+        {text}
+      </div>
+    </div>
+  );
+}
 
 function decisionMarkerType(row: SkippedEntrySignal): string {
   if (row.setup_status === "watchlist") return "watchlist";
@@ -68,6 +89,39 @@ export default function BacktestPage() {
   const [over50, setOver50] = useState(8);
   const [over100, setOver100] = useState(11);
   const [over200, setOver200] = useState(15);
+  const [snapshots, setSnapshots] = useState<BacktestSnapshot[]>([]);
+  const [snapshotsLoading, setSnapshotsLoading] = useState(false);
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  const [savingSnapshot, setSavingSnapshot] = useState(false);
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState("");
+  const [selectedSnapshot, setSelectedSnapshot] = useState<BacktestSnapshot | null>(null);
+  const [reviewStatus, setReviewStatus] = useState<ReviewStatus>("exploratory");
+  const [experimentGroup, setExperimentGroup] = useState("");
+  const [commentator, setCommentator] = useState("local-user");
+  const [commentText, setCommentText] = useState("");
+  const [commentTags, setCommentTags] = useState("");
+  const [addingComment, setAddingComment] = useState(false);
+
+  const loadSnapshots = async () => {
+    setSnapshotsLoading(true);
+    setSnapshotError(null);
+    try {
+      const rows = await api.listBacktestSnapshots();
+      setSnapshots(rows);
+      if (!selectedSnapshotId && rows.length > 0) {
+        setSelectedSnapshotId(rows[0].id);
+        setSelectedSnapshot(rows[0]);
+      }
+    } catch (err) {
+      setSnapshotError(err instanceof Error ? err.message : "Failed to load snapshots.");
+    } finally {
+      setSnapshotsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadSnapshots();
+  }, []);
 
   useEffect(() => {
     if (!analysis) return;
@@ -130,7 +184,7 @@ export default function BacktestPage() {
         backtest_score_threshold: tunedConfig.score_threshold,
         strategy_mode: tunedConfig.strategy_mode,
         backtest_history_window: historyWindow,
-        visible_chart_window: analysis.window,
+        visible_chart_window: historyWindow as AnalysisWindow,
         trade_plan:
           analysis.chart.trade_plan_overlay ?? {
             bias: "neutral",
@@ -147,6 +201,58 @@ export default function BacktestPage() {
       setError(err instanceof Error ? err.message : "Backtest failed.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const saveSnapshot = async () => {
+    if (!result) return;
+    setSavingSnapshot(true);
+    setSnapshotError(null);
+    try {
+      const created = await api.saveBacktestSnapshot(result, reviewStatus, experimentGroup || undefined);
+      setSnapshots((prev) => [created, ...prev.filter((row) => row.id !== created.id)]);
+      setSelectedSnapshotId(created.id);
+      setSelectedSnapshot(created);
+    } catch (err) {
+      setSnapshotError(err instanceof Error ? err.message : "Failed to save snapshot.");
+    } finally {
+      setSavingSnapshot(false);
+    }
+  };
+
+  const onSnapshotChange = async (snapshotId: string) => {
+    setSelectedSnapshotId(snapshotId);
+    if (!snapshotId) {
+      setSelectedSnapshot(null);
+      return;
+    }
+    try {
+      const row = await api.getBacktestSnapshot(snapshotId);
+      setSelectedSnapshot(row);
+      setSnapshots((prev) => prev.map((item) => (item.id === row.id ? row : item)));
+    } catch (err) {
+      setSnapshotError(err instanceof Error ? err.message : "Failed to load snapshot.");
+    }
+  };
+
+  const addComment = async () => {
+    if (!selectedSnapshotId || !commentText.trim()) return;
+    setAddingComment(true);
+    setSnapshotError(null);
+    try {
+      const tags = commentTags
+        .split(",")
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+      const updated = await api.addBacktestSnapshotComment(selectedSnapshotId, commentator, commentText, tags);
+      setSelectedSnapshot(updated);
+      setSnapshots((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      setCommentText("");
+      setCommentTags("");
+    } catch (err) {
+      setSnapshotError(err instanceof Error ? err.message : "Failed to add comment.");
+    } finally {
+      setAddingComment(false);
     }
   };
 
@@ -190,7 +296,7 @@ export default function BacktestPage() {
         <p className="text-sm text-slate-300">{contextLabel}</p>
         <div className="mt-3 grid gap-3 md:grid-cols-4">
           <label className="space-y-1 text-sm">
-            <span className="text-xs text-slate-400">Evaluation History</span>
+            <InfoHint label="Evaluation History" text="How much history is evaluated by the strategy engine (1Y to 5Y)." />
             <select
               value={historyWindow}
               onChange={(event) => setHistoryWindow(event.target.value as BacktestHistoryWindow)}
@@ -203,18 +309,18 @@ export default function BacktestPage() {
               <option value="5y">5Y</option>
             </select>
           </label>
-          <StatCard label="Visible Chart Window" value={analysis?.window.toUpperCase() ?? "n/a"} />
+          <StatCard label="Visible Chart Window" value={historyWindow.toUpperCase()} />
           <StatCard label="Mode" value={analysis?.analysis_config.strategy_mode ?? "n/a"} />
           <StatCard label="Threshold" value={analysis ? `${analysis.analysis_config.score_threshold.toFixed(1)}` : "n/a"} />
         </div>
 
         <div className="mt-3 grid gap-3 md:grid-cols-3 xl:grid-cols-5">
           <label className="space-y-1 text-sm">
-            <span className="text-xs text-slate-400">Threshold</span>
+            <InfoHint label="Threshold" text="Minimum final score required before additional entry gates can pass." />
             <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" type="number" value={threshold} onChange={(event) => setThreshold(Number(event.target.value))} />
           </label>
           <label className="space-y-1 text-sm">
-            <span className="text-xs text-slate-400">Regime Strictness</span>
+            <InfoHint label="Regime Strictness" text="EMA regime filter strictness. Relaxed allows transitions, strict needs stronger alignment." />
             <select className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" value={regimeMode} onChange={(event) => setRegimeMode(event.target.value)}>
               <option value="relaxed">Relaxed</option>
               <option value="medium">Medium</option>
@@ -222,31 +328,31 @@ export default function BacktestPage() {
             </select>
           </label>
           <label className="space-y-1 text-sm">
-            <span className="text-xs text-slate-400">Support Max %</span>
+            <InfoHint label="Support Max %" text="Maximum allowed distance from nearest support before location quality fails." />
             <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" type="number" step="0.1" value={supportMaxDistance} onChange={(event) => setSupportMaxDistance(Number(event.target.value))} />
           </label>
           <label className="space-y-1 text-sm">
-            <span className="text-xs text-slate-400">Min Resistance %</span>
+            <InfoHint label="Min Resistance %" text="Required upside room to nearest resistance level before entry is allowed." />
             <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" type="number" step="0.1" value={minResistanceRoom} onChange={(event) => setMinResistanceRoom(Number(event.target.value))} />
           </label>
           <label className="space-y-1 text-sm">
-            <span className="text-xs text-slate-400">Trigger Min</span>
+            <InfoHint label="Trigger Min" text="Minimum trigger score required for timing confirmation." />
             <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" type="number" step="0.1" value={minTriggerScore} onChange={(event) => setMinTriggerScore(Number(event.target.value))} />
           </label>
           <label className="space-y-1 text-sm">
-            <span className="text-xs text-slate-400">Overext EMA20 %</span>
+            <InfoHint label="Overext EMA20 %" text="Maximum extension above EMA20 before overextension filtering triggers." />
             <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" type="number" step="0.1" value={over20} onChange={(event) => setOver20(Number(event.target.value))} />
           </label>
           <label className="space-y-1 text-sm">
-            <span className="text-xs text-slate-400">Overext EMA50 %</span>
+            <InfoHint label="Overext EMA50 %" text="Maximum extension above EMA50 before overextension filtering triggers." />
             <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" type="number" step="0.1" value={over50} onChange={(event) => setOver50(Number(event.target.value))} />
           </label>
           <label className="space-y-1 text-sm">
-            <span className="text-xs text-slate-400">Overext EMA100 %</span>
+            <InfoHint label="Overext EMA100 %" text="Maximum extension above EMA100 before overextension filtering triggers." />
             <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" type="number" step="0.1" value={over100} onChange={(event) => setOver100(Number(event.target.value))} />
           </label>
           <label className="space-y-1 text-sm">
-            <span className="text-xs text-slate-400">Overext EMA200 %</span>
+            <InfoHint label="Overext EMA200 %" text="Maximum extension above EMA200 before overextension filtering triggers." />
             <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" type="number" step="0.1" value={over200} onChange={(event) => setOver200(Number(event.target.value))} />
           </label>
         </div>
@@ -292,15 +398,16 @@ export default function BacktestPage() {
       {result ? (
         <>
           <Panel>
-            <SectionTitle title="Backtest Scope" subtitle="Evaluation vs visible chart behavior" />
+            <SectionTitle title="Backtest Scope" subtitle="Evaluation, fetched warmup, and visible windows are separated" />
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
               <StatCard label="Evaluation History" value={result.evaluation_history_window.toUpperCase()} />
               <StatCard label="Evaluation Range" value={`${result.evaluation_start} > ${result.evaluation_end}`} />
-              <StatCard label="Visible Chart" value={result.visible_chart_window.toUpperCase()} />
-              <StatCard label="Visible Range" value={`${result.visible_start} > ${result.visible_end}`} />
-              <StatCard label="Warmup Bars" value={`${result.warmup_bars_used}`} />
+              <StatCard label="Fetched/Warmup Data" value={`${result.fetched_data_range_start} > ${result.fetched_data_range_end}`} />
+              <StatCard label="Visible Chart Window" value={result.visible_chart_window.toUpperCase()} />
+              <StatCard label="Visible Chart Range" value={`${result.visible_start} > ${result.visible_end}`} />
             </div>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <StatCard label="Warmup Bars" value={`${result.warmup_bars_used}`} />
               <StatCard label="Evaluated Bars" value={`${result.evaluated_bars}`} />
               <StatCard label="Decision Rows (sample)" value={`${result.decision_log_sample.length}`} />
               <StatCard label="Rendered Decision Markers" value={`${renderedDecisionMarkerCount}`} />
@@ -378,6 +485,96 @@ export default function BacktestPage() {
             <StatCard label="Entries Checked" value={`${result.entries_considered}`} />
             <StatCard label="Triggered Entries" value={`${result.entries_triggered}`} />
           </div>
+          <Panel>
+            <SectionTitle title="Backtest Review Log" subtitle="Save reproducible snapshots and annotate improvements" />
+            <div className="grid gap-3 md:grid-cols-4">
+              <label className="space-y-1 text-sm">
+                <span className="text-xs text-slate-400">Review Status</span>
+                <select className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" value={reviewStatus} onChange={(event) => setReviewStatus(event.target.value as ReviewStatus)}>
+                  <option value="exploratory">exploratory</option>
+                  <option value="candidate_strategy">candidate_strategy</option>
+                  <option value="issue_detected">issue_detected</option>
+                  <option value="approved_baseline">approved_baseline</option>
+                </select>
+              </label>
+              <label className="space-y-1 text-sm md:col-span-2">
+                <span className="text-xs text-slate-400">Experiment Group (optional)</span>
+                <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" value={experimentGroup} onChange={(event) => setExperimentGroup(event.target.value)} placeholder="ema200-transition-tests" />
+              </label>
+              <div className="flex items-end">
+                <button type="button" onClick={saveSnapshot} disabled={savingSnapshot} className="h-10 w-full rounded-lg bg-cyan px-3 text-sm font-semibold text-bg disabled:opacity-50">
+                  {savingSnapshot ? "Saving..." : "Save Snapshot"}
+                </button>
+              </div>
+            </div>
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <label className="space-y-1 text-sm">
+                <span className="text-xs text-slate-400">Snapshot Selector</span>
+                <select className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" value={selectedSnapshotId} onChange={(event) => void onSnapshotChange(event.target.value)}>
+                  <option value="">Select a snapshot</option>
+                  {snapshots.map((row) => (
+                    <option key={row.id} value={row.id}>
+                      {row.timestamp.slice(0, 19)} | {row.symbol} | {row.mode} | {row.review_status}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="flex items-end">
+                <button type="button" onClick={() => void loadSnapshots()} className="h-10 rounded-lg border border-stroke px-4 text-sm text-slate-300 hover:text-cyan">
+                  {snapshotsLoading ? "Refreshing..." : "Refresh Logs"}
+                </button>
+              </div>
+            </div>
+            {snapshotError ? <p className="mt-2 text-xs text-red">{snapshotError}</p> : null}
+
+            {selectedSnapshot ? (
+              <div className="mt-3 space-y-3">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <StatCard label="Snapshot" value={selectedSnapshot.id.slice(0, 8)} />
+                  <StatCard label="Trades" value={`${selectedSnapshot.metrics.total_trades}`} />
+                  <StatCard label="Win Rate" value={`${selectedSnapshot.metrics.win_rate.toFixed(2)}%`} />
+                  <StatCard label="Expectancy" value={`${selectedSnapshot.metrics.expectancy.toFixed(2)}%`} />
+                </div>
+                <div className="rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
+                  Review: {selectedSnapshot.review_status}. Evaluation history: {selectedSnapshot.evaluation_history.toUpperCase()}. Visible window: {selectedSnapshot.visible_window.toUpperCase()}.
+                  Artifact keys: {Object.keys(selectedSnapshot.artifacts).join(", ") || "none"}.
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <label className="space-y-1 text-sm">
+                    <span className="text-xs text-slate-400">Commentator</span>
+                    <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" value={commentator} onChange={(event) => setCommentator(event.target.value)} />
+                  </label>
+                  <label className="space-y-1 text-sm md:col-span-2">
+                    <span className="text-xs text-slate-400">Tags (comma separated)</span>
+                    <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" value={commentTags} onChange={(event) => setCommentTags(event.target.value)} placeholder="entry_logic,ema200,overextension" />
+                  </label>
+                  <label className="space-y-1 text-sm md:col-span-3">
+                    <span className="text-xs text-slate-400">Comment</span>
+                    <textarea className="min-h-[88px] w-full rounded-lg border border-stroke bg-bg p-3" value={commentText} onChange={(event) => setCommentText(event.target.value)} placeholder="Write what should be tuned and why." />
+                  </label>
+                </div>
+                <button type="button" onClick={addComment} disabled={addingComment || !commentText.trim()} className="h-10 rounded-lg border border-stroke px-4 text-sm text-slate-300 hover:text-cyan disabled:opacity-50">
+                  {addingComment ? "Adding comment..." : "Add Comment"}
+                </button>
+
+                <div className="space-y-2">
+                  <p className="text-sm text-slate-300">Comments</p>
+                  {selectedSnapshot.comments.length === 0 ? (
+                    <p className="text-xs text-slate-400">No comments yet.</p>
+                  ) : (
+                    selectedSnapshot.comments.map((row) => (
+                      <div key={row.id} className="rounded-lg border border-stroke/70 bg-bg/30 p-2 text-xs text-slate-300">
+                        <p>
+                          <span className="font-semibold">{row.commentator}</span> | {row.timestamp.slice(0, 19)} | tags: {row.tags.join(", ") || "none"}
+                        </p>
+                        <p className="mt-1">{row.content}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            ) : null}
+          </Panel>
           <Panel>
             <SectionTitle title="Scan Diagnostics" subtitle="Why setups were skipped" />
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

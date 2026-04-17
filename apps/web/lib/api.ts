@@ -6,6 +6,7 @@ import {
   AnalysisConfig,
   BacktestFromAnalysisRequest,
   BacktestFromAnalysisResponse,
+  BacktestSnapshot,
   BacktestResponse,
   CombinedAnalysisResponse,
   ScoreResponse,
@@ -64,6 +65,24 @@ export const api = {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)
+    }),
+  saveBacktestSnapshot: (result: BacktestFromAnalysisResponse, reviewStatus = "exploratory", experimentGroup?: string) =>
+    fetchJson<BacktestSnapshot>("/api/backtest-snapshots", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        result,
+        review_status: reviewStatus,
+        experiment_group: experimentGroup ?? null
+      })
+    }),
+  listBacktestSnapshots: () => fetchJson<BacktestSnapshot[]>("/api/backtest-snapshots"),
+  getBacktestSnapshot: (snapshotId: string) => fetchJson<BacktestSnapshot>(`/api/backtest-snapshots/${encodeURIComponent(snapshotId)}`),
+  addBacktestSnapshotComment: (snapshotId: string, commentator: string, content: string, tags: string[] = []) =>
+    fetchJson<BacktestSnapshot>(`/api/backtest-snapshots/${encodeURIComponent(snapshotId)}/comments`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ commentator, content, tags })
     }),
   health: () => fetchJson<{ status: string; app: string }>("/api/health")
 };

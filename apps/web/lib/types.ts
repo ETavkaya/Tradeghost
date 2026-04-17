@@ -365,6 +365,8 @@ export type BacktestFromAnalysisResponse = {
   strategy_mode_used: StrategyMode;
   evaluation_history_window: BacktestHistoryWindow;
   visible_chart_window: AnalysisWindow;
+  fetched_data_range_start: string;
+  fetched_data_range_end: string;
   evaluation_start: string;
   evaluation_end: string;
   warmup_bars_used: number;
@@ -389,4 +391,48 @@ export type BacktestFromAnalysisResponse = {
   decision_log_sample: SkippedEntrySignal[];
   chart: AnalysisChart;
   markers: BacktestMarker[];
+};
+
+export type BacktestSnapshotMetrics = {
+  total_trades: number;
+  win_rate: number;
+  expectancy: number;
+  max_drawdown: number;
+};
+
+export type BacktestSnapshotSkipSummary = {
+  threshold_fail: number;
+  regime_fail: number;
+  location_fail: number;
+  trigger_fail: number;
+  overextended_fail: number;
+  resistance_room_fail: number;
+};
+
+export type BacktestSnapshotComment = {
+  id: string;
+  snapshot_id: string;
+  commentator: string;
+  timestamp: string;
+  content: string;
+  tags: string[];
+};
+
+export type BacktestSnapshot = {
+  id: string;
+  timestamp: string;
+  symbol: string;
+  market: MarketCode;
+  mode: StrategyMode;
+  review_status: string;
+  experiment_group: string | null;
+  evaluation_history: string;
+  visible_window: string;
+  config: AnalysisConfig;
+  metrics: BacktestSnapshotMetrics;
+  trades_summary: Record<string, unknown>;
+  skip_summary: BacktestSnapshotSkipSummary;
+  artifacts: Record<string, string>;
+  comments: BacktestSnapshotComment[];
+  github_mapping_hint: Record<string, string | null>;
 };

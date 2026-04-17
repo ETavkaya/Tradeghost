@@ -377,6 +377,8 @@ class BacktestFromAnalysisResponse(BaseModel):
     strategy_mode_used: StrategyMode
     evaluation_history_window: str
     visible_chart_window: str
+    fetched_data_range_start: date
+    fetched_data_range_end: date
     evaluation_start: date
     evaluation_end: date
     warmup_bars_used: int
@@ -401,3 +403,59 @@ class BacktestFromAnalysisResponse(BaseModel):
     decision_log_sample: list[SkippedEntrySignal]
     chart: AnalysisChart
     markers: list[BacktestMarker]
+
+
+class BacktestSnapshotMetrics(BaseModel):
+    total_trades: int
+    win_rate: float
+    expectancy: float
+    max_drawdown: float
+
+
+class BacktestSnapshotSkipSummary(BaseModel):
+    threshold_fail: int
+    regime_fail: int
+    location_fail: int
+    trigger_fail: int
+    overextended_fail: int
+    resistance_room_fail: int
+
+
+class BacktestSnapshotComment(BaseModel):
+    id: str
+    snapshot_id: str
+    commentator: str
+    timestamp: datetime
+    content: str
+    tags: list[str] = Field(default_factory=list)
+
+
+class BacktestSnapshot(BaseModel):
+    id: str
+    timestamp: datetime
+    symbol: str
+    market: MarketCode
+    mode: StrategyMode
+    review_status: str = "exploratory"
+    experiment_group: str | None = None
+    evaluation_history: str
+    visible_window: str
+    config: AnalysisConfig
+    metrics: BacktestSnapshotMetrics
+    trades_summary: dict[str, Any]
+    skip_summary: BacktestSnapshotSkipSummary
+    artifacts: dict[str, str] = Field(default_factory=dict)
+    comments: list[BacktestSnapshotComment] = Field(default_factory=list)
+    github_mapping_hint: dict[str, str | None] = Field(default_factory=dict)
+
+
+class BacktestSnapshotCreateRequest(BaseModel):
+    result: BacktestFromAnalysisResponse
+    review_status: str = "exploratory"
+    experiment_group: str | None = None
+
+
+class BacktestSnapshotCommentCreateRequest(BaseModel):
+    commentator: str
+    content: str
+    tags: list[str] = Field(default_factory=list)

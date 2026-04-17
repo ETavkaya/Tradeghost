@@ -74,6 +74,8 @@ class _SimulationResult:
     decision_log: list[SkippedEntrySignal]
     warmup_bars_used: int
     evaluated_bars: int
+    evaluation_start_date: date | None
+    evaluation_end_date: date | None
 
 
 class BacktestEngine:
@@ -187,6 +189,8 @@ class BacktestEngine:
         decision_log: list[SkippedEntrySignal] = []
         evaluated_bars = 0
         next_trade_id = 1
+        evaluation_start_date: date | None = None
+        evaluation_end_date: date | None = None
 
         for i in range(sim_start_idx, len(daily)):
             slice_daily = daily.iloc[: i + 1]
@@ -196,6 +200,9 @@ class BacktestEngine:
             if len(current_weekly) < 10:
                 continue
             evaluated_bars += 1
+            if evaluation_start_date is None:
+                evaluation_start_date = current_date.date()
+            evaluation_end_date = current_date.date()
 
             pipeline = run_analysis_pipeline(
                 daily=slice_daily,
@@ -452,6 +459,8 @@ class BacktestEngine:
             decision_log=decision_log,
             warmup_bars_used=warmup,
             evaluated_bars=evaluated_bars,
+            evaluation_start_date=evaluation_start_date,
+            evaluation_end_date=evaluation_end_date,
         )
 
     @staticmethod
@@ -611,7 +620,7 @@ class BacktestEngine:
 
     def run_from_analysis(self, context: BacktestFromAnalysisRequest) -> BacktestFromAnalysisResponse:
         evaluation_window = normalize_window(context.backtest_history_window or "2y")
-        visible_chart_window = normalize_window(context.visible_chart_window or context.window)
+        visible_chart_window = normalize_window(context.visible_chart_window or evaluation_window)
 
         if context.analysis_config is not None:
             config = context.analysis_config.model_copy(update={"lookback_window": evaluation_window})
@@ -636,9 +645,6 @@ class BacktestEngine:
         metrics = self._compute_metrics(sim.trades)
         chart, markers, visible_start, visible_end = self._build_chart(bundle.daily, visible_chart_window, context.trade_plan, sim.trades)
         decision_log_sample = self._sample_evenly(sim.decision_log, max_rows=280)
-        visible_dates = {candle.date for candle in chart.candles}
-        rendered_decision_markers = sum(1 for row in decision_log_sample if row.date in visible_dates)
-
         return BacktestFromAnalysisResponse(
             ticker=bundle.ticker,
             normalized_ticker=bundle.normalized_ticker,
@@ -649,8 +655,10 @@ class BacktestEngine:
             analysis_config=config,
             evaluation_history_window=evaluation_window,
             visible_chart_window=visible_chart_window,
-            evaluation_start=bundle.daily.index[0].date(),
-            evaluation_end=bundle.daily.index[-1].date(),
+            fetched_data_range_start=bundle.daily.index[0].date(),
+            fetched_data_range_end=bundle.daily.index[-1].date(),
+            evaluation_start=sim.evaluation_start_date or bundle.daily.index[0].date(),
+            evaluation_end=sim.evaluation_end_date or bundle.daily.index[-1].date(),
             period_start=visible_start,
             period_end=visible_end,
             trades=int(metrics["trades"]),

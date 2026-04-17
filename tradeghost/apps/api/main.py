@@ -4,12 +4,16 @@ from fastapi import FastAPI, HTTPException, Query
 
 from tradeghost.services.analysis_engine import AnalysisEngine
 from tradeghost.services.backtest.engine import BacktestEngine
+from tradeghost.services.backtest.review_log import BacktestReviewLogService
 from tradeghost.shared.config.settings import get_settings
 from tradeghost.shared.models.schemas import (
     AnalysisResponse,
     BacktestFromAnalysisRequest,
     BacktestFromAnalysisResponse,
     BacktestSummary,
+    BacktestSnapshot,
+    BacktestSnapshotCommentCreateRequest,
+    BacktestSnapshotCreateRequest,
     CombinedAnalysisResponse,
     ScoreResponse,
     StrategyMode,
@@ -21,6 +25,7 @@ app = FastAPI(title=settings.app_name, version="0.1.0")
 
 analysis_engine = AnalysisEngine()
 backtest_engine = BacktestEngine(analysis_engine=analysis_engine)
+review_log_service = BacktestReviewLogService()
 
 
 @app.get("/health")
@@ -125,5 +130,41 @@ def backtest(
 def backtest_from_analysis(payload: BacktestFromAnalysisRequest) -> BacktestFromAnalysisResponse:
     try:
         return backtest_engine.run_from_analysis(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/backtest-snapshots", response_model=BacktestSnapshot)
+def create_backtest_snapshot(payload: BacktestSnapshotCreateRequest) -> BacktestSnapshot:
+    try:
+        return review_log_service.create_snapshot(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/backtest-snapshots", response_model=list[BacktestSnapshot])
+def list_backtest_snapshots() -> list[BacktestSnapshot]:
+    try:
+        return review_log_service.list_snapshots()
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/backtest-snapshots/{snapshot_id}", response_model=BacktestSnapshot)
+def get_backtest_snapshot(snapshot_id: str) -> BacktestSnapshot:
+    try:
+        return review_log_service.get_snapshot(snapshot_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/backtest-snapshots/{snapshot_id}/comments", response_model=BacktestSnapshot)
+def add_backtest_snapshot_comment(snapshot_id: str, payload: BacktestSnapshotCommentCreateRequest) -> BacktestSnapshot:
+    try:
+        return review_log_service.add_comment(snapshot_id, payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc

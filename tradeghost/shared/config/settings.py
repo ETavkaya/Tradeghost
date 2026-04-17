@@ -40,10 +40,12 @@ class Settings(BaseSettings):
     backtest_warmup_bars: int = Field(default=120)
 
     cache_dir: Path = Field(default=Path("./.cache"))
+    logs_dir: Path = Field(default=Path("./logs"))
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     settings = Settings()
     settings.cache_dir.mkdir(parents=True, exist_ok=True)
+    settings.logs_dir.mkdir(parents=True, exist_ok=True)
     return settings

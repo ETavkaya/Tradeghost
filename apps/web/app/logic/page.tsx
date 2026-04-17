@@ -14,11 +14,12 @@ export default function LogicPage() {
           <p>Official pipeline:</p>
           <p>1) fetch_data 2) calculate_indicators 3) calculate_category_scores 4) evaluate_threshold_gate 5) evaluate_regime_gate 6) evaluate_location_gate 7) evaluate_trigger_gate 8) compute_final_entry_decision</p>
           <p>Shared config model: analysis and backtest both use the same AnalysisConfig object. Backtest tuning rewrites this shared object before rerun.</p>
-          <p>Backtest scope workflow: evaluation history window (1Y-5Y) can differ from visible chart window. This is intentional and shown in Backtest Scope.</p>
+          <p>Backtest scope workflow: evaluation history window, evaluation range, fetched/warmup data range, visible chart window, and visible chart range are reported separately.</p>
           <p>Trade scope workflow: summary trade count is across full evaluation history; chart markers are only for trades inside visible chart window.</p>
           <p>Decision map workflow: sampled skip decisions are evenly distributed across evaluated bars, then filtered by visible chart dates and selected gate filter.</p>
           <p>EMA200 regime diagnostics: reason code, price vs EMA200, EMA200 slope state, stack alignment, and bars since reclaim are emitted deterministically.</p>
           <p>Mode logic: aggressive/balanced/conservative presets plus custom. Custom fields are explicit threshold/filter values, no hidden LLM rules.</p>
+          <p>Backtest review log workflow: each saved snapshot stores config, metrics, skip summary, and comment thread under logs/backtest_reviews for reproducible audits.</p>
         </div>
       </Panel>
 
@@ -32,6 +33,7 @@ export default function LogicPage() {
             <p>Minimum resistance room: {analysis.analysis_config.location_filter.min_resistance_room_pct.toFixed(2)}%</p>
             <p>Trigger minimum score: {analysis.analysis_config.trigger_filter.min_trigger_score.toFixed(1)}</p>
             <p>Overextension caps EMA20/50/100/200: {analysis.analysis_config.location_filter.max_overextension_ema20_pct.toFixed(2)}% / {analysis.analysis_config.location_filter.max_overextension_ema50_pct.toFixed(2)}% / {analysis.analysis_config.location_filter.max_overextension_ema100_pct.toFixed(2)}% / {analysis.analysis_config.location_filter.max_overextension_ema200_pct.toFixed(2)}%</p>
+            <p>Mode presets: aggressive (50 / relaxed / support 7.5 / resistance 1.5 / trigger 55), balanced (60 / medium / 5.0 / 2.5 / 65), conservative (72 / strict / 3.5 / 3.5 / 75), custom (editable shared config).</p>
           </div>
         </Panel>
       ) : (

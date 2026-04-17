@@ -6,10 +6,10 @@ import { UnifiedAnalysisChart } from "@/components/unified-analysis-chart";
 import { Panel, SectionTitle, StatCard } from "@/components/ui";
 import { TradesTable } from "@/components/trades-table";
 import { api } from "@/lib/api";
-import { BacktestFromAnalysisResponse, BacktestMarker, SkippedEntrySignal } from "@/lib/types";
+import { BacktestFromAnalysisResponse, BacktestHistoryWindow, BacktestMarker, SkippedEntrySignal } from "@/lib/types";
 
 type ChartTab = "trades" | "decision";
-type DecisionFilter = "all" | "threshold" | "regime" | "location" | "trigger" | "watchlist";
+type DecisionFilter = "all" | "watchlist" | "threshold" | "regime" | "location" | "trigger";
 
 function decisionMarkerType(row: SkippedEntrySignal): string {
   if (row.setup_status === "watchlist") return "watchlist";
@@ -53,6 +53,7 @@ export default function BacktestPage() {
   const [result, setResult] = useState<BacktestFromAnalysisResponse | null>(null);
   const [chartTab, setChartTab] = useState<ChartTab>("trades");
   const [decisionFilter, setDecisionFilter] = useState<DecisionFilter>("all");
+  const [historyWindow, setHistoryWindow] = useState<BacktestHistoryWindow>("2y");
 
   const runBacktest = async () => {
     if (!analysis) return;
@@ -70,6 +71,8 @@ export default function BacktestPage() {
         swing_candidate: analysis.swingpulse.swing_candidate,
         backtest_score_threshold: analysis.analysis_config.score_threshold,
         strategy_mode: analysis.analysis_config.strategy_mode,
+        backtest_history_window: historyWindow,
+        visible_chart_window: analysis.window,
         trade_plan:
           analysis.chart.trade_plan_overlay ?? {
             bias: "neutral",
@@ -91,7 +94,7 @@ export default function BacktestPage() {
 
   const contextLabel = useMemo(() => {
     if (!analysis) return "No active analysis context.";
-    return `${analysis.ticker} | ${analysis.market.toUpperCase()} | ${analysis.window.toUpperCase()} | Analysis date ${analysis.as_of}`;
+    return `${analysis.ticker} | ${analysis.market.toUpperCase()} | Analysis window ${analysis.window.toUpperCase()} | Analysis date ${analysis.as_of}`;
   }, [analysis]);
 
   const filteredDecisionRows = useMemo(
@@ -106,28 +109,49 @@ export default function BacktestPage() {
     return toDecisionMarkers(filteredDecisionRows, visibleDates);
   }, [result, chartTab, filteredDecisionRows]);
 
+  const renderedDecisionMarkerCount = chartTab === "decision" ? activeMarkers.length : 0;
+
   return (
     <main className="space-y-4">
       <Panel>
-        <SectionTitle title="Backtest" subtitle="Runs from active analysis context only" />
+        <SectionTitle title="Backtest" subtitle="Runs from active analysis context with shared AnalysisConfig" />
         <p className="text-sm text-slate-300">{contextLabel}</p>
+        <div className="mt-3 grid gap-3 md:grid-cols-4">
+          <label className="space-y-1 text-sm">
+            <span className="text-xs text-slate-400">Evaluation History</span>
+            <select
+              value={historyWindow}
+              onChange={(event) => setHistoryWindow(event.target.value as BacktestHistoryWindow)}
+              className="h-10 w-full rounded-lg border border-stroke bg-bg px-3"
+            >
+              <option value="1y">1Y</option>
+              <option value="2y">2Y</option>
+              <option value="3y">3Y</option>
+              <option value="4y">4Y</option>
+              <option value="5y">5Y</option>
+            </select>
+          </label>
+          <StatCard label="Visible Chart Window" value={analysis?.window.toUpperCase() ?? "n/a"} />
+          <StatCard label="Mode" value={analysis?.analysis_config.strategy_mode ?? "n/a"} />
+          <StatCard label="Threshold" value={analysis ? `${analysis.analysis_config.score_threshold.toFixed(1)}` : "n/a"} />
+        </div>
+
         {analysis ? (
           <>
             <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
               <StatCard label="Market" value={analysis.analysis_config.market.toUpperCase()} />
-              <StatCard label="Window" value={analysis.analysis_config.lookback_window.toUpperCase()} />
-              <StatCard label="Mode" value={analysis.analysis_config.strategy_mode} />
-              <StatCard label="Threshold" value={`${analysis.analysis_config.score_threshold.toFixed(1)}`} />
+              <StatCard label="Config Window" value={analysis.analysis_config.lookback_window.toUpperCase()} />
+              <StatCard label="Regime" value={analysis.analysis_config.regime_filter.regime_mode} />
               <StatCard label="Warmup Bars" value={`${analysis.analysis_config.warmup_bars}`} />
+              <StatCard label="Trigger Min" value={`${analysis.analysis_config.trigger_filter.min_trigger_score.toFixed(1)}`} />
             </div>
             <div className="mt-3 rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
-              Regime mode: {analysis.analysis_config.regime_filter.regime_mode}. Support max: {analysis.analysis_config.location_filter.max_support_distance_pct.toFixed(2)}%.
-              Resistance min room: {analysis.analysis_config.location_filter.min_resistance_room_pct.toFixed(2)}%. Overextension caps (EMA20/50/100/200):
+              Support max: {analysis.analysis_config.location_filter.max_support_distance_pct.toFixed(2)}%. Resistance min room: {analysis.analysis_config.location_filter.min_resistance_room_pct.toFixed(2)}%.
+              Overextension caps (EMA20/50/100/200):
               {" "}{analysis.analysis_config.location_filter.max_overextension_ema20_pct.toFixed(2)}% /
               {" "}{analysis.analysis_config.location_filter.max_overextension_ema50_pct.toFixed(2)}% /
               {" "}{analysis.analysis_config.location_filter.max_overextension_ema100_pct.toFixed(2)}% /
               {" "}{analysis.analysis_config.location_filter.max_overextension_ema200_pct.toFixed(2)}%.
-              Trigger minimum score: {analysis.analysis_config.trigger_filter.min_trigger_score.toFixed(1)}.
             </div>
           </>
         ) : null}
@@ -151,10 +175,45 @@ export default function BacktestPage() {
 
       {result ? (
         <>
+          <Panel>
+            <SectionTitle title="Backtest Scope" subtitle="Evaluation vs visible chart behavior" />
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              <StatCard label="Evaluation History" value={result.evaluation_history_window.toUpperCase()} />
+              <StatCard label="Evaluation Range" value={`${result.evaluation_start} > ${result.evaluation_end}`} />
+              <StatCard label="Visible Chart" value={result.visible_chart_window.toUpperCase()} />
+              <StatCard label="Visible Range" value={`${result.visible_start} > ${result.visible_end}`} />
+              <StatCard label="Warmup Bars" value={`${result.warmup_bars_used}`} />
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              <StatCard label="Evaluated Bars" value={`${result.evaluated_bars}`} />
+              <StatCard label="Decision Rows (sample)" value={`${result.decision_log_sample.length}`} />
+              <StatCard label="Rendered Decision Markers" value={`${renderedDecisionMarkerCount}`} />
+            </div>
+          </Panel>
+
+          <Panel>
+            <SectionTitle title="Effective Backtest Config" subtitle="Exact shared AnalysisConfig used for this run" />
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              <StatCard label="Market" value={result.analysis_config.market.toUpperCase()} />
+              <StatCard label="Mode" value={result.analysis_config.strategy_mode} />
+              <StatCard label="Threshold" value={`${result.analysis_config.score_threshold.toFixed(1)}`} />
+              <StatCard label="Warmup Bars" value={`${result.analysis_config.warmup_bars}`} />
+              <StatCard label="Regime" value={result.analysis_config.regime_filter.regime_mode} />
+            </div>
+            <div className="mt-3 rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
+              Support max: {result.analysis_config.location_filter.max_support_distance_pct.toFixed(2)}%. Resistance min room: {result.analysis_config.location_filter.min_resistance_room_pct.toFixed(2)}%.
+              Overextension caps (EMA20/50/100/200):
+              {" "}{result.analysis_config.location_filter.max_overextension_ema20_pct.toFixed(2)}% /
+              {" "}{result.analysis_config.location_filter.max_overextension_ema50_pct.toFixed(2)}% /
+              {" "}{result.analysis_config.location_filter.max_overextension_ema100_pct.toFixed(2)}% /
+              {" "}{result.analysis_config.location_filter.max_overextension_ema200_pct.toFixed(2)}%.
+              Trigger minimum score: {result.analysis_config.trigger_filter.min_trigger_score.toFixed(1)}.
+            </div>
+          </Panel>
+
           <Panel className="bg-panelSoft">
             <p className="text-sm text-slate-300">
               Backtest for {result.ticker} ({result.window.toUpperCase()}) on {result.market.toUpperCase()} using {result.strategy_mode_used} mode and threshold {result.score_threshold_used.toFixed(1)}.
-              Warmup bars {result.analysis_config.warmup_bars}. Visible range: {result.visible_start} to {result.visible_end}.
             </p>
           </Panel>
 
@@ -173,11 +232,11 @@ export default function BacktestPage() {
                   className="h-9 rounded-lg border border-stroke bg-bg px-3 text-sm"
                 >
                   <option value="all">All</option>
+                  <option value="watchlist">Watchlist</option>
                   <option value="threshold">Threshold</option>
                   <option value="regime">Regime</option>
                   <option value="location">Location</option>
                   <option value="trigger">Trigger</option>
-                  <option value="watchlist">Watchlist</option>
                 </select>
               ) : null}
             </div>

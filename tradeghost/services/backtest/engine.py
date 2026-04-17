@@ -7,7 +7,7 @@ from datetime import date
 import pandas as pd
 
 from tradeghost.services.analysis_engine import AnalysisEngine
-from tradeghost.services.charts.payloads import WINDOW_TO_BARS, WINDOW_TO_PERIOD, build_analysis_chart, visible_window_slice
+from tradeghost.services.charts.payloads import WINDOW_TO_PERIOD, build_analysis_chart, normalize_window, visible_window_slice
 from tradeghost.services.indicators.calculations import compute_indicator_snapshot
 from tradeghost.services.strategy.config import build_analysis_config
 from tradeghost.services.strategy.pipeline import run_analysis_pipeline
@@ -71,8 +71,9 @@ class _SimulationResult:
     actionable_setups: int
     watchlist_setups: int
     avoid_setups: int
-    skipped_signals_sample: list[SkippedEntrySignal]
+    decision_log: list[SkippedEntrySignal]
     warmup_bars_used: int
+    evaluated_bars: int
 
 
 class BacktestEngine:
@@ -123,7 +124,8 @@ class BacktestEngine:
             return (
                 f"overextended: EMA20 {location.overextension_ema20_pct:.2f}% / "
                 f"EMA50 {location.overextension_ema50_pct:.2f}% / "
-                f"EMA100 {location.overextension_ema100_pct:.2f}% above caps"
+                f"EMA100 {location.overextension_ema100_pct:.2f}% / "
+                f"EMA200 {location.overextension_ema200_pct:.2f}% above caps"
             )
         if reason == "resistance_room_filter":
             return (
@@ -139,6 +141,16 @@ class BacktestEngine:
             return f"trigger score {trigger.trigger_score:.2f} < minimum {min_trigger_score:.2f}"
         return "did not pass entry gate"
 
+    @staticmethod
+    def _sample_evenly(rows: list[SkippedEntrySignal], max_rows: int) -> list[SkippedEntrySignal]:
+        if len(rows) <= max_rows:
+            return rows
+        if max_rows <= 1:
+            return [rows[-1]]
+        step = (len(rows) - 1) / (max_rows - 1)
+        sampled = [rows[round(i * step)] for i in range(max_rows)]
+        return sampled
+
     def _simulate(
         self,
         daily: pd.DataFrame,
@@ -150,10 +162,8 @@ class BacktestEngine:
         trades: list[BacktestTrade] = []
         position: _Position | None = None
 
-        bars = WINDOW_TO_BARS[config.lookback_window]
-        visible_start_idx = max(0, len(daily) - bars)
         warmup = min(config.warmup_bars, max(20, len(daily) // 3))
-        sim_start_idx = max(warmup, visible_start_idx)
+        sim_start_idx = warmup
 
         entries_considered = 0
         entries_triggered = 0
@@ -167,7 +177,8 @@ class BacktestEngine:
         actionable_setups = 0
         watchlist_setups = 0
         avoid_setups = 0
-        skipped_signals_sample: list[SkippedEntrySignal] = []
+        decision_log: list[SkippedEntrySignal] = []
+        evaluated_bars = 0
         next_trade_id = 1
 
         for i in range(sim_start_idx, len(daily)):
@@ -177,6 +188,7 @@ class BacktestEngine:
             current_weekly = weekly[weekly.index <= current_date]
             if len(current_weekly) < 10:
                 continue
+            evaluated_bars += 1
 
             pipeline = run_analysis_pipeline(
                 daily=slice_daily,
@@ -230,36 +242,35 @@ class BacktestEngine:
                     else:
                         skipped_due_to_setup += 1
 
-                    if len(skipped_signals_sample) < 30:
-                        skipped_signals_sample.append(
-                            SkippedEntrySignal(
-                                date=current_date.date(),
-                                final_score=round(final_score, 2),
-                                threshold_used=round(config.score_threshold, 2),
-                                setup_status=setup.setup_status,
-                                first_failed_gate=reason,
+                    decision_log.append(
+                        SkippedEntrySignal(
+                            date=current_date.date(),
+                            final_score=round(final_score, 2),
+                            threshold_used=round(config.score_threshold, 2),
+                            setup_status=setup.setup_status,
+                            first_failed_gate=reason,
+                            reason=reason,
+                            reason_detail=self._build_reason_detail(
                                 reason=reason,
-                                reason_detail=self._build_reason_detail(
-                                    reason=reason,
-                                    final_score=final_score,
-                                    threshold=config.score_threshold,
-                                    location=location,
-                                    trigger=trigger,
-                                    min_resistance_room=config.location_filter.min_resistance_room_pct,
-                                    min_trigger_score=config.trigger_filter.min_trigger_score,
-                                ),
-                                swing_candidate=False,
-                                strategy_mode_used=config.strategy_mode,
-                                regime_valid=regime.regime_valid,
-                                location_valid=location.location_valid,
-                                trigger_valid=trigger.trigger_valid,
-                                trigger_state=trigger.trigger_state,
-                                trigger_score=trigger.trigger_score,
-                                trend_state=setup.trend_state,
-                                support_distance_pct=location.distance_to_support_pct,
-                                resistance_room_pct=location.resistance_room_pct,
-                            )
+                                final_score=final_score,
+                                threshold=config.score_threshold,
+                                location=location,
+                                trigger=trigger,
+                                min_resistance_room=config.location_filter.min_resistance_room_pct,
+                                min_trigger_score=config.trigger_filter.min_trigger_score,
+                            ),
+                            swing_candidate=False,
+                            strategy_mode_used=config.strategy_mode,
+                            regime_valid=regime.regime_valid,
+                            location_valid=location.location_valid,
+                            trigger_valid=trigger.trigger_valid,
+                            trigger_state=trigger.trigger_state,
+                            trigger_score=trigger.trigger_score,
+                            trend_state=setup.trend_state,
+                            support_distance_pct=location.distance_to_support_pct,
+                            resistance_room_pct=location.resistance_room_pct,
                         )
+                    )
                     continue
 
                 entry_price = float(current_row["close"])
@@ -426,8 +437,9 @@ class BacktestEngine:
             actionable_setups=actionable_setups,
             watchlist_setups=watchlist_setups,
             avoid_setups=avoid_setups,
-            skipped_signals_sample=skipped_signals_sample,
+            decision_log=decision_log,
             warmup_bars_used=warmup,
+            evaluated_bars=evaluated_bars,
         )
 
     @staticmethod
@@ -586,13 +598,16 @@ class BacktestEngine:
         )
 
     def run_from_analysis(self, context: BacktestFromAnalysisRequest) -> BacktestFromAnalysisResponse:
+        evaluation_window = normalize_window(context.backtest_history_window or "2y")
+        visible_chart_window = normalize_window(context.visible_chart_window or context.window)
+
         if context.analysis_config is not None:
-            config = context.analysis_config
+            config = context.analysis_config.model_copy(update={"lookback_window": evaluation_window})
         else:
             config = build_analysis_config(
                 ticker=context.ticker,
                 market=context.market,
-                lookback_window=context.window,
+                lookback_window=evaluation_window,
                 strategy_mode=context.strategy_mode,
                 score_threshold=context.backtest_score_threshold,
             )
@@ -607,7 +622,10 @@ class BacktestEngine:
             config=config,
         )
         metrics = self._compute_metrics(sim.trades)
-        chart, markers, visible_start, visible_end = self._build_chart(bundle.daily, config.lookback_window, context.trade_plan, sim.trades)
+        chart, markers, visible_start, visible_end = self._build_chart(bundle.daily, visible_chart_window, context.trade_plan, sim.trades)
+        decision_log_sample = self._sample_evenly(sim.decision_log, max_rows=280)
+        visible_dates = {candle.date for candle in chart.candles}
+        rendered_decision_markers = sum(1 for row in decision_log_sample if row.date in visible_dates)
 
         return BacktestFromAnalysisResponse(
             ticker=bundle.ticker,
@@ -617,6 +635,10 @@ class BacktestEngine:
             generated_from_analysis=True,
             analysis_as_of=context.analysis_as_of or date.today(),
             analysis_config=config,
+            evaluation_history_window=evaluation_window,
+            visible_chart_window=visible_chart_window,
+            evaluation_start=bundle.daily.index[0].date(),
+            evaluation_end=bundle.daily.index[-1].date(),
             period_start=visible_start,
             period_end=visible_end,
             trades=int(metrics["trades"]),
@@ -628,6 +650,7 @@ class BacktestEngine:
             score_threshold_used=round(config.score_threshold, 2),
             strategy_mode_used=config.strategy_mode,
             warmup_bars_used=sim.warmup_bars_used,
+            evaluated_bars=sim.evaluated_bars,
             visible_start=visible_start,
             visible_end=visible_end,
             entries_considered=sim.entries_considered,
@@ -643,8 +666,8 @@ class BacktestEngine:
             watchlist_setups=sim.watchlist_setups,
             avoid_setups=sim.avoid_setups,
             trades_table=sim.trades,
-            skipped_signals_sample=sim.skipped_signals_sample,
-            decision_log_sample=sim.skipped_signals_sample,
+            skipped_signals_sample=decision_log_sample,
+            decision_log_sample=decision_log_sample,
             chart=chart,
             markers=markers,
         )

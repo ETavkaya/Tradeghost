@@ -344,6 +344,8 @@ class BacktestFromAnalysisRequest(BaseModel):
     trade_plan: TradePlan
     backtest_score_threshold: float | None = None
     strategy_mode: StrategyMode | None = None
+    backtest_history_window: str | None = None
+    visible_chart_window: str | None = None
 
 
 class BacktestFromAnalysisResponse(BaseModel):
@@ -364,7 +366,12 @@ class BacktestFromAnalysisResponse(BaseModel):
     expectancy: float
     score_threshold_used: float
     strategy_mode_used: StrategyMode
+    evaluation_history_window: str
+    visible_chart_window: str
+    evaluation_start: date
+    evaluation_end: date
     warmup_bars_used: int
+    evaluated_bars: int
     visible_start: date
     visible_end: date
     entries_considered: int

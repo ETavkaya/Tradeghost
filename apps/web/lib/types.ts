@@ -1,4 +1,5 @@
-export type AnalysisWindow = "5d" | "1m" | "3m" | "6m" | "1y" | "5y" | "10y";
+export type AnalysisWindow = "5d" | "1m" | "3m" | "6m" | "1y" | "2y" | "3y" | "4y" | "5y" | "10y";
+export type BacktestHistoryWindow = "1y" | "2y" | "3y" | "4y" | "5y";
 export type MarketCode = "us" | "bist";
 export type StrategyMode = "aggressive" | "balanced" | "conservative" | "custom";
 
@@ -331,6 +332,8 @@ export type BacktestFromAnalysisRequest = {
   trade_plan: TradePlan;
   backtest_score_threshold?: number;
   strategy_mode?: StrategyMode;
+  backtest_history_window?: BacktestHistoryWindow;
+  visible_chart_window?: AnalysisWindow;
 };
 
 export type BacktestFromAnalysisResponse = {
@@ -351,7 +354,12 @@ export type BacktestFromAnalysisResponse = {
   expectancy: number;
   score_threshold_used: number;
   strategy_mode_used: StrategyMode;
+  evaluation_history_window: BacktestHistoryWindow;
+  visible_chart_window: AnalysisWindow;
+  evaluation_start: string;
+  evaluation_end: string;
   warmup_bars_used: number;
+  evaluated_bars: number;
   visible_start: string;
   visible_end: string;
   entries_considered: number;

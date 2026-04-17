@@ -1,12 +1,12 @@
 ﻿"use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAnalysisContext } from "@/components/analysis-context";
 import { UnifiedAnalysisChart } from "@/components/unified-analysis-chart";
 import { Panel, SectionTitle, StatCard } from "@/components/ui";
 import { TradesTable } from "@/components/trades-table";
 import { api } from "@/lib/api";
-import { BacktestFromAnalysisResponse, BacktestHistoryWindow, BacktestMarker, SkippedEntrySignal } from "@/lib/types";
+import { AnalysisConfig, BacktestFromAnalysisResponse, BacktestHistoryWindow, BacktestMarker, SkippedEntrySignal } from "@/lib/types";
 
 type ChartTab = "trades" | "decision";
 type DecisionFilter = "all" | "watchlist" | "threshold" | "regime" | "location" | "trigger";
@@ -32,6 +32,10 @@ function toDecisionMarkers(rows: SkippedEntrySignal[], visibleDates: Set<string>
       `Setup: ${row.setup_status}<br>` +
       `Failed gate: ${row.first_failed_gate ?? "n/a"}<br>` +
       `Reason: ${row.reason_detail ?? row.reason}<br>` +
+      `Price vs EMA200: ${row.price_vs_ema200_pct?.toFixed(2) ?? "n/a"}%<br>` +
+      `EMA200 slope: ${row.ema200_slope_state ?? "n/a"}<br>` +
+      `EMA stack: ${row.ema_stack_alignment ?? "n/a"}<br>` +
+      `Regime code: ${row.regime_reason_code ?? "n/a"}<br>` +
       `Support distance: ${row.support_distance_pct?.toFixed(2) ?? "n/a"}%<br>` +
       `Resistance room: ${row.resistance_room_pct?.toFixed(2) ?? "n/a"}%<br>` +
       `Trigger: ${row.trigger_state ?? "n/a"} (${row.trigger_score?.toFixed(2) ?? "n/a"})<br>` +
@@ -47,7 +51,7 @@ function filterDecisionRows(rows: SkippedEntrySignal[], filter: DecisionFilter):
 }
 
 export default function BacktestPage() {
-  const { analysis } = useAnalysisContext();
+  const { analysis, setAnalysis } = useAnalysisContext();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BacktestFromAnalysisResponse | null>(null);
@@ -55,22 +59,76 @@ export default function BacktestPage() {
   const [decisionFilter, setDecisionFilter] = useState<DecisionFilter>("all");
   const [historyWindow, setHistoryWindow] = useState<BacktestHistoryWindow>("2y");
 
+  const [threshold, setThreshold] = useState(60);
+  const [regimeMode, setRegimeMode] = useState("medium");
+  const [supportMaxDistance, setSupportMaxDistance] = useState(5);
+  const [minResistanceRoom, setMinResistanceRoom] = useState(2.5);
+  const [minTriggerScore, setMinTriggerScore] = useState(65);
+  const [over20, setOver20] = useState(5);
+  const [over50, setOver50] = useState(8);
+  const [over100, setOver100] = useState(11);
+  const [over200, setOver200] = useState(15);
+
+  useEffect(() => {
+    if (!analysis) return;
+    setThreshold(analysis.analysis_config.score_threshold);
+    setRegimeMode(analysis.analysis_config.regime_filter.regime_mode);
+    setSupportMaxDistance(analysis.analysis_config.location_filter.max_support_distance_pct);
+    setMinResistanceRoom(analysis.analysis_config.location_filter.min_resistance_room_pct);
+    setMinTriggerScore(analysis.analysis_config.trigger_filter.min_trigger_score);
+    setOver20(analysis.analysis_config.location_filter.max_overextension_ema20_pct);
+    setOver50(analysis.analysis_config.location_filter.max_overextension_ema50_pct);
+    setOver100(analysis.analysis_config.location_filter.max_overextension_ema100_pct);
+    setOver200(analysis.analysis_config.location_filter.max_overextension_ema200_pct);
+  }, [analysis]);
+
+  const buildTunedConfig = (): AnalysisConfig | null => {
+    if (!analysis) return null;
+    return {
+      ...analysis.analysis_config,
+      score_threshold: threshold,
+      regime_filter: { regime_mode: regimeMode },
+      location_filter: {
+        ...analysis.analysis_config.location_filter,
+        max_support_distance_pct: supportMaxDistance,
+        min_resistance_room_pct: minResistanceRoom,
+        max_overextension_ema20_pct: over20,
+        max_overextension_ema50_pct: over50,
+        max_overextension_ema100_pct: over100,
+        max_overextension_ema200_pct: over200,
+      },
+      trigger_filter: {
+        ...analysis.analysis_config.trigger_filter,
+        min_trigger_score: minTriggerScore,
+      },
+    };
+  };
+
   const runBacktest = async () => {
     if (!analysis) return;
+    const tunedConfig = buildTunedConfig();
+    if (!tunedConfig) return;
+
     setLoading(true);
     setError(null);
     try {
+      setAnalysis({
+        ...analysis,
+        analysis_config: tunedConfig,
+        strategy_mode_used: tunedConfig.strategy_mode,
+      });
+
       const response = await api.backtestFromAnalysis({
         ticker: analysis.ticker,
         market: analysis.market,
         window: analysis.window,
         analysis_as_of: analysis.as_of,
-        analysis_config: analysis.analysis_config,
+        analysis_config: tunedConfig,
         quantedge_final_score: analysis.quantedge.final_score,
         category_scores: analysis.quantedge.category_scores,
         swing_candidate: analysis.swingpulse.swing_candidate,
-        backtest_score_threshold: analysis.analysis_config.score_threshold,
-        strategy_mode: analysis.analysis_config.strategy_mode,
+        backtest_score_threshold: tunedConfig.score_threshold,
+        strategy_mode: tunedConfig.strategy_mode,
         backtest_history_window: historyWindow,
         visible_chart_window: analysis.window,
         trade_plan:
@@ -110,6 +168,20 @@ export default function BacktestPage() {
   }, [result, chartTab, filteredDecisionRows]);
 
   const renderedDecisionMarkerCount = chartTab === "decision" ? activeMarkers.length : 0;
+  const visibleTradeCount = useMemo(() => {
+    if (!result) return 0;
+    const visibleStart = new Date(result.visible_start);
+    const visibleEnd = new Date(result.visible_end);
+    const ids = new Set<number>();
+    for (const trade of result.trades_table) {
+      const entryInRange = new Date(trade.entry_date) >= visibleStart && new Date(trade.entry_date) <= visibleEnd;
+      const exitInRange = new Date(trade.exit_date) >= visibleStart && new Date(trade.exit_date) <= visibleEnd;
+      if (entryInRange || exitInRange) {
+        ids.add(trade.trade_id);
+      }
+    }
+    return ids.size;
+  }, [result]);
 
   return (
     <main className="space-y-4">
@@ -136,6 +208,50 @@ export default function BacktestPage() {
           <StatCard label="Threshold" value={analysis ? `${analysis.analysis_config.score_threshold.toFixed(1)}` : "n/a"} />
         </div>
 
+        <div className="mt-3 grid gap-3 md:grid-cols-3 xl:grid-cols-5">
+          <label className="space-y-1 text-sm">
+            <span className="text-xs text-slate-400">Threshold</span>
+            <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" type="number" value={threshold} onChange={(event) => setThreshold(Number(event.target.value))} />
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="text-xs text-slate-400">Regime Strictness</span>
+            <select className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" value={regimeMode} onChange={(event) => setRegimeMode(event.target.value)}>
+              <option value="relaxed">Relaxed</option>
+              <option value="medium">Medium</option>
+              <option value="strict">Strict</option>
+            </select>
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="text-xs text-slate-400">Support Max %</span>
+            <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" type="number" step="0.1" value={supportMaxDistance} onChange={(event) => setSupportMaxDistance(Number(event.target.value))} />
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="text-xs text-slate-400">Min Resistance %</span>
+            <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" type="number" step="0.1" value={minResistanceRoom} onChange={(event) => setMinResistanceRoom(Number(event.target.value))} />
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="text-xs text-slate-400">Trigger Min</span>
+            <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" type="number" step="0.1" value={minTriggerScore} onChange={(event) => setMinTriggerScore(Number(event.target.value))} />
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="text-xs text-slate-400">Overext EMA20 %</span>
+            <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" type="number" step="0.1" value={over20} onChange={(event) => setOver20(Number(event.target.value))} />
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="text-xs text-slate-400">Overext EMA50 %</span>
+            <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" type="number" step="0.1" value={over50} onChange={(event) => setOver50(Number(event.target.value))} />
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="text-xs text-slate-400">Overext EMA100 %</span>
+            <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" type="number" step="0.1" value={over100} onChange={(event) => setOver100(Number(event.target.value))} />
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="text-xs text-slate-400">Overext EMA200 %</span>
+            <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" type="number" step="0.1" value={over200} onChange={(event) => setOver200(Number(event.target.value))} />
+          </label>
+        </div>
+        <p className="mt-2 text-xs text-slate-400">Quick tuning writes into the shared AnalysisConfig before rerun. No backtest-only hidden config is used.</p>
+
         {analysis ? (
           <>
             <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -146,12 +262,12 @@ export default function BacktestPage() {
               <StatCard label="Trigger Min" value={`${analysis.analysis_config.trigger_filter.min_trigger_score.toFixed(1)}`} />
             </div>
             <div className="mt-3 rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
-              Support max: {analysis.analysis_config.location_filter.max_support_distance_pct.toFixed(2)}%. Resistance min room: {analysis.analysis_config.location_filter.min_resistance_room_pct.toFixed(2)}%.
-              Overextension caps (EMA20/50/100/200):
+              Support max: {analysis.analysis_config.location_filter.max_support_distance_pct.toFixed(2)}%. Resistance min room: {analysis.analysis_config.location_filter.min_resistance_room_pct.toFixed(2)}%. Overextension caps (EMA20/50/100/200):
               {" "}{analysis.analysis_config.location_filter.max_overextension_ema20_pct.toFixed(2)}% /
               {" "}{analysis.analysis_config.location_filter.max_overextension_ema50_pct.toFixed(2)}% /
               {" "}{analysis.analysis_config.location_filter.max_overextension_ema100_pct.toFixed(2)}% /
               {" "}{analysis.analysis_config.location_filter.max_overextension_ema200_pct.toFixed(2)}%.
+              Trigger minimum score: {analysis.analysis_config.trigger_filter.min_trigger_score.toFixed(1)}.
             </div>
           </>
         ) : null}
@@ -215,6 +331,10 @@ export default function BacktestPage() {
             <p className="text-sm text-slate-300">
               Backtest for {result.ticker} ({result.window.toUpperCase()}) on {result.market.toUpperCase()} using {result.strategy_mode_used} mode and threshold {result.score_threshold_used.toFixed(1)}.
             </p>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              <p className="text-xs text-slate-300">Total trades (evaluation history): {result.trades}</p>
+              <p className="text-xs text-slate-300">Visible in chart window: {visibleTradeCount}</p>
+            </div>
           </Panel>
 
           <Panel>

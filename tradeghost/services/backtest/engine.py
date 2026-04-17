@@ -111,6 +111,7 @@ class BacktestEngine:
         reason: str,
         final_score: float,
         threshold: float,
+        regime,
         location,
         trigger,
         min_resistance_room: float,
@@ -119,7 +120,13 @@ class BacktestEngine:
         if reason == "score_threshold":
             return f"final score {final_score:.2f} < threshold {threshold:.2f}"
         if reason == "regime_filter":
-            return "EMA200 regime condition not met for active mode"
+            return (
+                f"{regime.regime_reason} "
+                f"(price_vs_ema200={regime.price_vs_ema200_pct:.2f}%, "
+                f"slope={regime.ema200_slope_state}, "
+                f"stack={regime.ema_stack_alignment}, "
+                f"bars_since_reclaim={regime.bars_since_reclaim if regime.bars_since_reclaim is not None else 'n/a'})"
+            )
         if reason == "overextended_filter":
             return (
                 f"overextended: EMA20 {location.overextension_ema20_pct:.2f}% / "
@@ -254,6 +261,7 @@ class BacktestEngine:
                                 reason=reason,
                                 final_score=final_score,
                                 threshold=config.score_threshold,
+                                regime=regime,
                                 location=location,
                                 trigger=trigger,
                                 min_resistance_room=config.location_filter.min_resistance_room_pct,
@@ -269,6 +277,10 @@ class BacktestEngine:
                             trend_state=setup.trend_state,
                             support_distance_pct=location.distance_to_support_pct,
                             resistance_room_pct=location.resistance_room_pct,
+                            price_vs_ema200_pct=regime.price_vs_ema200_pct,
+                            ema200_slope_state=regime.ema200_slope_state,
+                            ema_stack_alignment=regime.ema_stack_alignment,
+                            regime_reason_code=regime.regime_reason_code,
                         )
                     )
                     continue
@@ -475,7 +487,6 @@ class BacktestEngine:
 
     @staticmethod
     def _trade_hover_text(trade: BacktestTrade, side: str) -> str:
-        reason = trade.entry_reason if side == "entry" else trade.exit_reason
         score = trade.score_at_entry if side == "entry" else trade.score_at_exit
         score_text = f"{score:.2f}" if score is not None else "n/a"
         threshold_text = f"{trade.threshold_used:.2f}" if trade.threshold_used is not None else "n/a"
@@ -491,7 +502,8 @@ class BacktestEngine:
             f"Trigger: {trade.trigger_type or 'n/a'} ({trade.trigger_state or 'n/a'})<br>"
             f"Support dist: {trade.support_distance_pct if trade.support_distance_pct is not None else 'n/a'}%<br>"
             f"Resistance room: {trade.resistance_distance_pct if trade.resistance_distance_pct is not None else 'n/a'}%<br>"
-            f"Reason: {reason or 'n/a'}"
+            f"Entry reason: {trade.entry_reason or 'n/a'}<br>"
+            f"Exit reason: {trade.exit_reason or 'n/a'}"
         )
 
     def _build_chart(self, daily: pd.DataFrame, window: str, trade_plan, trades: list[BacktestTrade]) -> tuple[AnalysisChart, list[BacktestMarker], date, date]:

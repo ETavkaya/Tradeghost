@@ -1,6 +1,7 @@
-"use client";
+﻿"use client";
 
 import dynamic from "next/dynamic";
+import { useState } from "react";
 import type { Data, Layout, Shape } from "plotly.js";
 import { AnalysisChart, BacktestMarker } from "@/lib/types";
 import { premiumDarkPlotlyTemplate } from "@/lib/plotly-theme";
@@ -65,14 +66,7 @@ function buildMarkerTraces(markers: BacktestMarker[], candleCloseByDate: Record<
   return traces;
 }
 
-function buildLegendTrace(
-  name: string,
-  color: string,
-  dash: "solid" | "dot" | "dash",
-  x0: string,
-  x1: string,
-  sampleY: number
-): Data {
+function buildLegendTrace(name: string, color: string, dash: "solid" | "dot" | "dash", x0: string, x1: string, sampleY: number): Data {
   return {
     type: "scatter",
     mode: "lines",
@@ -87,6 +81,8 @@ function buildLegendTrace(
 }
 
 export function UnifiedAnalysisChart({ chart, title, markers = [], markerMode = "trades" }: Props) {
+  const [expanded, setExpanded] = useState(false);
+
   const x = chart.candles.map((c) => c.date);
   const candleCloseByDate = Object.fromEntries(chart.candles.map((c) => [c.date, c.close]));
   const candlestick: Data = {
@@ -101,41 +97,10 @@ export function UnifiedAnalysisChart({ chart, title, markers = [], markerMode = 
     decreasing: { line: { color: "#F2545B", width: 1.2 } }
   };
 
-  const ema20: Data = {
-    type: "scatter",
-    mode: "lines",
-    x: chart.ema_20.map((p) => p.date),
-    y: chart.ema_20.map((p) => p.value),
-    name: "EMA 20",
-    line: { color: "#19D3F3", width: 1.8 }
-  };
-
-  const ema50: Data = {
-    type: "scatter",
-    mode: "lines",
-    x: chart.ema_50.map((p) => p.date),
-    y: chart.ema_50.map((p) => p.value),
-    name: "EMA 50",
-    line: { color: "#9A8DFF", width: 1.8 }
-  };
-
-  const ema100: Data = {
-    type: "scatter",
-    mode: "lines",
-    x: chart.ema_100.map((p) => p.date),
-    y: chart.ema_100.map((p) => p.value),
-    name: "EMA 100",
-    line: { color: "#F2B94B", width: 1.7 }
-  };
-
-  const ema200: Data = {
-    type: "scatter",
-    mode: "lines",
-    x: chart.ema_200.map((p) => p.date),
-    y: chart.ema_200.map((p) => p.value),
-    name: "EMA 200",
-    line: { color: "#E06C9F", width: 1.7 }
-  };
+  const ema20: Data = { type: "scatter", mode: "lines", x: chart.ema_20.map((p) => p.date), y: chart.ema_20.map((p) => p.value), name: "EMA 20", line: { color: "#19D3F3", width: 1.8 } };
+  const ema50: Data = { type: "scatter", mode: "lines", x: chart.ema_50.map((p) => p.date), y: chart.ema_50.map((p) => p.value), name: "EMA 50", line: { color: "#9A8DFF", width: 1.8 } };
+  const ema100: Data = { type: "scatter", mode: "lines", x: chart.ema_100.map((p) => p.date), y: chart.ema_100.map((p) => p.value), name: "EMA 100", line: { color: "#F2B94B", width: 1.7 } };
+  const ema200: Data = { type: "scatter", mode: "lines", x: chart.ema_200.map((p) => p.date), y: chart.ema_200.map((p) => p.value), name: "EMA 200", line: { color: "#E06C9F", width: 1.7 } };
 
   const currentPoint: Data = {
     type: "scatter",
@@ -152,72 +117,21 @@ export function UnifiedAnalysisChart({ chart, title, markers = [], markerMode = 
   const lineStyle = (color: string, dash: Shape["line"]["dash"] = "solid") => ({ color, width: 1.25, dash });
 
   for (const level of chart.support_levels) {
-    shapes.push({
-      type: "line",
-      x0: x[0],
-      x1: x[x.length - 1],
-      y0: level,
-      y1: level,
-      line: lineStyle("#23D18B", "dot")
-    });
+    shapes.push({ type: "line", x0: x[0], x1: x[x.length - 1], y0: level, y1: level, line: lineStyle("#23D18B", "dot") });
   }
   for (const level of chart.resistance_levels) {
-    shapes.push({
-      type: "line",
-      x0: x[0],
-      x1: x[x.length - 1],
-      y0: level,
-      y1: level,
-      line: lineStyle("#F2545B", "dot")
-    });
+    shapes.push({ type: "line", x0: x[0], x1: x[x.length - 1], y0: level, y1: level, line: lineStyle("#F2545B", "dot") });
   }
   for (const level of Object.values(chart.fibonacci_levels)) {
-    shapes.push({
-      type: "line",
-      x0: x[0],
-      x1: x[x.length - 1],
-      y0: level,
-      y1: level,
-      line: lineStyle("#F2B94B", "dash")
-    });
+    shapes.push({ type: "line", x0: x[0], x1: x[x.length - 1], y0: level, y1: level, line: lineStyle("#F2B94B", "dash") });
   }
 
   if (chart.trade_plan_overlay) {
     const [entryLow, entryHigh] = chart.trade_plan_overlay.entry_zone;
-    shapes.push({
-      type: "rect",
-      x0: x[Math.max(0, x.length - 25)],
-      x1: x[x.length - 1],
-      y0: entryLow,
-      y1: entryHigh,
-      fillcolor: "rgba(25,211,243,0.10)",
-      line: { color: "rgba(25,211,243,0.35)", width: 1 }
-    });
-
-    shapes.push({
-      type: "line",
-      x0: x[Math.max(0, x.length - 25)],
-      x1: x[x.length - 1],
-      y0: chart.trade_plan_overlay.stop_loss,
-      y1: chart.trade_plan_overlay.stop_loss,
-      line: lineStyle("#F2545B")
-    });
-    shapes.push({
-      type: "line",
-      x0: x[Math.max(0, x.length - 25)],
-      x1: x[x.length - 1],
-      y0: chart.trade_plan_overlay.take_profit_1,
-      y1: chart.trade_plan_overlay.take_profit_1,
-      line: lineStyle("#23D18B")
-    });
-    shapes.push({
-      type: "line",
-      x0: x[Math.max(0, x.length - 25)],
-      x1: x[x.length - 1],
-      y0: chart.trade_plan_overlay.take_profit_2,
-      y1: chart.trade_plan_overlay.take_profit_2,
-      line: lineStyle("#23D18B", "dash")
-    });
+    shapes.push({ type: "rect", x0: x[Math.max(0, x.length - 25)], x1: x[x.length - 1], y0: entryLow, y1: entryHigh, fillcolor: "rgba(25,211,243,0.10)", line: { color: "rgba(25,211,243,0.35)", width: 1 } });
+    shapes.push({ type: "line", x0: x[Math.max(0, x.length - 25)], x1: x[x.length - 1], y0: chart.trade_plan_overlay.stop_loss, y1: chart.trade_plan_overlay.stop_loss, line: lineStyle("#F2545B") });
+    shapes.push({ type: "line", x0: x[Math.max(0, x.length - 25)], x1: x[x.length - 1], y0: chart.trade_plan_overlay.take_profit_1, y1: chart.trade_plan_overlay.take_profit_1, line: lineStyle("#23D18B") });
+    shapes.push({ type: "line", x0: x[Math.max(0, x.length - 25)], x1: x[x.length - 1], y0: chart.trade_plan_overlay.take_profit_2, y1: chart.trade_plan_overlay.take_profit_2, line: lineStyle("#23D18B", "dash") });
   }
 
   const legendOverlayTraces: Data[] = [
@@ -232,7 +146,7 @@ export function UnifiedAnalysisChart({ chart, title, markers = [], markerMode = 
   }
 
   const markerTraces = buildMarkerTraces(markers, candleCloseByDate, markerMode);
-  const layout: Partial<Layout> = {
+  const baseLayout: Partial<Layout> = {
     ...premiumDarkPlotlyTemplate,
     title: { text: title, font: { size: 14, color: "#DCE6FF" } },
     xaxis: { ...premiumDarkPlotlyTemplate.xaxis, rangeslider: { visible: false } },
@@ -240,25 +154,42 @@ export function UnifiedAnalysisChart({ chart, title, markers = [], markerMode = 
     shapes: shapes as Layout["shapes"],
     hovermode: "x unified",
     autosize: true,
-    height: 520,
-    legend: {
-      ...premiumDarkPlotlyTemplate.legend,
-      orientation: "h",
-      yanchor: "bottom",
-      y: 1.02,
-      x: 0
-    }
+    legend: { ...premiumDarkPlotlyTemplate.legend, orientation: "h", yanchor: "bottom", y: 1.02, x: 0 }
   };
 
+  const renderPlot = (height: number) => (
+    <Plot
+      data={[candlestick, ema20, ema50, ema100, ema200, currentPoint, ...legendOverlayTraces, ...markerTraces]}
+      layout={{ ...baseLayout, height }}
+      config={{ displaylogo: false, responsive: true, modeBarButtonsToRemove: ["lasso2d", "select2d"] }}
+      style={{ width: "100%", height: "100%" }}
+      useResizeHandler
+    />
+  );
+
   return (
-    <div className="overflow-hidden rounded-2xl border border-stroke bg-panel p-2 md:p-3">
-      <Plot
-        data={[candlestick, ema20, ema50, ema100, ema200, currentPoint, ...legendOverlayTraces, ...markerTraces]}
-        layout={layout}
-        config={{ displaylogo: false, responsive: true, modeBarButtonsToRemove: ["lasso2d", "select2d"] }}
-        style={{ width: "100%", height: "100%" }}
-        useResizeHandler
-      />
-    </div>
+    <>
+      <div className="overflow-hidden rounded-2xl border border-stroke bg-panel p-2 md:p-3">
+        <div className="mb-2 flex items-center justify-end">
+          <button type="button" onClick={() => setExpanded(true)} className="rounded-md border border-stroke px-3 py-1 text-xs text-slate-300 hover:text-cyan">
+            Expand Chart
+          </button>
+        </div>
+        {renderPlot(520)}
+      </div>
+      {expanded ? (
+        <div className="fixed inset-0 z-50 bg-bg/95 p-4">
+          <div className="mb-2 flex items-center justify-between">
+            <p className="text-sm text-slate-300">Expanded Chart View</p>
+            <button type="button" onClick={() => setExpanded(false)} className="rounded-md border border-stroke px-3 py-1 text-xs text-slate-300 hover:text-cyan">
+              Close
+            </button>
+          </div>
+          <div className="h-[calc(100vh-70px)] rounded-xl border border-stroke bg-panel p-2">
+            {renderPlot(900)}
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }

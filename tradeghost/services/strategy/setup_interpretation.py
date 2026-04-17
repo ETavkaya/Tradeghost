@@ -24,7 +24,13 @@ def classify_setup(
     ema100 = float(snapshot["ema_100"])
     ema200 = float(snapshot["ema_200"])
 
-    if close > ema200 and ema50 > ema100 > ema200:
+    transition_codes = {"ema200_reclaim_transition", "early_trend_rebuild", "post_regime_reclaim_watchlist"}
+
+    if regime.regime_reason_code == "ema200_reclaim_transition":
+        trend_state = "ema200_reclaim_transition"
+    elif regime.regime_reason_code in {"early_trend_rebuild", "post_regime_reclaim_watchlist"}:
+        trend_state = "early_trend_rebuild"
+    elif close > ema200 and ema50 > ema100 > ema200:
         trend_state = "bullish_trend"
     elif close > ema200 and ema100 > ema200:
         trend_state = "weakening_trend"
@@ -59,6 +65,8 @@ def classify_setup(
 
     if final_entry_decision:
         setup_status = "actionable"
+    elif regime.regime_reason_code in transition_codes and threshold_passed and not location.overextended_flag:
+        setup_status = "watchlist"
     elif threshold_passed and regime.regime_valid and location.location_valid:
         setup_status = "watchlist"
     elif regime.regime_valid and not location.overextended_flag and resistance_test_state != "at_resistance":
@@ -83,6 +91,8 @@ def classify_setup(
         tags.append(trigger.trigger_type)
     if trigger.trigger_state != "confirmed":
         tags.append("breakout_not_confirmed")
+    if regime.regime_reason_code in transition_codes:
+        tags.append("ema200_reclaim_transition")
 
     return SetupInterpretation(
         trend_state=trend_state,

@@ -191,6 +191,20 @@ def compute_indicator_snapshot(
     pattern = candlestick_pattern(daily)
     weekly_ema_20 = ema(weekly["close"], 20)
     weekly_ema_50 = ema(weekly["close"], 50)
+    ema200_lookback = min(6, len(ema_200))
+    if ema200_lookback >= 2:
+        ema200_prev = float(ema_200.iloc[-ema200_lookback])
+        ema200_now = float(ema_200.iloc[-1])
+        ema200_slope_pct = ((ema200_now - ema200_prev) / max(ema200_prev, 0.01)) * 100
+    else:
+        ema200_slope_pct = 0.0
+
+    close_above = close > ema_200
+    reclaim_events = (close_above & ~close_above.shift(1).fillna(False))
+    bars_since_reclaim = None
+    if bool(reclaim_events.any()):
+        last_reclaim_idx = reclaim_events[reclaim_events].index[-1]
+        bars_since_reclaim = int(len(close.loc[last_reclaim_idx:]) - 1)
 
     snapshot = {
         "close": float(close.iloc[-1]),
@@ -206,6 +220,9 @@ def compute_indicator_snapshot(
         "ema_50": float(ema_50.iloc[-1]),
         "ema_100": float(ema_100.iloc[-1]),
         "ema_200": float(ema_200.iloc[-1]),
+        "price_vs_ema200_pct": float(((close.iloc[-1] - ema_200.iloc[-1]) / max(ema_200.iloc[-1], 0.01)) * 100),
+        "ema200_slope_pct": float(ema200_slope_pct),
+        "bars_since_reclaim": bars_since_reclaim,
         "sma_20": float(sma_20.iloc[-1]),
         "sma_50": float(sma_50.iloc[-1]),
         "adx": float(adx_series.iloc[-1]),

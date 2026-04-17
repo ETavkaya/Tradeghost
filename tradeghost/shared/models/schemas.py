@@ -87,6 +87,11 @@ class RegimeDiagnostics(BaseModel):
     price_above_ema200: bool
     ema100_above_ema200: bool
     ema_stack_quality: str
+    price_vs_ema200_pct: float
+    ema200_slope_state: str
+    ema_stack_alignment: str
+    bars_since_reclaim: int | None = None
+    regime_reason_code: str
     regime_reason: str
 
 
@@ -313,6 +318,10 @@ class SkippedEntrySignal(BaseModel):
     trend_state: str | None = None
     support_distance_pct: float | None = None
     resistance_room_pct: float | None = None
+    price_vs_ema200_pct: float | None = None
+    ema200_slope_state: str | None = None
+    ema_stack_alignment: str | None = None
+    regime_reason_code: str | None = None
 
 
 class BacktestSummary(BaseModel):

@@ -10,27 +10,86 @@ def evaluate_regime(snapshot: dict[str, Any], config: AnalysisConfig) -> RegimeD
     ema50 = float(snapshot["ema_50"])
     ema100 = float(snapshot["ema_100"])
     ema200 = float(snapshot["ema_200"])
+    price_vs_ema200_pct = float(snapshot.get("price_vs_ema200_pct", ((close - ema200) / max(ema200, 0.01)) * 100))
+    ema200_slope_pct = float(snapshot.get("ema200_slope_pct", 0.0))
+    bars_since_reclaim = snapshot.get("bars_since_reclaim")
 
     price_above_ema200 = close > ema200
     ema100_above_ema200 = ema100 > ema200
     full_stack = ema50 > ema100 > ema200
     if full_stack and close > ema200:
         stack_quality = "strong"
-    elif ema100_above_ema200:
+        ema_stack_alignment = "stacked_bullish"
+    elif ema100_above_ema200 and close > ema200:
         stack_quality = "moderate"
+        ema_stack_alignment = "partial_bullish"
+    elif close > ema200:
+        stack_quality = "weak"
+        ema_stack_alignment = "price_only_above_ema200"
     else:
         stack_quality = "weak"
+        ema_stack_alignment = "below_ema200"
+
+    if ema200_slope_pct > 0.15:
+        ema200_slope_state = "rising"
+    elif ema200_slope_pct < -0.15:
+        ema200_slope_state = "falling"
+    else:
+        ema200_slope_state = "flat"
 
     regime_mode = config.regime_filter.regime_mode
+    transition_reclaim = bool(
+        price_above_ema200
+        and isinstance(bars_since_reclaim, int)
+        and bars_since_reclaim <= 8
+        and ema200_slope_state in {"flat", "rising"}
+        and not full_stack
+    )
+
+    reason_code = "regime_valid"
+    reason = "Regime confirmed."
     if regime_mode == "strict":
         regime_valid = price_above_ema200 and ema100_above_ema200 and full_stack
-        reason = "Strict regime requires price > EMA200 and EMA50 > EMA100 > EMA200."
+        if regime_valid:
+            reason_code = "strict_regime_valid"
+            reason = "Strict regime confirmed: price > EMA200 with full EMA50>EMA100>EMA200 alignment."
+        elif transition_reclaim:
+            reason_code = "ema200_reclaim_transition"
+            reason = "Recent reclaim above EMA200 detected, but strict stack alignment is not complete yet."
+        elif price_above_ema200 and ema200_slope_state == "flat":
+            reason_code = "ema200_flat_slope"
+            reason = "Price is above EMA200, but EMA200 slope is flat and strict trend continuation is unconfirmed."
+        elif price_above_ema200:
+            reason_code = "weak_stack_above_ema200"
+            reason = "Price is above EMA200, but strict EMA stack quality is still weak."
+        else:
+            reason_code = "below_ema200"
+            reason = "Price remains below EMA200; strict bullish regime is not active."
     elif regime_mode == "medium":
         regime_valid = price_above_ema200 and ema100_above_ema200
-        reason = "Medium regime requires price > EMA200 and EMA100 > EMA200."
+        if regime_valid:
+            reason_code = "medium_regime_valid"
+            reason = "Medium regime confirmed: price > EMA200 and EMA100 > EMA200."
+        elif transition_reclaim:
+            reason_code = "early_trend_rebuild"
+            reason = "Post-reclaim trend rebuild: price reclaimed EMA200, but EMA100 has not cleanly aligned yet."
+        elif price_above_ema200 and ema200_slope_state == "falling":
+            reason_code = "ema200_slope_falling"
+            reason = "Price is above EMA200, but EMA200 slope is still falling."
+        else:
+            reason_code = "below_ema200"
+            reason = "Price is below EMA200 and medium bullish regime is not active."
     else:
         regime_valid = price_above_ema200 or ema100_above_ema200
-        reason = "Relaxed regime accepts either price > EMA200 or EMA100 > EMA200."
+        if regime_valid:
+            reason_code = "relaxed_regime_valid"
+            reason = "Relaxed regime accepted: higher-timeframe structure is constructive enough."
+        elif transition_reclaim:
+            reason_code = "post_regime_reclaim_watchlist"
+            reason = "Early EMA200 reclaim transition detected; regime improving but not yet fully confirmed."
+        else:
+            reason_code = "regime_not_constructive"
+            reason = "Relaxed regime not met; both price and stack context are still non-constructive."
 
     return RegimeDiagnostics(
         regime_valid=bool(regime_valid),
@@ -38,7 +97,12 @@ def evaluate_regime(snapshot: dict[str, Any], config: AnalysisConfig) -> RegimeD
         price_above_ema200=price_above_ema200,
         ema100_above_ema200=ema100_above_ema200,
         ema_stack_quality=stack_quality,
-        regime_reason=reason if regime_valid else f"{reason} Condition not met.",
+        price_vs_ema200_pct=round(price_vs_ema200_pct, 2),
+        ema200_slope_state=ema200_slope_state,
+        ema_stack_alignment=ema_stack_alignment,
+        bars_since_reclaim=bars_since_reclaim if isinstance(bars_since_reclaim, int) else None,
+        regime_reason_code=reason_code,
+        regime_reason=reason,
     )
 
 

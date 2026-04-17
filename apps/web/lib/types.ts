@@ -102,6 +102,11 @@ export type RegimeDiagnostics = {
   price_above_ema200: boolean;
   ema100_above_ema200: boolean;
   ema_stack_quality: string;
+  price_vs_ema200_pct: number;
+  ema200_slope_state: string;
+  ema_stack_alignment: string;
+  bars_since_reclaim: number | null;
+  regime_reason_code: string;
   regime_reason: string;
 };
 
@@ -301,6 +306,10 @@ export type SkippedEntrySignal = {
   trend_state: string | null;
   support_distance_pct: number | null;
   resistance_room_pct: number | null;
+  price_vs_ema200_pct: number | null;
+  ema200_slope_state: string | null;
+  ema_stack_alignment: string | null;
+  regime_reason_code: string | null;
 };
 
 export type BacktestResponse = {

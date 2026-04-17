@@ -11,6 +11,7 @@ type Props = {
   chart: AnalysisChart;
   title: string;
   markers?: BacktestMarker[];
+  markerMode?: "trades" | "decision";
 };
 
 const markerStyle: Record<string, { color: string; symbol: string; name: string }> = {
@@ -22,10 +23,16 @@ const markerStyle: Record<string, { color: string; symbol: string; name: string 
   exit_forced: { color: "#8FA1B8", symbol: "circle-open", name: "Forced Exit" },
   exit: { color: "#F2545B", symbol: "diamond-open", name: "Exit" },
   reference_stop: { color: "#F2545B", symbol: "circle-open", name: "Reference Stop" },
-  reference_target: { color: "#23D18B", symbol: "triangle-down-open", name: "Reference Target" }
+  reference_target: { color: "#23D18B", symbol: "triangle-down-open", name: "Reference Target" },
+  threshold_fail: { color: "#98A2B3", symbol: "circle", name: "Threshold Fail" },
+  regime_fail: { color: "#A277FF", symbol: "square", name: "Regime Fail" },
+  location_fail: { color: "#FF9E44", symbol: "diamond", name: "Location Fail" },
+  trigger_fail: { color: "#F2B94B", symbol: "triangle-up", name: "Trigger Fail" },
+  watchlist: { color: "#47A3FF", symbol: "circle-open", name: "Watchlist" },
+  actionable: { color: "#23D18B", symbol: "star", name: "Actionable" }
 };
 
-function buildMarkerTraces(markers: BacktestMarker[]): Data[] {
+function buildMarkerTraces(markers: BacktestMarker[], candleCloseByDate: Record<string, number>, markerMode: "trades" | "decision"): Data[] {
   const grouped = new Map<string, BacktestMarker[]>();
   for (const marker of markers) {
     const key = marker.marker_type;
@@ -42,7 +49,7 @@ function buildMarkerTraces(markers: BacktestMarker[]): Data[] {
       type: "scatter",
       mode: "markers",
       x: rows.map((m) => m.date),
-      y: rows.map((m) => m.price),
+      y: rows.map((m) => (m.price > 0 ? m.price : (candleCloseByDate[m.date] ?? 0))),
       name: style.name,
       marker: {
         size: 10,
@@ -52,33 +59,36 @@ function buildMarkerTraces(markers: BacktestMarker[]): Data[] {
       },
       text: rows.map((m) => m.hover_text ?? m.label),
       hovertemplate: "%{text}<extra></extra>",
-      legendgroup: "markers"
+      legendgroup: markerMode === "decision" ? "decision_markers" : "trade_markers"
     });
   }
   return traces;
 }
 
-function buildLegendOnlyTrace(
+function buildLegendTrace(
   name: string,
   color: string,
   dash: "solid" | "dot" | "dash",
-  sampleX: string,
+  x0: string,
+  x1: string,
   sampleY: number
 ): Data {
   return {
     type: "scatter",
     mode: "lines",
-    x: [sampleX, sampleX],
+    x: [x0, x1],
     y: [sampleY, sampleY],
     name,
-    line: { color, width: 1.4, dash },
-    visible: "legendonly",
+    line: { color, width: 2, dash },
+    showlegend: true,
+    opacity: 1,
     hoverinfo: "skip"
   };
 }
 
-export function UnifiedAnalysisChart({ chart, title, markers = [] }: Props) {
+export function UnifiedAnalysisChart({ chart, title, markers = [], markerMode = "trades" }: Props) {
   const x = chart.candles.map((c) => c.date);
+  const candleCloseByDate = Object.fromEntries(chart.candles.map((c) => [c.date, c.close]));
   const candlestick: Data = {
     type: "candlestick",
     x,
@@ -211,17 +221,17 @@ export function UnifiedAnalysisChart({ chart, title, markers = [] }: Props) {
   }
 
   const legendOverlayTraces: Data[] = [
-    buildLegendOnlyTrace("Support (dotted)", "#23D18B", "dot", x[0], chart.current_price),
-    buildLegendOnlyTrace("Resistance (dotted)", "#F2545B", "dot", x[0], chart.current_price),
-    buildLegendOnlyTrace("Reference/Fib (dashed)", "#F2B94B", "dash", x[0], chart.current_price)
+    buildLegendTrace("Support (dotted)", "#23D18B", "dot", x[0], x[x.length - 1], chart.current_price),
+    buildLegendTrace("Resistance (dotted)", "#F2545B", "dot", x[0], x[x.length - 1], chart.current_price),
+    buildLegendTrace("Reference/Fib (dashed)", "#F2B94B", "dash", x[0], x[x.length - 1], chart.current_price)
   ];
 
   if (chart.trade_plan_overlay) {
-    legendOverlayTraces.push(buildLegendOnlyTrace("Trade Plan Stop", "#F2545B", "solid", x[0], chart.current_price));
-    legendOverlayTraces.push(buildLegendOnlyTrace("Trade Plan Target", "#23D18B", "solid", x[0], chart.current_price));
+    legendOverlayTraces.push(buildLegendTrace("Trade Plan Stop", "#F2545B", "solid", x[0], x[x.length - 1], chart.current_price));
+    legendOverlayTraces.push(buildLegendTrace("Trade Plan Target", "#23D18B", "solid", x[0], x[x.length - 1], chart.current_price));
   }
 
-  const markerTraces = buildMarkerTraces(markers);
+  const markerTraces = buildMarkerTraces(markers, candleCloseByDate, markerMode);
   const layout: Partial<Layout> = {
     ...premiumDarkPlotlyTemplate,
     title: { text: title, font: { size: 14, color: "#DCE6FF" } },

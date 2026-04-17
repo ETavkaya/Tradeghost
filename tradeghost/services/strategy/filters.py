@@ -49,6 +49,7 @@ def evaluate_location(snapshot: dict[str, Any], config: AnalysisConfig) -> Locat
     ema20 = float(snapshot["ema_20"])
     ema50 = float(snapshot["ema_50"])
     ema100 = float(snapshot["ema_100"])
+    ema200 = float(snapshot["ema_200"])
 
     settings = config.location_filter
     support_distance_pct = max((close - support) / close * 100, 0.0)
@@ -56,6 +57,7 @@ def evaluate_location(snapshot: dict[str, Any], config: AnalysisConfig) -> Locat
     ext20 = ((close - ema20) / max(ema20, 0.01)) * 100
     ext50 = ((close - ema50) / max(ema50, 0.01)) * 100
     ext100 = ((close - ema100) / max(ema100, 0.01)) * 100
+    ext200 = ((close - ema200) / max(ema200, 0.01)) * 100
 
     support_ok = support_distance_pct <= settings.max_support_distance_pct
     resistance_ok = resistance_distance_pct >= settings.min_resistance_room_pct
@@ -63,6 +65,7 @@ def evaluate_location(snapshot: dict[str, Any], config: AnalysisConfig) -> Locat
         ext20 > settings.max_overextension_ema20_pct
         or ext50 > settings.max_overextension_ema50_pct
         or ext100 > settings.max_overextension_ema100_pct
+        or ext200 > settings.max_overextension_ema200_pct
     )
     location_valid = support_ok and resistance_ok and not overextended
 
@@ -109,9 +112,11 @@ def evaluate_location(snapshot: dict[str, Any], config: AnalysisConfig) -> Locat
         overextension_ema20_pct=round(ext20, 2),
         overextension_ema50_pct=round(ext50, 2),
         overextension_ema100_pct=round(ext100, 2),
+        overextension_ema200_pct=round(ext200, 2),
         distance_to_ema20_pct=round(ext20, 2),
         distance_to_ema50_pct=round(ext50, 2),
         distance_to_ema100_pct=round(ext100, 2),
+        distance_to_ema200_pct=round(ext200, 2),
         distance_to_support_pct=round(support_distance_pct, 2),
         resistance_room_pct=round(resistance_distance_pct, 2),
         support_quality_score=round(support_quality_score, 2),

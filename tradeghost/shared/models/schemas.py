@@ -25,6 +25,7 @@ class LocationFilterSettings(BaseModel):
     max_overextension_ema20_pct: float
     max_overextension_ema50_pct: float
     max_overextension_ema100_pct: float
+    max_overextension_ema200_pct: float
 
 
 class TriggerFilterSettings(BaseModel):
@@ -100,9 +101,11 @@ class LocationDiagnostics(BaseModel):
     overextension_ema20_pct: float
     overextension_ema50_pct: float
     overextension_ema100_pct: float
+    overextension_ema200_pct: float
     distance_to_ema20_pct: float
     distance_to_ema50_pct: float
     distance_to_ema100_pct: float
+    distance_to_ema200_pct: float
     distance_to_support_pct: float
     resistance_room_pct: float
     support_quality_score: float

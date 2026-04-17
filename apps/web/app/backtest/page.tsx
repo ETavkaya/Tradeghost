@@ -6,13 +6,53 @@ import { UnifiedAnalysisChart } from "@/components/unified-analysis-chart";
 import { Panel, SectionTitle, StatCard } from "@/components/ui";
 import { TradesTable } from "@/components/trades-table";
 import { api } from "@/lib/api";
-import { BacktestFromAnalysisResponse } from "@/lib/types";
+import { BacktestFromAnalysisResponse, BacktestMarker, SkippedEntrySignal } from "@/lib/types";
+
+type ChartTab = "trades" | "decision";
+type DecisionFilter = "all" | "threshold" | "regime" | "location" | "trigger" | "watchlist";
+
+function decisionMarkerType(row: SkippedEntrySignal): string {
+  if (row.setup_status === "watchlist") return "watchlist";
+  if ((row.first_failed_gate ?? "").includes("threshold")) return "threshold_fail";
+  if ((row.first_failed_gate ?? "").includes("regime")) return "regime_fail";
+  if ((row.first_failed_gate ?? "").includes("trigger")) return "trigger_fail";
+  return "location_fail";
+}
+
+function toDecisionMarkers(rows: SkippedEntrySignal[], visibleDates: Set<string>): BacktestMarker[] {
+  const inRange = rows.filter((row) => visibleDates.has(row.date));
+  return inRange.map((row) => ({
+    date: row.date,
+    price: 0,
+    marker_type: decisionMarkerType(row),
+    label: row.first_failed_gate ?? row.setup_status,
+    hover_text:
+      `Date: ${row.date}<br>` +
+      `Score: ${row.final_score.toFixed(2)} / ${row.threshold_used.toFixed(2)}<br>` +
+      `Setup: ${row.setup_status}<br>` +
+      `Failed gate: ${row.first_failed_gate ?? "n/a"}<br>` +
+      `Reason: ${row.reason_detail ?? row.reason}<br>` +
+      `Support distance: ${row.support_distance_pct?.toFixed(2) ?? "n/a"}%<br>` +
+      `Resistance room: ${row.resistance_room_pct?.toFixed(2) ?? "n/a"}%<br>` +
+      `Trigger: ${row.trigger_state ?? "n/a"} (${row.trigger_score?.toFixed(2) ?? "n/a"})<br>` +
+      `Trend: ${row.trend_state ?? "n/a"}`,
+    trade_id: null,
+  }));
+}
+
+function filterDecisionRows(rows: SkippedEntrySignal[], filter: DecisionFilter): SkippedEntrySignal[] {
+  if (filter === "all") return rows;
+  if (filter === "watchlist") return rows.filter((row) => row.setup_status === "watchlist");
+  return rows.filter((row) => (row.first_failed_gate ?? "").includes(filter));
+}
 
 export default function BacktestPage() {
   const { analysis } = useAnalysisContext();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BacktestFromAnalysisResponse | null>(null);
+  const [chartTab, setChartTab] = useState<ChartTab>("trades");
+  const [decisionFilter, setDecisionFilter] = useState<DecisionFilter>("all");
 
   const runBacktest = async () => {
     if (!analysis) return;
@@ -54,6 +94,18 @@ export default function BacktestPage() {
     return `${analysis.ticker} | ${analysis.market.toUpperCase()} | ${analysis.window.toUpperCase()} | Analysis date ${analysis.as_of}`;
   }, [analysis]);
 
+  const filteredDecisionRows = useMemo(
+    () => (result ? filterDecisionRows(result.decision_log_sample, decisionFilter) : []),
+    [result, decisionFilter]
+  );
+
+  const activeMarkers = useMemo(() => {
+    if (!result) return [];
+    if (chartTab === "trades") return result.markers;
+    const visibleDates = new Set(result.chart.candles.map((c) => c.date));
+    return toDecisionMarkers(filteredDecisionRows, visibleDates);
+  }, [result, chartTab, filteredDecisionRows]);
+
   return (
     <main className="space-y-4">
       <Panel>
@@ -70,10 +122,11 @@ export default function BacktestPage() {
             </div>
             <div className="mt-3 rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
               Regime mode: {analysis.analysis_config.regime_filter.regime_mode}. Support max: {analysis.analysis_config.location_filter.max_support_distance_pct.toFixed(2)}%.
-              Resistance min room: {analysis.analysis_config.location_filter.min_resistance_room_pct.toFixed(2)}%. Overextension caps (EMA20/50/100):
+              Resistance min room: {analysis.analysis_config.location_filter.min_resistance_room_pct.toFixed(2)}%. Overextension caps (EMA20/50/100/200):
               {" "}{analysis.analysis_config.location_filter.max_overextension_ema20_pct.toFixed(2)}% /
               {" "}{analysis.analysis_config.location_filter.max_overextension_ema50_pct.toFixed(2)}% /
-              {" "}{analysis.analysis_config.location_filter.max_overextension_ema100_pct.toFixed(2)}%.
+              {" "}{analysis.analysis_config.location_filter.max_overextension_ema100_pct.toFixed(2)}% /
+              {" "}{analysis.analysis_config.location_filter.max_overextension_ema200_pct.toFixed(2)}%.
               Trigger minimum score: {analysis.analysis_config.trigger_filter.min_trigger_score.toFixed(1)}.
             </div>
           </>
@@ -104,7 +157,38 @@ export default function BacktestPage() {
               Warmup bars {result.analysis_config.warmup_bars}. Visible range: {result.visible_start} to {result.visible_end}.
             </p>
           </Panel>
-          <UnifiedAnalysisChart chart={result.chart} markers={result.markers} title={`${result.ticker} Backtest Chart`} />
+
+          <Panel>
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <button className={`h-9 rounded-lg px-3 text-sm ${chartTab === "trades" ? "bg-cyan text-bg" : "border border-stroke text-slate-300"}`} onClick={() => setChartTab("trades")}>
+                Trades
+              </button>
+              <button className={`h-9 rounded-lg px-3 text-sm ${chartTab === "decision" ? "bg-cyan text-bg" : "border border-stroke text-slate-300"}`} onClick={() => setChartTab("decision")}>
+                Skipped / Decision Map
+              </button>
+              {chartTab === "decision" ? (
+                <select
+                  value={decisionFilter}
+                  onChange={(event) => setDecisionFilter(event.target.value as DecisionFilter)}
+                  className="h-9 rounded-lg border border-stroke bg-bg px-3 text-sm"
+                >
+                  <option value="all">All</option>
+                  <option value="threshold">Threshold</option>
+                  <option value="regime">Regime</option>
+                  <option value="location">Location</option>
+                  <option value="trigger">Trigger</option>
+                  <option value="watchlist">Watchlist</option>
+                </select>
+              ) : null}
+            </div>
+            <UnifiedAnalysisChart
+              chart={result.chart}
+              markers={activeMarkers}
+              title={`${result.ticker} ${chartTab === "trades" ? "Trades" : "Decision Map"}`}
+              markerMode={chartTab}
+            />
+          </Panel>
+
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <StatCard label="Trades" value={`${result.trades}`} />
             <StatCard label="Win Rate" value={`${result.win_rate.toFixed(2)}%`} />
@@ -155,12 +239,12 @@ export default function BacktestPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {result.decision_log_sample.length === 0 ? (
+                  {filteredDecisionRows.length === 0 ? (
                     <tr>
                       <td className="px-2 py-3 text-slate-400" colSpan={11}>No skipped setups sampled.</td>
                     </tr>
                   ) : (
-                    result.decision_log_sample.map((row, idx) => (
+                    filteredDecisionRows.map((row, idx) => (
                       <tr key={`${row.date}-${idx}`} className="border-b border-stroke/50">
                         <td className="px-2 py-2">{row.date}</td>
                         <td className="px-2 py-2">{row.final_score.toFixed(2)}</td>

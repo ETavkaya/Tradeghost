@@ -47,6 +47,14 @@ def analyze_combined(
     strategy_mode: StrategyMode = Query(default=StrategyMode.BALANCED),
     score_threshold: float | None = Query(default=None, ge=0, le=100),
     warmup_bars: int | None = Query(default=None, ge=20, le=400),
+    regime_mode: str | None = Query(default=None),
+    max_support_distance_pct: float | None = Query(default=None, ge=0, le=30),
+    min_resistance_room_pct: float | None = Query(default=None, ge=0, le=30),
+    min_trigger_score: float | None = Query(default=None, ge=0, le=100),
+    max_overextension_ema20_pct: float | None = Query(default=None, ge=0, le=40),
+    max_overextension_ema50_pct: float | None = Query(default=None, ge=0, le=40),
+    max_overextension_ema100_pct: float | None = Query(default=None, ge=0, le=40),
+    max_overextension_ema200_pct: float | None = Query(default=None, ge=0, le=40),
 ) -> CombinedAnalysisResponse:
     try:
         return analysis_engine.analyze_combined(
@@ -56,6 +64,14 @@ def analyze_combined(
             strategy_mode=strategy_mode,
             score_threshold=score_threshold,
             warmup_bars=warmup_bars,
+            regime_mode=regime_mode,
+            max_support_distance_pct=max_support_distance_pct,
+            min_resistance_room_pct=min_resistance_room_pct,
+            min_trigger_score=min_trigger_score,
+            max_overextension_ema20_pct=max_overextension_ema20_pct,
+            max_overextension_ema50_pct=max_overextension_ema50_pct,
+            max_overextension_ema100_pct=max_overextension_ema100_pct,
+            max_overextension_ema200_pct=max_overextension_ema200_pct,
         )
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc

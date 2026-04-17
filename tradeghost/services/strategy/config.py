@@ -33,6 +33,7 @@ MODE_PRESETS: dict[StrategyMode, dict[str, Any]] = {
         "max_overextension_ema20_pct": 7.0,
         "max_overextension_ema50_pct": 10.0,
         "max_overextension_ema100_pct": 14.0,
+        "max_overextension_ema200_pct": 18.0,
         "min_trigger_score": 55.0,
     },
     StrategyMode.BALANCED: {
@@ -43,6 +44,7 @@ MODE_PRESETS: dict[StrategyMode, dict[str, Any]] = {
         "max_overextension_ema20_pct": 5.0,
         "max_overextension_ema50_pct": 8.0,
         "max_overextension_ema100_pct": 11.0,
+        "max_overextension_ema200_pct": 15.0,
         "min_trigger_score": 65.0,
     },
     StrategyMode.CONSERVATIVE: {
@@ -53,6 +55,7 @@ MODE_PRESETS: dict[StrategyMode, dict[str, Any]] = {
         "max_overextension_ema20_pct": 3.0,
         "max_overextension_ema50_pct": 5.0,
         "max_overextension_ema100_pct": 8.0,
+        "max_overextension_ema200_pct": 12.0,
         "min_trigger_score": 75.0,
     },
     StrategyMode.CUSTOM: {
@@ -64,6 +67,7 @@ MODE_PRESETS: dict[StrategyMode, dict[str, Any]] = {
         "max_overextension_ema20_pct": 5.0,
         "max_overextension_ema50_pct": 8.0,
         "max_overextension_ema100_pct": 11.0,
+        "max_overextension_ema200_pct": 15.0,
         "min_trigger_score": 65.0,
     },
 }
@@ -90,6 +94,14 @@ def build_analysis_config(
     strategy_mode: StrategyMode | str | None,
     score_threshold: float | None = None,
     warmup_bars: int | None = None,
+    regime_mode: str | None = None,
+    max_support_distance_pct: float | None = None,
+    min_resistance_room_pct: float | None = None,
+    min_trigger_score: float | None = None,
+    max_overextension_ema20_pct: float | None = None,
+    max_overextension_ema50_pct: float | None = None,
+    max_overextension_ema100_pct: float | None = None,
+    max_overextension_ema200_pct: float | None = None,
 ) -> AnalysisConfig:
     settings = get_settings()
     mode = normalize_strategy_mode(strategy_mode)
@@ -107,13 +119,28 @@ def build_analysis_config(
         strategy_mode=mode,
         score_threshold=threshold,
         warmup_bars=warmup,
-        regime_filter=RegimeFilterSettings(regime_mode=str(preset["regime_mode"])),
         location_filter=LocationFilterSettings(
-            max_support_distance_pct=float(preset["max_support_distance_pct"]),
-            min_resistance_room_pct=float(preset["min_resistance_room_pct"]),
-            max_overextension_ema20_pct=float(preset["max_overextension_ema20_pct"]),
-            max_overextension_ema50_pct=float(preset["max_overextension_ema50_pct"]),
-            max_overextension_ema100_pct=float(preset["max_overextension_ema100_pct"]),
+            max_support_distance_pct=float(
+                max_support_distance_pct if max_support_distance_pct is not None else preset["max_support_distance_pct"]
+            ),
+            min_resistance_room_pct=float(
+                min_resistance_room_pct if min_resistance_room_pct is not None else preset["min_resistance_room_pct"]
+            ),
+            max_overextension_ema20_pct=float(
+                max_overextension_ema20_pct if max_overextension_ema20_pct is not None else preset["max_overextension_ema20_pct"]
+            ),
+            max_overextension_ema50_pct=float(
+                max_overextension_ema50_pct if max_overextension_ema50_pct is not None else preset["max_overextension_ema50_pct"]
+            ),
+            max_overextension_ema100_pct=float(
+                max_overextension_ema100_pct if max_overextension_ema100_pct is not None else preset["max_overextension_ema100_pct"]
+            ),
+            max_overextension_ema200_pct=float(
+                max_overextension_ema200_pct if max_overextension_ema200_pct is not None else preset["max_overextension_ema200_pct"]
+            ),
         ),
-        trigger_filter=TriggerFilterSettings(min_trigger_score=float(preset["min_trigger_score"])),
+        regime_filter=RegimeFilterSettings(regime_mode=str(regime_mode if regime_mode is not None else preset["regime_mode"])),
+        trigger_filter=TriggerFilterSettings(
+            min_trigger_score=float(min_trigger_score if min_trigger_score is not None else preset["min_trigger_score"])
+        ),
     )

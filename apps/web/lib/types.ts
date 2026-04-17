@@ -12,6 +12,7 @@ export type LocationFilterSettings = {
   max_overextension_ema20_pct: number;
   max_overextension_ema50_pct: number;
   max_overextension_ema100_pct: number;
+  max_overextension_ema200_pct: number;
 };
 
 export type TriggerFilterSettings = {
@@ -114,9 +115,11 @@ export type LocationDiagnostics = {
   overextension_ema20_pct: number;
   overextension_ema50_pct: number;
   overextension_ema100_pct: number;
+  overextension_ema200_pct: number;
   distance_to_ema20_pct: number;
   distance_to_ema50_pct: number;
   distance_to_ema100_pct: number;
+  distance_to_ema200_pct: number;
   distance_to_support_pct: number;
   resistance_room_pct: number;
   support_quality_score: number;

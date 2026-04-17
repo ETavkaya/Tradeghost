@@ -68,6 +68,14 @@ class AnalysisEngine:
         strategy_mode: StrategyMode | str | None = None,
         score_threshold: float | None = None,
         warmup_bars: int | None = None,
+        regime_mode: str | None = None,
+        max_support_distance_pct: float | None = None,
+        min_resistance_room_pct: float | None = None,
+        min_trigger_score: float | None = None,
+        max_overextension_ema20_pct: float | None = None,
+        max_overextension_ema50_pct: float | None = None,
+        max_overextension_ema100_pct: float | None = None,
+        max_overextension_ema200_pct: float | None = None,
     ) -> CombinedAnalysisResponse:
         analysis_config = build_analysis_config(
             ticker=ticker,
@@ -76,6 +84,14 @@ class AnalysisEngine:
             strategy_mode=strategy_mode,
             score_threshold=score_threshold,
             warmup_bars=warmup_bars,
+            regime_mode=regime_mode,
+            max_support_distance_pct=max_support_distance_pct,
+            min_resistance_room_pct=min_resistance_room_pct,
+            min_trigger_score=min_trigger_score,
+            max_overextension_ema20_pct=max_overextension_ema20_pct,
+            max_overextension_ema50_pct=max_overextension_ema50_pct,
+            max_overextension_ema100_pct=max_overextension_ema100_pct,
+            max_overextension_ema200_pct=max_overextension_ema200_pct,
         )
         period = WINDOW_TO_PERIOD[analysis_config.lookback_window]
         bundle = self.data_service.get_market_data(analysis_config.ticker, market=analysis_config.market, period=period)

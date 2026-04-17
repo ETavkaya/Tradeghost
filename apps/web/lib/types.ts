@@ -276,6 +276,7 @@ export type BacktestTrade = {
   trend_state: string | null;
   setup_status: string | null;
   trigger_state: string | null;
+  is_early_trend_transition: boolean;
   reasoning_tags: string[];
 };
 
@@ -382,9 +383,13 @@ export type BacktestFromAnalysisResponse = {
   skipped_trigger: number;
   skipped_overextended: number;
   skipped_resistance_room: number;
+  skipped_ema200_transition: number;
   actionable_setups: number;
   watchlist_setups: number;
   avoid_setups: number;
+  early_trend_transition_entries: number;
+  early_trend_transition_wins: number;
+  early_transition_skip_share_pct: number;
   generated_at: string;
   trades_table: BacktestTrade[];
   skipped_signals_sample: SkippedEntrySignal[];
@@ -407,6 +412,7 @@ export type BacktestSnapshotSkipSummary = {
   trigger_fail: number;
   overextended_fail: number;
   resistance_room_fail: number;
+  ema200_transition_fail: number;
 };
 
 export type BacktestSnapshotComment = {

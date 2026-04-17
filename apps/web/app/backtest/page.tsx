@@ -33,6 +33,8 @@ function InfoHint({ label, text }: { label: string; text: string }) {
 }
 
 function decisionMarkerType(row: SkippedEntrySignal): string {
+  if ((row.regime_reason_code ?? "").includes("transition") || (row.regime_reason_code ?? "") === "early_trend_rebuild") return "early_transition_skip";
+  if ((row.first_failed_gate ?? "").includes("overextended")) return "overextended_fail";
   if (row.setup_status === "watchlist") return "watchlist";
   if ((row.first_failed_gate ?? "").includes("threshold")) return "threshold_fail";
   if ((row.first_failed_gate ?? "").includes("regime")) return "regime_fail";
@@ -274,6 +276,15 @@ export default function BacktestPage() {
   }, [result, chartTab, filteredDecisionRows]);
 
   const renderedDecisionMarkerCount = chartTab === "decision" ? activeMarkers.length : 0;
+  const decisionClusterStats = useMemo(() => {
+    if (!result) return { regime: 0, overextended: 0, transition: 0 };
+    const rows = result.decision_log_sample;
+    return {
+      regime: rows.filter((row) => (row.first_failed_gate ?? "") === "regime_filter").length,
+      overextended: rows.filter((row) => (row.first_failed_gate ?? "") === "overextended_filter").length,
+      transition: rows.filter((row) => (row.regime_reason_code ?? "").includes("transition") || (row.regime_reason_code ?? "") === "early_trend_rebuild").length,
+    };
+  }, [result]);
   const visibleTradeCount = useMemo(() => {
     if (!result) return 0;
     const visibleStart = new Date(result.visible_start);
@@ -289,11 +300,34 @@ export default function BacktestPage() {
     return ids.size;
   }, [result]);
 
+  const tunedConfig = useMemo(() => buildTunedConfig(), [
+    analysis,
+    threshold,
+    regimeMode,
+    supportMaxDistance,
+    minResistanceRoom,
+    minTriggerScore,
+    over20,
+    over50,
+    over100,
+    over200,
+  ]);
+
+  const pendingChanges = useMemo(() => {
+    if (!result || !tunedConfig) return false;
+    return JSON.stringify(tunedConfig) !== JSON.stringify(result.analysis_config);
+  }, [result, tunedConfig]);
+
   return (
     <main className="space-y-4">
-      <Panel>
-        <SectionTitle title="Backtest" subtitle="Runs from active analysis context with shared AnalysisConfig" />
+      <Panel className={pendingChanges ? "border-amber-400/40" : undefined}>
+        <SectionTitle title="Backtest Tuning (Editable)" subtitle="Edit pending parameters, then run to apply them into engine state" />
         <p className="text-sm text-slate-300">{contextLabel}</p>
+        <div className="mt-2">
+          <span className={`rounded-md px-2 py-1 text-xs ${pendingChanges ? "bg-amber-500/15 text-amber-300 border border-amber-400/40" : "bg-slate-800 text-slate-300 border border-stroke"}`}>
+            {pendingChanges ? "Pending changes (not applied yet)" : "No pending changes"}
+          </span>
+        </div>
         <div className="mt-3 grid gap-3 md:grid-cols-4">
           <label className="space-y-1 text-sm">
             <InfoHint label="Evaluation History" text="How much history is evaluated by the strategy engine (1Y to 5Y)." />
@@ -311,7 +345,7 @@ export default function BacktestPage() {
           </label>
           <StatCard label="Visible Chart Window" value={historyWindow.toUpperCase()} />
           <StatCard label="Mode" value={analysis?.analysis_config.strategy_mode ?? "n/a"} />
-          <StatCard label="Threshold" value={analysis ? `${analysis.analysis_config.score_threshold.toFixed(1)}` : "n/a"} />
+          <StatCard label="Threshold (pending)" value={`${threshold.toFixed(1)}`} />
         </div>
 
         <div className="mt-3 grid gap-3 md:grid-cols-3 xl:grid-cols-5">
@@ -356,27 +390,7 @@ export default function BacktestPage() {
             <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" type="number" step="0.1" value={over200} onChange={(event) => setOver200(Number(event.target.value))} />
           </label>
         </div>
-        <p className="mt-2 text-xs text-slate-400">Quick tuning writes into the shared AnalysisConfig before rerun. No backtest-only hidden config is used.</p>
-
-        {analysis ? (
-          <>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-              <StatCard label="Market" value={analysis.analysis_config.market.toUpperCase()} />
-              <StatCard label="Config Window" value={analysis.analysis_config.lookback_window.toUpperCase()} />
-              <StatCard label="Regime" value={analysis.analysis_config.regime_filter.regime_mode} />
-              <StatCard label="Warmup Bars" value={`${analysis.analysis_config.warmup_bars}`} />
-              <StatCard label="Trigger Min" value={`${analysis.analysis_config.trigger_filter.min_trigger_score.toFixed(1)}`} />
-            </div>
-            <div className="mt-3 rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
-              Support max: {analysis.analysis_config.location_filter.max_support_distance_pct.toFixed(2)}%. Resistance min room: {analysis.analysis_config.location_filter.min_resistance_room_pct.toFixed(2)}%. Overextension caps (EMA20/50/100/200):
-              {" "}{analysis.analysis_config.location_filter.max_overextension_ema20_pct.toFixed(2)}% /
-              {" "}{analysis.analysis_config.location_filter.max_overextension_ema50_pct.toFixed(2)}% /
-              {" "}{analysis.analysis_config.location_filter.max_overextension_ema100_pct.toFixed(2)}% /
-              {" "}{analysis.analysis_config.location_filter.max_overextension_ema200_pct.toFixed(2)}%.
-              Trigger minimum score: {analysis.analysis_config.trigger_filter.min_trigger_score.toFixed(1)}.
-            </div>
-          </>
-        ) : null}
+        <p className="mt-2 text-xs text-slate-400">Editable values are pending until rerun. Effective engine config updates only after a completed backtest run.</p>
 
         <button
           type="button"
@@ -415,21 +429,12 @@ export default function BacktestPage() {
           </Panel>
 
           <Panel>
-            <SectionTitle title="Effective Backtest Config" subtitle="Exact shared AnalysisConfig used for this run" />
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-              <StatCard label="Market" value={result.analysis_config.market.toUpperCase()} />
-              <StatCard label="Mode" value={result.analysis_config.strategy_mode} />
-              <StatCard label="Threshold" value={`${result.analysis_config.score_threshold.toFixed(1)}`} />
-              <StatCard label="Warmup Bars" value={`${result.analysis_config.warmup_bars}`} />
-              <StatCard label="Regime" value={result.analysis_config.regime_filter.regime_mode} />
-            </div>
-            <div className="mt-3 rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
+            <SectionTitle title="Effective Engine Config (Read-only Snapshot)" subtitle="This is the exact config used by the most recent run" />
+            <div className="rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
+              Market: {result.analysis_config.market.toUpperCase()} | Mode: {result.analysis_config.strategy_mode} | Threshold: {result.analysis_config.score_threshold.toFixed(1)} | Warmup bars: {result.analysis_config.warmup_bars} | Regime: {result.analysis_config.regime_filter.regime_mode}.{" "}
               Support max: {result.analysis_config.location_filter.max_support_distance_pct.toFixed(2)}%. Resistance min room: {result.analysis_config.location_filter.min_resistance_room_pct.toFixed(2)}%.
-              Overextension caps (EMA20/50/100/200):
-              {" "}{result.analysis_config.location_filter.max_overextension_ema20_pct.toFixed(2)}% /
-              {" "}{result.analysis_config.location_filter.max_overextension_ema50_pct.toFixed(2)}% /
-              {" "}{result.analysis_config.location_filter.max_overextension_ema100_pct.toFixed(2)}% /
-              {" "}{result.analysis_config.location_filter.max_overextension_ema200_pct.toFixed(2)}%.
+              Overextension caps (EMA20/50/100/200):{" "}
+              {result.analysis_config.location_filter.max_overextension_ema20_pct.toFixed(2)}% / {result.analysis_config.location_filter.max_overextension_ema50_pct.toFixed(2)}% / {result.analysis_config.location_filter.max_overextension_ema100_pct.toFixed(2)}% / {result.analysis_config.location_filter.max_overextension_ema200_pct.toFixed(2)}%.
               Trigger minimum score: {result.analysis_config.trigger_filter.min_trigger_score.toFixed(1)}.
             </div>
           </Panel>
@@ -473,6 +478,13 @@ export default function BacktestPage() {
               title={`${result.ticker} ${chartTab === "trades" ? "Trades" : "Decision Map"}`}
               markerMode={chartTab}
             />
+            {chartTab === "decision" ? (
+              <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                <p className="rounded-md border border-stroke/70 bg-panelSoft px-2 py-1 text-xs text-slate-300">Regime skip cluster: {decisionClusterStats.regime}</p>
+                <p className="rounded-md border border-stroke/70 bg-panelSoft px-2 py-1 text-xs text-slate-300">Overextended cluster: {decisionClusterStats.overextended}</p>
+                <p className="rounded-md border border-stroke/70 bg-panelSoft px-2 py-1 text-xs text-slate-300">EMA200 transition cluster: {decisionClusterStats.transition}</p>
+              </div>
+            ) : null}
           </Panel>
 
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -486,96 +498,6 @@ export default function BacktestPage() {
             <StatCard label="Triggered Entries" value={`${result.entries_triggered}`} />
           </div>
           <Panel>
-            <SectionTitle title="Backtest Review Log" subtitle="Save reproducible snapshots and annotate improvements" />
-            <div className="grid gap-3 md:grid-cols-4">
-              <label className="space-y-1 text-sm">
-                <span className="text-xs text-slate-400">Review Status</span>
-                <select className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" value={reviewStatus} onChange={(event) => setReviewStatus(event.target.value as ReviewStatus)}>
-                  <option value="exploratory">exploratory</option>
-                  <option value="candidate_strategy">candidate_strategy</option>
-                  <option value="issue_detected">issue_detected</option>
-                  <option value="approved_baseline">approved_baseline</option>
-                </select>
-              </label>
-              <label className="space-y-1 text-sm md:col-span-2">
-                <span className="text-xs text-slate-400">Experiment Group (optional)</span>
-                <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" value={experimentGroup} onChange={(event) => setExperimentGroup(event.target.value)} placeholder="ema200-transition-tests" />
-              </label>
-              <div className="flex items-end">
-                <button type="button" onClick={saveSnapshot} disabled={savingSnapshot} className="h-10 w-full rounded-lg bg-cyan px-3 text-sm font-semibold text-bg disabled:opacity-50">
-                  {savingSnapshot ? "Saving..." : "Save Snapshot"}
-                </button>
-              </div>
-            </div>
-            <div className="mt-3 grid gap-3 md:grid-cols-2">
-              <label className="space-y-1 text-sm">
-                <span className="text-xs text-slate-400">Snapshot Selector</span>
-                <select className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" value={selectedSnapshotId} onChange={(event) => void onSnapshotChange(event.target.value)}>
-                  <option value="">Select a snapshot</option>
-                  {snapshots.map((row) => (
-                    <option key={row.id} value={row.id}>
-                      {row.timestamp.slice(0, 19)} | {row.symbol} | {row.mode} | {row.review_status}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="flex items-end">
-                <button type="button" onClick={() => void loadSnapshots()} className="h-10 rounded-lg border border-stroke px-4 text-sm text-slate-300 hover:text-cyan">
-                  {snapshotsLoading ? "Refreshing..." : "Refresh Logs"}
-                </button>
-              </div>
-            </div>
-            {snapshotError ? <p className="mt-2 text-xs text-red">{snapshotError}</p> : null}
-
-            {selectedSnapshot ? (
-              <div className="mt-3 space-y-3">
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <StatCard label="Snapshot" value={selectedSnapshot.id.slice(0, 8)} />
-                  <StatCard label="Trades" value={`${selectedSnapshot.metrics.total_trades}`} />
-                  <StatCard label="Win Rate" value={`${selectedSnapshot.metrics.win_rate.toFixed(2)}%`} />
-                  <StatCard label="Expectancy" value={`${selectedSnapshot.metrics.expectancy.toFixed(2)}%`} />
-                </div>
-                <div className="rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
-                  Review: {selectedSnapshot.review_status}. Evaluation history: {selectedSnapshot.evaluation_history.toUpperCase()}. Visible window: {selectedSnapshot.visible_window.toUpperCase()}.
-                  Artifact keys: {Object.keys(selectedSnapshot.artifacts).join(", ") || "none"}.
-                </div>
-                <div className="grid gap-3 md:grid-cols-3">
-                  <label className="space-y-1 text-sm">
-                    <span className="text-xs text-slate-400">Commentator</span>
-                    <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" value={commentator} onChange={(event) => setCommentator(event.target.value)} />
-                  </label>
-                  <label className="space-y-1 text-sm md:col-span-2">
-                    <span className="text-xs text-slate-400">Tags (comma separated)</span>
-                    <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" value={commentTags} onChange={(event) => setCommentTags(event.target.value)} placeholder="entry_logic,ema200,overextension" />
-                  </label>
-                  <label className="space-y-1 text-sm md:col-span-3">
-                    <span className="text-xs text-slate-400">Comment</span>
-                    <textarea className="min-h-[88px] w-full rounded-lg border border-stroke bg-bg p-3" value={commentText} onChange={(event) => setCommentText(event.target.value)} placeholder="Write what should be tuned and why." />
-                  </label>
-                </div>
-                <button type="button" onClick={addComment} disabled={addingComment || !commentText.trim()} className="h-10 rounded-lg border border-stroke px-4 text-sm text-slate-300 hover:text-cyan disabled:opacity-50">
-                  {addingComment ? "Adding comment..." : "Add Comment"}
-                </button>
-
-                <div className="space-y-2">
-                  <p className="text-sm text-slate-300">Comments</p>
-                  {selectedSnapshot.comments.length === 0 ? (
-                    <p className="text-xs text-slate-400">No comments yet.</p>
-                  ) : (
-                    selectedSnapshot.comments.map((row) => (
-                      <div key={row.id} className="rounded-lg border border-stroke/70 bg-bg/30 p-2 text-xs text-slate-300">
-                        <p>
-                          <span className="font-semibold">{row.commentator}</span> | {row.timestamp.slice(0, 19)} | tags: {row.tags.join(", ") || "none"}
-                        </p>
-                        <p className="mt-1">{row.content}</p>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            ) : null}
-          </Panel>
-          <Panel>
             <SectionTitle title="Scan Diagnostics" subtitle="Why setups were skipped" />
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <StatCard label="Skipped: Threshold" value={`${result.skipped_due_to_threshold}`} />
@@ -584,15 +506,18 @@ export default function BacktestPage() {
               <StatCard label="Skipped: Trigger" value={`${result.skipped_trigger}`} />
               <StatCard label="Skipped: Overextended" value={`${result.skipped_overextended}`} />
               <StatCard label="Skipped: Resist. Room" value={`${result.skipped_resistance_room}`} />
-              <StatCard label="Skipped: Setup" value={`${result.skipped_due_to_setup}`} />
-              <StatCard label="Visible" value={`${result.visible_start} > ${result.visible_end}`} />
+              <StatCard label="Skipped: EMA200 Transition" value={`${result.skipped_ema200_transition}`} />
+              <StatCard label="Transition Skip Share" value={`${result.early_transition_skip_share_pct.toFixed(2)}%`} />
             </div>
             <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <StatCard label="Actionable Setups" value={`${result.actionable_setups}`} />
               <StatCard label="Watchlist Setups" value={`${result.watchlist_setups}`} />
               <StatCard label="Avoid Setups" value={`${result.avoid_setups}`} />
-              <StatCard label="Pipeline Setup Status" value={analysis?.analysis_pipeline.setup_status ?? "n/a"} />
+              <StatCard label="Early Transition Entries" value={`${result.early_trend_transition_entries}`} />
             </div>
+            <p className="mt-3 text-xs text-slate-300">
+              Insight: {result.early_transition_skip_share_pct.toFixed(2)}% of skipped setups were EMA200 transition related.
+            </p>
           </Panel>
           <TradesTable trades={result.trades_table} />
           <Panel>
@@ -639,6 +564,89 @@ export default function BacktestPage() {
                 </tbody>
               </table>
             </div>
+          </Panel>
+          <Panel>
+            <SectionTitle title="Backtest Review Log" subtitle="Secondary workflow: save snapshots and annotate findings" />
+            <div className="grid gap-3 md:grid-cols-4">
+              <label className="space-y-1 text-sm">
+                <span className="text-xs text-slate-400">Review Status</span>
+                <select className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" value={reviewStatus} onChange={(event) => setReviewStatus(event.target.value as ReviewStatus)}>
+                  <option value="exploratory">exploratory</option>
+                  <option value="candidate_strategy">candidate_strategy</option>
+                  <option value="issue_detected">issue_detected</option>
+                  <option value="approved_baseline">approved_baseline</option>
+                </select>
+              </label>
+              <label className="space-y-1 text-sm md:col-span-2">
+                <span className="text-xs text-slate-400">Experiment Group (optional)</span>
+                <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" value={experimentGroup} onChange={(event) => setExperimentGroup(event.target.value)} placeholder="ema200-transition-tests" />
+              </label>
+              <div className="flex items-end">
+                <button type="button" onClick={saveSnapshot} disabled={savingSnapshot} className="h-10 w-full rounded-lg bg-cyan px-3 text-sm font-semibold text-bg disabled:opacity-50">
+                  {savingSnapshot ? "Saving..." : "Save Snapshot"}
+                </button>
+              </div>
+            </div>
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <label className="space-y-1 text-sm">
+                <span className="text-xs text-slate-400">Snapshot Selector</span>
+                <select className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" value={selectedSnapshotId} onChange={(event) => void onSnapshotChange(event.target.value)}>
+                  <option value="">Select a snapshot</option>
+                  {snapshots.map((row) => (
+                    <option key={row.id} value={row.id}>
+                      {row.timestamp.slice(0, 19)} | {row.symbol} | {row.mode} | {row.review_status}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="flex items-end">
+                <button type="button" onClick={() => void loadSnapshots()} className="h-10 rounded-lg border border-stroke px-4 text-sm text-slate-300 hover:text-cyan">
+                  {snapshotsLoading ? "Refreshing..." : "Refresh Logs"}
+                </button>
+              </div>
+            </div>
+            {snapshotError ? <p className="mt-2 text-xs text-red">{snapshotError}</p> : null}
+
+            {selectedSnapshot ? (
+              <div className="mt-3 space-y-3">
+                <div className="rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
+                  Snapshot {selectedSnapshot.id.slice(0, 8)} | trades {selectedSnapshot.metrics.total_trades} | win rate {selectedSnapshot.metrics.win_rate.toFixed(2)}% | expectancy {selectedSnapshot.metrics.expectancy.toFixed(2)}%.
+                  Review: {selectedSnapshot.review_status}. Evaluation history: {selectedSnapshot.evaluation_history.toUpperCase()}. Visible window: {selectedSnapshot.visible_window.toUpperCase()}.
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <label className="space-y-1 text-sm">
+                    <span className="text-xs text-slate-400">Commentator</span>
+                    <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" value={commentator} onChange={(event) => setCommentator(event.target.value)} />
+                  </label>
+                  <label className="space-y-1 text-sm md:col-span-2">
+                    <span className="text-xs text-slate-400">Tags (comma separated)</span>
+                    <input className="h-10 w-full rounded-lg border border-stroke bg-bg px-3" value={commentTags} onChange={(event) => setCommentTags(event.target.value)} placeholder="entry_logic,ema200,overextension" />
+                  </label>
+                  <label className="space-y-1 text-sm md:col-span-3">
+                    <span className="text-xs text-slate-400">Comment</span>
+                    <textarea className="min-h-[88px] w-full rounded-lg border border-stroke bg-bg p-3" value={commentText} onChange={(event) => setCommentText(event.target.value)} placeholder="Write what should be tuned and why." />
+                  </label>
+                </div>
+                <button type="button" onClick={addComment} disabled={addingComment || !commentText.trim()} className="h-10 rounded-lg border border-stroke px-4 text-sm text-slate-300 hover:text-cyan disabled:opacity-50">
+                  {addingComment ? "Adding comment..." : "Add Comment"}
+                </button>
+                <div className="space-y-2">
+                  <p className="text-sm text-slate-300">Comments</p>
+                  {selectedSnapshot.comments.length === 0 ? (
+                    <p className="text-xs text-slate-400">No comments yet.</p>
+                  ) : (
+                    selectedSnapshot.comments.map((row) => (
+                      <div key={row.id} className="rounded-lg border border-stroke/70 bg-bg/30 p-2 text-xs text-slate-300">
+                        <p>
+                          <span className="font-semibold">{row.commentator}</span> | {row.timestamp.slice(0, 19)} | tags: {row.tags.join(", ") || "none"}
+                        </p>
+                        <p className="mt-1">{row.content}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            ) : null}
           </Panel>
         </>
       ) : null}

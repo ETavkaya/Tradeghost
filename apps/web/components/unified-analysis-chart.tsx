@@ -29,6 +29,8 @@ const markerStyle: Record<string, { color: string; symbol: string; name: string 
   regime_fail: { color: "#A277FF", symbol: "square", name: "Regime Fail" },
   location_fail: { color: "#FF9E44", symbol: "diamond", name: "Location Fail" },
   trigger_fail: { color: "#F2B94B", symbol: "triangle-up", name: "Trigger Fail" },
+  overextended_fail: { color: "#FF6B3D", symbol: "x", name: "Overextended Fail" },
+  early_transition_skip: { color: "#FF4FB3", symbol: "hexagon", name: "EMA200 Transition Skip" },
   watchlist: { color: "#47A3FF", symbol: "circle-open", name: "Watchlist" },
   actionable: { color: "#23D18B", symbol: "star", name: "Actionable" }
 };

@@ -53,6 +53,7 @@ class _Position:
     trend_state: str
     setup_status: str
     trigger_state: str
+    is_early_trend_transition: bool
     reasoning_tags: list[str]
 
 
@@ -68,9 +69,13 @@ class _SimulationResult:
     skipped_trigger: int
     skipped_overextended: int
     skipped_resistance_room: int
+    skipped_ema200_transition: int
     actionable_setups: int
     watchlist_setups: int
     avoid_setups: int
+    early_trend_transition_entries: int
+    early_trend_transition_wins: int
+    early_transition_skip_share_pct: float
     decision_log: list[SkippedEntrySignal]
     warmup_bars_used: int
     evaluated_bars: int
@@ -102,6 +107,7 @@ class BacktestEngine:
             f"Regime valid: {'yes' if regime.regime_valid else 'no'} ({regime.regime_mode_used})",
             f"Location valid: {'yes' if location.location_valid else 'no'}",
             f"Trigger valid: {'yes' if trigger.trigger_valid else 'no'} ({trigger.trigger_type})",
+            f"Transition override: {'yes' if entry_gate.transition_entry_allowed else 'no'}",
             f"Support distance: {location.support_distance_pct:.2f}%",
             f"Resistance room: {location.resistance_distance_pct:.2f}%",
             f"Overextended: {'yes' if location.overextended_flag else 'no'}",
@@ -183,9 +189,12 @@ class BacktestEngine:
         skipped_trigger = 0
         skipped_overextended = 0
         skipped_resistance_room = 0
+        skipped_ema200_transition = 0
         actionable_setups = 0
         watchlist_setups = 0
         avoid_setups = 0
+        early_trend_transition_entries = 0
+        early_trend_transition_wins = 0
         decision_log: list[SkippedEntrySignal] = []
         evaluated_bars = 0
         next_trade_id = 1
@@ -232,7 +241,7 @@ class BacktestEngine:
                 setup = pipeline.setup_interpretation
                 entry_gate = pipeline.entry_gate
 
-                if setup.setup_status == "actionable":
+                if setup.setup_status in {"actionable", "early_trend_transition"}:
                     actionable_setups += 1
                 elif setup.setup_status == "watchlist":
                     watchlist_setups += 1
@@ -245,6 +254,8 @@ class BacktestEngine:
                         skipped_due_to_threshold += 1
                     elif reason == "regime_filter":
                         skipped_regime += 1
+                        if regime.regime_reason_code in {"ema200_reclaim_transition", "early_trend_rebuild", "post_regime_reclaim_watchlist"}:
+                            skipped_ema200_transition += 1
                     elif reason in {"location_filter", "overextended_filter", "resistance_room_filter"}:
                         skipped_location += 1
                         if reason == "overextended_filter":
@@ -294,10 +305,17 @@ class BacktestEngine:
 
                 entry_price = float(current_row["close"])
                 major_conditions = self._format_major_conditions(final_score, entry_gate, regime, location, trigger)
+                is_early_transition = setup.setup_status == "early_trend_transition"
                 entry_reason = (
                     f"Entry gate passed ({config.strategy_mode.value}). Score {final_score:.2f}/{config.score_threshold:.2f}; "
                     f"regime={regime.ema_stack_quality}, location={location.location_score:.1f}, trigger={trigger.trigger_type}."
                 )
+                if is_early_transition:
+                    entry_reason = (
+                        f"Early trend transition entry ({config.strategy_mode.value}). "
+                        f"EMA200 reclaim age={regime.bars_since_reclaim if regime.bars_since_reclaim is not None else 'n/a'} bars, "
+                        f"trigger score={trigger.trigger_score:.1f} (strict transition rule)."
+                    )
                 position = _Position(
                     trade_id=next_trade_id,
                     entry_idx=i,
@@ -324,8 +342,11 @@ class BacktestEngine:
                     trend_state=setup.trend_state,
                     setup_status=setup.setup_status,
                     trigger_state=trigger.trigger_state,
+                    is_early_trend_transition=is_early_transition,
                     reasoning_tags=setup.reasoning_tags,
                 )
+                if is_early_transition:
+                    early_trend_transition_entries += 1
                 entries_triggered += 1
                 next_trade_id += 1
                 continue
@@ -396,9 +417,12 @@ class BacktestEngine:
                     trend_state=position.trend_state,
                     setup_status=position.setup_status,
                     trigger_state=position.trigger_state,
+                    is_early_trend_transition=position.is_early_trend_transition,
                     reasoning_tags=position.reasoning_tags,
                 )
             )
+            if position.is_early_trend_transition and ret > 0:
+                early_trend_transition_wins += 1
             position = None
 
         if position is not None:
@@ -438,10 +462,14 @@ class BacktestEngine:
                     trend_state=position.trend_state,
                     setup_status=position.setup_status,
                     trigger_state=position.trigger_state,
+                    is_early_trend_transition=position.is_early_trend_transition,
                     reasoning_tags=position.reasoning_tags,
                 )
             )
+            if position.is_early_trend_transition and ret > 0:
+                early_trend_transition_wins += 1
 
+        early_transition_skip_share_pct = (skipped_ema200_transition / len(decision_log) * 100.0) if decision_log else 0.0
         return _SimulationResult(
             trades=trades,
             entries_considered=entries_considered,
@@ -453,9 +481,13 @@ class BacktestEngine:
             skipped_trigger=skipped_trigger,
             skipped_overextended=skipped_overextended,
             skipped_resistance_room=skipped_resistance_room,
+            skipped_ema200_transition=skipped_ema200_transition,
             actionable_setups=actionable_setups,
             watchlist_setups=watchlist_setups,
             avoid_setups=avoid_setups,
+            early_trend_transition_entries=early_trend_transition_entries,
+            early_trend_transition_wins=early_trend_transition_wins,
+            early_transition_skip_share_pct=round(early_transition_skip_share_pct, 2),
             decision_log=decision_log,
             warmup_bars_used=warmup,
             evaluated_bars=evaluated_bars,
@@ -682,9 +714,13 @@ class BacktestEngine:
             skipped_trigger=sim.skipped_trigger,
             skipped_overextended=sim.skipped_overextended,
             skipped_resistance_room=sim.skipped_resistance_room,
+            skipped_ema200_transition=sim.skipped_ema200_transition,
             actionable_setups=sim.actionable_setups,
             watchlist_setups=sim.watchlist_setups,
             avoid_setups=sim.avoid_setups,
+            early_trend_transition_entries=sim.early_trend_transition_entries,
+            early_trend_transition_wins=sim.early_trend_transition_wins,
+            early_transition_skip_share_pct=sim.early_transition_skip_share_pct,
             trades_table=sim.trades,
             skipped_signals_sample=decision_log_sample,
             decision_log_sample=decision_log_sample,

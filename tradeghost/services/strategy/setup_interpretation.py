@@ -27,7 +27,7 @@ def classify_setup(
     transition_codes = {"ema200_reclaim_transition", "early_trend_rebuild", "post_regime_reclaim_watchlist"}
 
     if regime.regime_reason_code == "ema200_reclaim_transition":
-        trend_state = "ema200_reclaim_transition"
+        trend_state = "early_trend_transition"
     elif regime.regime_reason_code in {"early_trend_rebuild", "post_regime_reclaim_watchlist"}:
         trend_state = "early_trend_rebuild"
     elif close > ema200 and ema50 > ema100 > ema200:
@@ -63,7 +63,9 @@ def classify_setup(
     else:
         resistance_test_state = "at_resistance"
 
-    if final_entry_decision:
+    if final_entry_decision and regime.regime_reason_code in transition_codes:
+        setup_status = "early_trend_transition"
+    elif final_entry_decision:
         setup_status = "actionable"
     elif regime.regime_reason_code in transition_codes and threshold_passed and not location.overextended_flag:
         setup_status = "watchlist"

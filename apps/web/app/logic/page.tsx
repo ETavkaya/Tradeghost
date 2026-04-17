@@ -18,6 +18,7 @@ export default function LogicPage() {
           <p>Trade scope workflow: summary trade count is across full evaluation history; chart markers are only for trades inside visible chart window.</p>
           <p>Decision map workflow: sampled skip decisions are evenly distributed across evaluated bars, then filtered by visible chart dates and selected gate filter.</p>
           <p>EMA200 regime diagnostics: reason code, price vs EMA200, EMA200 slope state, stack alignment, and bars since reclaim are emitted deterministically.</p>
+          <p>Early trend transition rule: recent EMA200 reclaim setups can be tradeable when transition conditions pass stricter trigger checks; otherwise they are logged as transition-related skips.</p>
           <p>Mode logic: aggressive/balanced/conservative presets plus custom. Custom fields are explicit threshold/filter values, no hidden LLM rules.</p>
           <p>Backtest review log workflow: each saved snapshot stores config, metrics, skip summary, and comment thread under logs/backtest_reviews for reproducible audits.</p>
         </div>

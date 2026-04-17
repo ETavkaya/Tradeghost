@@ -247,13 +247,27 @@ def evaluate_entry_gate(
     trigger: TriggerDiagnostics,
 ) -> EntryGateDiagnostics:
     score_passed = final_score >= config.score_threshold
+    transition_tradeable = bool(
+        regime.regime_reason_code in {"ema200_reclaim_transition", "early_trend_rebuild", "post_regime_reclaim_watchlist"}
+        and regime.price_above_ema200
+        and regime.bars_since_reclaim is not None
+        and regime.bars_since_reclaim <= 5
+        and location.location_valid
+        and trigger.trigger_score >= (config.trigger_filter.min_trigger_score + 10.0)
+        and score_passed
+    )
     entry_quality_score = (
         (0.35 * final_score)
         + (0.2 * (100.0 if regime.regime_valid else 0.0))
         + (0.25 * location.location_score)
         + (0.2 * trigger.trigger_score)
     )
-    final_decision = bool(score_passed and regime.regime_valid and location.location_valid and trigger.trigger_valid)
+    final_decision = bool(
+        score_passed
+        and location.location_valid
+        and (trigger.trigger_valid or transition_tradeable)
+        and (regime.regime_valid or transition_tradeable)
+    )
 
     skip_reason = None
     if not final_decision:
@@ -272,6 +286,8 @@ def evaluate_entry_gate(
             skip_reason = "trigger_filter"
         else:
             skip_reason = "setup_filter"
+    elif transition_tradeable and not regime.regime_valid:
+        skip_reason = None
 
     return EntryGateDiagnostics(
         final_score=round(final_score, 2),
@@ -281,6 +297,7 @@ def evaluate_entry_gate(
         location_valid=location.location_valid,
         trigger_valid=trigger.trigger_valid,
         entry_quality_score=round(entry_quality_score, 2),
+        transition_entry_allowed=transition_tradeable,
         final_entry_decision=final_decision,
         skip_reason=skip_reason,
     )

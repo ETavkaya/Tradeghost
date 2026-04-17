@@ -104,6 +104,7 @@ class BacktestReviewLogService:
                 trigger_fail=result.skipped_trigger,
                 overextended_fail=result.skipped_overextended,
                 resistance_room_fail=result.skipped_resistance_room,
+                ema200_transition_fail=result.skipped_ema200_transition,
             ),
             artifacts={
                 "scope_snapshot": str(artifact_scope),

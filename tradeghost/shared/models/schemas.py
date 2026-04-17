@@ -146,6 +146,7 @@ class EntryGateDiagnostics(BaseModel):
     location_valid: bool
     trigger_valid: bool
     entry_quality_score: float
+    transition_entry_allowed: bool = False
     final_entry_decision: bool
     skip_reason: str | None = None
 
@@ -297,6 +298,7 @@ class BacktestTrade(BaseModel):
     trend_state: str | None = None
     setup_status: str | None = None
     trigger_state: str | None = None
+    is_early_trend_transition: bool = False
     reasoning_tags: list[str] = Field(default_factory=list)
 
 
@@ -394,9 +396,13 @@ class BacktestFromAnalysisResponse(BaseModel):
     skipped_trigger: int
     skipped_overextended: int
     skipped_resistance_room: int
+    skipped_ema200_transition: int
     actionable_setups: int
     watchlist_setups: int
     avoid_setups: int
+    early_trend_transition_entries: int
+    early_trend_transition_wins: int
+    early_transition_skip_share_pct: float
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     trades_table: list[BacktestTrade]
     skipped_signals_sample: list[SkippedEntrySignal]
@@ -419,6 +425,7 @@ class BacktestSnapshotSkipSummary(BaseModel):
     trigger_fail: int
     overextended_fail: int
     resistance_room_fail: int
+    ema200_transition_fail: int = 0
 
 
 class BacktestSnapshotComment(BaseModel):

@@ -11,6 +11,15 @@ import { api } from "@/lib/api";
 import { AnalysisConfig, AnalysisWindow, MarketCode, StrategyMode } from "@/lib/types";
 
 type RegimeMode = "strict" | "medium" | "relaxed";
+type ScannerContext = {
+  category: string;
+  scannerScore: string;
+  currentScore: string;
+  deltaShort: string;
+  deltaMedium: string;
+  dynamicsState: string;
+  reason: string;
+} | null;
 
 type ModePreset = {
   score_threshold: number;
@@ -123,6 +132,7 @@ function AnalysisPageInner() {
   const [maxOver100, setMaxOver100] = useState(seed.max_overextension_ema100_pct);
   const [maxOver200, setMaxOver200] = useState(seed.max_overextension_ema200_pct);
   const [customSeeded, setCustomSeeded] = useState(strategyMode === "custom");
+  const [scannerContext, setScannerContext] = useState<ScannerContext>(null);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -131,12 +141,30 @@ function AnalysisPageInner() {
     const nextTicker = searchParams.get("ticker");
     const nextMarket = searchParams.get("market");
     const nextWindow = searchParams.get("window");
+    const scannerCategory = searchParams.get("scanner_category");
+    const scannerScore = searchParams.get("scanner_score");
+    const scannerCurrentScore = searchParams.get("scanner_current_score");
+    const scannerDeltaShort = searchParams.get("scanner_delta_short");
+    const scannerDeltaMedium = searchParams.get("scanner_delta_medium");
+    const scannerDynamicsState = searchParams.get("scanner_dynamics_state");
+    const scannerReason = searchParams.get("scanner_reason");
     if (nextTicker) setTicker(nextTicker.toUpperCase());
     if (nextMarket === "us" || nextMarket === "bist") {
       setMarket(nextMarket);
     }
     if (nextWindow && ["5d", "1m", "3m", "6m", "1y", "2y", "3y", "4y", "5y", "10y"].includes(nextWindow)) {
       setWindow(nextWindow as AnalysisWindow);
+    }
+    if (scannerCategory || scannerScore || scannerReason) {
+      setScannerContext({
+        category: (scannerCategory ?? "n/a").replaceAll("_", " "),
+        scannerScore: scannerScore ?? "n/a",
+        currentScore: scannerCurrentScore ?? "n/a",
+        deltaShort: scannerDeltaShort ?? "n/a",
+        deltaMedium: scannerDeltaMedium ?? "n/a",
+        dynamicsState: scannerDynamicsState ?? "n/a",
+        reason: scannerReason ?? "n/a",
+      });
     }
   }, [searchParams]);
 
@@ -293,6 +321,20 @@ function AnalysisPageInner() {
 
       {analysis ? (
         <>
+          {scannerContext ? (
+            <Panel>
+              <SectionTitle title="Scanner Context" subtitle="How this symbol was surfaced by scanner" />
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+                <StatCard label="Surfaced By" value={scannerContext.category} />
+                <StatCard label="Scanner Score" value={scannerContext.scannerScore} />
+                <StatCard label="Current Score" value={scannerContext.currentScore} />
+                <StatCard label="Delta Short (5)" value={scannerContext.deltaShort} />
+                <StatCard label="Delta Medium (20)" value={scannerContext.deltaMedium} />
+                <StatCard label="Dynamics" value={scannerContext.dynamicsState} />
+              </div>
+              <p className="mt-2 text-xs text-slate-300">Scanner reason: {scannerContext.reason}</p>
+            </Panel>
+          ) : null}
           <UnifiedAnalysisChart
             chart={analysis.chart}
             title={`${analysis.ticker} Unified Analysis (${analysis.market.toUpperCase()} - ${analysis.window.toUpperCase()})`}

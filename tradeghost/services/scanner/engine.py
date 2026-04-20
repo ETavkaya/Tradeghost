@@ -55,6 +55,7 @@ BIST_FULL_UNIVERSE = [
 CATEGORY_RECOMMENDED_DURATION: dict[ScannerCategory, ScannerDuration] = {
     ScannerCategory.TREND_MODE: ScannerDuration.TWO_YEAR,
     ScannerCategory.BUILD_UP: ScannerDuration.TWO_YEAR,
+    ScannerCategory.MOMENTUM_MODE: ScannerDuration.ONE_YEAR,
     ScannerCategory.OVEREXTENDED: ScannerDuration.ONE_YEAR,
 }
 
@@ -64,6 +65,14 @@ class _Eval:
     score: float
     tag: str
     reason: str
+
+
+@dataclass
+class _ScoreDynamics:
+    current_score: float
+    score_delta_short: float
+    score_delta_medium: float
+    score_dynamics_state: str
 
 
 class ScannerEngine:
@@ -101,14 +110,59 @@ class ScannerEngine:
             return "balanced"
         return "expanded"
 
-    def _score_for_category(self, category: ScannerCategory, final_score: float, regime, location, setup, trigger) -> _Eval:
+    @staticmethod
+    def _classify_score_dynamics(short_delta: float, medium_delta: float) -> str:
+        if short_delta >= 4.0 and medium_delta >= 8.0:
+            return "accelerating"
+        if short_delta >= 1.5 and medium_delta >= 3.0:
+            return "improving"
+        if short_delta <= -4.0 and medium_delta <= -8.0:
+            return "deteriorating"
+        if short_delta <= -1.5 or medium_delta <= -3.0:
+            return "weakening"
+        return "stable"
+
+    def _compute_score_dynamics(self, *, daily, weekly, market_cap, config, current_score: float) -> _ScoreDynamics:
+
+        short_score = current_score
+        if len(daily) > 25:
+            short_daily = daily.iloc[:-5]
+            short_weekly = weekly[weekly.index <= short_daily.index[-1]]
+            if len(short_weekly) >= 10:
+                short_state = run_analysis_pipeline(daily=short_daily, weekly=short_weekly, market_cap=market_cap, config=config)
+                short_score = float(short_state.final_score)
+
+        medium_score = current_score
+        if len(daily) > 40:
+            medium_daily = daily.iloc[:-20]
+            medium_weekly = weekly[weekly.index <= medium_daily.index[-1]]
+            if len(medium_weekly) >= 10:
+                medium_state = run_analysis_pipeline(daily=medium_daily, weekly=medium_weekly, market_cap=market_cap, config=config)
+                medium_score = float(medium_state.final_score)
+
+        short_delta = round(current_score - short_score, 2)
+        medium_delta = round(current_score - medium_score, 2)
+        return _ScoreDynamics(
+            current_score=round(current_score, 2),
+            score_delta_short=short_delta,
+            score_delta_medium=medium_delta,
+            score_dynamics_state=self._classify_score_dynamics(short_delta, medium_delta),
+        )
+
+    def _score_for_category(self, category: ScannerCategory, final_score: float, regime, location, setup, trigger, dynamics: _ScoreDynamics, snapshot: dict) -> _Eval:
+        dynamics_boost = max(0.0, (dynamics.score_delta_short * 1.5) + (dynamics.score_delta_medium * 0.8))
+        dynamics_penalty = max(0.0, ((-dynamics.score_delta_short) * 1.5) + ((-dynamics.score_delta_medium) * 0.8))
+        breakout_candidate = bool(snapshot.get("breakout_candidate", False))
+
         if category == ScannerCategory.TREND_MODE:
             score = (
-                (0.45 * final_score)
+                (0.50 * final_score)
                 + (20.0 if regime.price_above_ema200 else 0.0)
                 + (12.0 if regime.ema200_slope_state in {"flat", "rising"} else 0.0)
                 + (10.0 if regime.ema_stack_alignment in {"partial_bullish", "stacked_bullish"} else 0.0)
-                - (18.0 if location.overextended_flag else 0.0)
+                + (0.35 * dynamics_boost)
+                - (10.0 if location.overextended_flag else 0.0)
+                - (0.4 * dynamics_penalty)
             )
             return _Eval(
                 score=max(0.0, min(100.0, score)),
@@ -125,6 +179,9 @@ class ScannerEngine:
                 + (18.0 if near_ema200 else 0.0)
                 + (10.0 if trigger.trigger_state in {"pending", "confirmed"} else 0.0)
                 + (8.0 if setup.setup_status in {"watchlist", "early_trend_transition"} else 0.0)
+                + (0.55 * dynamics_boost)
+                - max(0.0, abs(regime.price_vs_ema200_pct) - 5.0) * 2.2
+                - max(0.0, location.support_distance_pct - 6.0) * 2.4
             )
             return _Eval(
                 score=max(0.0, min(100.0, score)),
@@ -132,11 +189,33 @@ class ScannerEngine:
                 reason="Structure rebuilding near EMA200 with potential pre-breakout behavior.",
             )
 
+        if category == ScannerCategory.MOMENTUM_MODE:
+            extension_penalty = max(0.0, location.support_distance_pct - 10.0) * 1.8
+            blowoff_penalty = max(0.0, location.overextension_ema20_pct - 12.0) * 1.2
+            score = (
+                (0.45 * final_score)
+                + (20.0 if regime.price_above_ema200 else 0.0)
+                + (12.0 if regime.ema200_slope_state in {"flat", "rising"} else 0.0)
+                + (10.0 if regime.ema_stack_alignment in {"partial_bullish", "stacked_bullish"} else 0.0)
+                + (8.0 if setup.trend_state in {"bullish_trend", "weakening_trend", "early_trend_transition"} else 0.0)
+                + (8.0 if breakout_candidate or trigger.trigger_type in {"breakout_confirmation", "pullback_continuation"} else 0.0)
+                + (0.8 * dynamics_boost)
+                - extension_penalty
+                - blowoff_penalty
+                - (0.25 * dynamics_penalty)
+            )
+            return _Eval(
+                score=max(0.0, min(100.0, score)),
+                tag="momentum_mode",
+                reason="Expansion candidate with bullish structure and improving score dynamics.",
+            )
+
         score = (
             (0.30 * final_score)
             + (25.0 if location.overextended_flag else 0.0)
             + max(0.0, min(25.0, location.overextension_ema20_pct))
             + (8.0 if regime.price_above_ema200 else 0.0)
+            - (0.20 * dynamics_boost)
         )
         return _Eval(
             score=max(0.0, min(100.0, score)),
@@ -177,17 +256,19 @@ class ScannerEngine:
                     period=period,
                 )
                 per_symbol_config = config.model_copy(update={"ticker": symbol})
-                state = run_analysis_pipeline(
-                    daily=bundle.daily,
-                    weekly=bundle.weekly,
-                    market_cap=bundle.metadata.market_cap,
-                    config=per_symbol_config,
-                )
+                state = run_analysis_pipeline(daily=bundle.daily, weekly=bundle.weekly, market_cap=bundle.metadata.market_cap, config=per_symbol_config)
                 regime = state.regime
                 location = state.location
                 setup = state.setup_interpretation
                 trigger = state.trigger
-                scored = self._score_for_category(req.category, state.final_score, regime, location, setup, trigger)
+                dynamics = self._compute_score_dynamics(
+                    daily=bundle.daily,
+                    weekly=bundle.weekly,
+                    market_cap=bundle.metadata.market_cap,
+                    config=per_symbol_config,
+                    current_score=float(state.final_score),
+                )
+                scored = self._score_for_category(req.category, state.final_score, regime, location, setup, trigger, dynamics, state.snapshot)
                 results.append(
                     ScannerResult(
                         symbol=bundle.ticker,
@@ -196,6 +277,10 @@ class ScannerEngine:
                         category_tag=scored.tag,
                         priority=self._priority(scored.score),
                         short_reason=scored.reason,
+                        current_score=dynamics.current_score,
+                        score_delta_short=dynamics.score_delta_short,
+                        score_delta_medium=dynamics.score_delta_medium,
+                        score_dynamics_state=dynamics.score_dynamics_state,
                         trend_state=setup.trend_state,
                         setup_status=setup.setup_status,
                         price_vs_ema200_pct=regime.price_vs_ema200_pct,
@@ -214,7 +299,13 @@ class ScannerEngine:
 
         ranked = sorted(
             results,
-            key=lambda row: (row.scanner_score, 0 if row.priority == ScannerPriority.HIGH else 1 if row.priority == ScannerPriority.MEDIUM else 2),
+            key=lambda row: (
+                row.scanner_score,
+                row.current_score,
+                row.score_delta_short,
+                row.score_delta_medium,
+                0 if row.priority == ScannerPriority.HIGH else 1 if row.priority == ScannerPriority.MEDIUM else 2,
+            ),
             reverse=True,
         )[: req.max_results]
 

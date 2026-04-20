@@ -2,7 +2,7 @@ export type AnalysisWindow = "5d" | "1m" | "3m" | "6m" | "1y" | "2y" | "3y" | "4
 export type BacktestHistoryWindow = "1y" | "2y" | "3y" | "4y" | "5y";
 export type MarketCode = "us" | "bist";
 export type StrategyMode = "aggressive" | "balanced" | "conservative" | "custom";
-export type ScannerCategory = "trend_mode" | "build_up" | "overextended";
+export type ScannerCategory = "trend_mode" | "build_up" | "momentum_mode" | "overextended";
 export type ScannerDuration = "1y" | "2y" | "3y" | "5y";
 export type ScannerUniverseScope = "full_universe" | "watchlist" | "capped_universe";
 export type ScannerPriority = "high" | "medium" | "low";
@@ -468,6 +468,10 @@ export type ScannerResult = {
   category_tag: string;
   priority: ScannerPriority;
   short_reason: string;
+  current_score: number;
+  score_delta_short: number;
+  score_delta_medium: number;
+  score_dynamics_state: string;
   trend_state: string;
   setup_status: string;
   price_vs_ema200_pct: number;

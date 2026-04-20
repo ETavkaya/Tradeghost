@@ -15,12 +15,14 @@ import {
 const recommendedDurationByCategory: Record<ScannerCategory, ScannerDuration> = {
   trend_mode: "2y",
   build_up: "2y",
+  momentum_mode: "1y",
   overextended: "1y",
 };
 
 const rationaleByCategory: Record<ScannerCategory, string> = {
   trend_mode: "2Y is recommended to evaluate continuation quality with enough context.",
   build_up: "2Y is recommended to evaluate EMA200 reclaim/rebuild behavior before breakout.",
+  momentum_mode: "1Y is recommended to prioritize recent expansion dynamics while preserving enough trend context.",
   overextended: "1Y is recommended to focus on recent stretched moves and caution zones.",
 };
 
@@ -34,6 +36,11 @@ const categoryDefinition: Record<ScannerCategory, { title: string; desc: string;
     title: "Build-up",
     desc: "Stocks preparing for larger moves: EMA200 reclaim attempts, repeated tests, compression, and structure rebuilding.",
     bias: "pre-breakout bias",
+  },
+  momentum_mode: {
+    title: "Momentum Mode",
+    desc: "Stocks already breaking out or expanding with strong structure and improving score dynamics.",
+    bias: "expansion / continuation bias",
   },
   overextended: {
     title: "Overextended",
@@ -102,6 +109,7 @@ export default function ScannerPage() {
             <select value={category} onChange={(event) => onCategoryChange(event.target.value as ScannerCategory)} className="h-10 w-full rounded-lg border border-stroke bg-bg px-3">
               <option value="trend_mode">Trend Mode</option>
               <option value="build_up">Build-up</option>
+              <option value="momentum_mode">Momentum Mode</option>
               <option value="overextended">Overextended</option>
             </select>
           </label>
@@ -195,6 +203,10 @@ export default function ScannerPage() {
                   <tr className="border-b border-stroke text-left text-slate-400">
                     <th className="px-2 py-2">Symbol</th>
                     <th className="px-2 py-2">Score</th>
+                    <th className="px-2 py-2">Current</th>
+                    <th className="px-2 py-2">D(5)</th>
+                    <th className="px-2 py-2">D(20)</th>
+                    <th className="px-2 py-2">Dynamics</th>
                     <th className="px-2 py-2">Priority</th>
                     <th className="px-2 py-2">Category</th>
                     <th className="px-2 py-2">Reason</th>
@@ -209,13 +221,17 @@ export default function ScannerPage() {
                 <tbody>
                   {result.results.length === 0 ? (
                     <tr>
-                      <td className="px-2 py-3 text-slate-400" colSpan={11}>No candidates found for selected scope.</td>
+                      <td className="px-2 py-3 text-slate-400" colSpan={15}>No candidates found for selected scope.</td>
                     </tr>
                   ) : (
                     result.results.map((row) => (
                       <tr key={row.normalized_symbol} className="border-b border-stroke/50">
                         <td className="px-2 py-2">{row.symbol}</td>
                         <td className="px-2 py-2">{row.scanner_score.toFixed(2)}</td>
+                        <td className="px-2 py-2">{row.current_score.toFixed(2)}</td>
+                        <td className={`px-2 py-2 ${row.score_delta_short >= 0 ? "text-green" : "text-red"}`}>{row.score_delta_short.toFixed(2)}</td>
+                        <td className={`px-2 py-2 ${row.score_delta_medium >= 0 ? "text-green" : "text-red"}`}>{row.score_delta_medium.toFixed(2)}</td>
+                        <td className="px-2 py-2">{row.score_dynamics_state}</td>
                         <td className="px-2 py-2 capitalize">{row.priority}</td>
                         <td className="px-2 py-2">{row.category_tag.replaceAll("_", " ")}</td>
                         <td className="max-w-[300px] px-2 py-2 text-xs text-slate-300">{row.short_reason}</td>
@@ -227,7 +243,11 @@ export default function ScannerPage() {
                         <td className="px-2 py-2">
                           <button
                             type="button"
-                            onClick={() => router.push(`/analysis?ticker=${encodeURIComponent(row.symbol)}&market=${encodeURIComponent(result.scope.market)}&window=${encodeURIComponent(result.scope.duration)}`)}
+                            onClick={() =>
+                              router.push(
+                                `/analysis?ticker=${encodeURIComponent(row.symbol)}&market=${encodeURIComponent(result.scope.market)}&window=${encodeURIComponent(result.scope.duration)}&scanner_category=${encodeURIComponent(result.scope.category)}&scanner_score=${encodeURIComponent(row.scanner_score.toFixed(2))}&scanner_current_score=${encodeURIComponent(row.current_score.toFixed(2))}&scanner_delta_short=${encodeURIComponent(row.score_delta_short.toFixed(2))}&scanner_delta_medium=${encodeURIComponent(row.score_delta_medium.toFixed(2))}&scanner_dynamics_state=${encodeURIComponent(row.score_dynamics_state)}&scanner_reason=${encodeURIComponent(row.short_reason)}`
+                              )
+                            }
                             className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan"
                           >
                             Open Analysis

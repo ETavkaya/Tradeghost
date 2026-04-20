@@ -414,6 +414,7 @@ class BacktestFromAnalysisResponse(BaseModel):
 class ScannerCategory(str, Enum):
     TREND_MODE = "trend_mode"
     BUILD_UP = "build_up"
+    MOMENTUM_MODE = "momentum_mode"
     OVEREXTENDED = "overextended"
 
 
@@ -452,6 +453,10 @@ class ScannerResult(BaseModel):
     category_tag: str
     priority: ScannerPriority
     short_reason: str
+    current_score: float
+    score_delta_short: float
+    score_delta_medium: float
+    score_dynamics_state: str
     trend_state: str
     setup_status: str
     price_vs_ema200_pct: float

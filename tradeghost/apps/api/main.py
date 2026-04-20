@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Query
 from tradeghost.services.analysis_engine import AnalysisEngine
 from tradeghost.services.backtest.engine import BacktestEngine
 from tradeghost.services.backtest.review_log import BacktestReviewLogService
+from tradeghost.services.scanner.engine import ScannerEngine
 from tradeghost.shared.config.settings import get_settings
 from tradeghost.shared.models.schemas import (
     AnalysisResponse,
@@ -15,6 +16,8 @@ from tradeghost.shared.models.schemas import (
     BacktestSnapshotCommentCreateRequest,
     BacktestSnapshotCreateRequest,
     CombinedAnalysisResponse,
+    ScannerRequest,
+    ScannerResponse,
     ScoreResponse,
     StrategyMode,
     TradePlanResponse,
@@ -26,6 +29,7 @@ app = FastAPI(title=settings.app_name, version="0.1.0")
 analysis_engine = AnalysisEngine()
 backtest_engine = BacktestEngine(analysis_engine=analysis_engine)
 review_log_service = BacktestReviewLogService()
+scanner_engine = ScannerEngine(analysis_engine=analysis_engine)
 
 
 @app.get("/health")
@@ -166,5 +170,28 @@ def add_backtest_snapshot_comment(snapshot_id: str, payload: BacktestSnapshotCom
         return review_log_service.add_comment(snapshot_id, payload)
     except FileNotFoundError as exc:  # pragma: no cover
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/scanner", response_model=ScannerResponse)
+def scanner(
+    market: str = Query(default="us"),
+    duration: str = Query(default="2y"),
+    category: str = Query(default="trend_mode"),
+    max_results: int = Query(default=20, ge=1, le=100),
+    universe_scope: str = Query(default="capped_universe"),
+    max_runtime_seconds: float = Query(default=18.0, ge=3.0, le=45.0),
+) -> ScannerResponse:
+    try:
+        payload = ScannerRequest(
+            market=market,
+            duration=duration,
+            category=category,
+            max_results=max_results,
+            universe_scope=universe_scope,
+            max_runtime_seconds=max_runtime_seconds,
+        )
+        return scanner_engine.scan(payload)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc

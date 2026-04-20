@@ -1,7 +1,7 @@
 ﻿"use client";
 
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
 import { UnifiedAnalysisChart } from "@/components/unified-analysis-chart";
 import { ChartMapSectionCard, QuantEdgeSectionCard, SwingPulseSectionCard } from "@/components/unified-sections";
 import { useAnalysisContext } from "@/components/analysis-context";
@@ -96,6 +96,7 @@ function toPanelValues(config: AnalysisConfig | null): ModePreset {
 
 export default function AnalysisPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { analysis, setAnalysis } = useAnalysisContext();
   const [ticker, setTicker] = useState(analysis?.ticker ?? "TSLA");
   const [market, setMarket] = useState<MarketCode>(analysis?.market ?? "us");
@@ -117,6 +118,19 @@ export default function AnalysisPage() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const nextTicker = searchParams.get("ticker");
+    const nextMarket = searchParams.get("market");
+    const nextWindow = searchParams.get("window");
+    if (nextTicker) setTicker(nextTicker.toUpperCase());
+    if (nextMarket === "us" || nextMarket === "bist") {
+      setMarket(nextMarket);
+    }
+    if (nextWindow && ["5d", "1m", "3m", "6m", "1y", "2y", "3y", "4y", "5y", "10y"].includes(nextWindow)) {
+      setWindow(nextWindow as AnalysisWindow);
+    }
+  }, [searchParams]);
 
   const applyPreset = (preset: ModePreset) => {
     setScoreThreshold(preset.score_threshold);

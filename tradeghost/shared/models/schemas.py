@@ -411,6 +411,78 @@ class BacktestFromAnalysisResponse(BaseModel):
     markers: list[BacktestMarker]
 
 
+class ScannerCategory(str, Enum):
+    TREND_MODE = "trend_mode"
+    BUILD_UP = "build_up"
+    OVEREXTENDED = "overextended"
+
+
+class ScannerUniverseScope(str, Enum):
+    FULL = "full_universe"
+    WATCHLIST = "watchlist"
+    CAPPED = "capped_universe"
+
+
+class ScannerDuration(str, Enum):
+    ONE_YEAR = "1y"
+    TWO_YEAR = "2y"
+    THREE_YEAR = "3y"
+    FIVE_YEAR = "5y"
+
+
+class ScannerPriority(str, Enum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class ScannerRequest(BaseModel):
+    market: MarketCode
+    duration: ScannerDuration
+    category: ScannerCategory
+    max_results: int = Field(default=20, ge=1, le=100)
+    universe_scope: ScannerUniverseScope = ScannerUniverseScope.CAPPED
+    max_runtime_seconds: float = Field(default=18.0, ge=3.0, le=45.0)
+
+
+class ScannerResult(BaseModel):
+    symbol: str
+    normalized_symbol: str
+    scanner_score: float
+    category_tag: str
+    priority: ScannerPriority
+    short_reason: str
+    trend_state: str
+    setup_status: str
+    price_vs_ema200_pct: float
+    ema200_slope_state: str
+    ema_stack_alignment: str
+    support_distance_pct: float
+    resistance_room_pct: float
+    bars_since_reclaim: int | None = None
+    compression_state: str
+
+
+class ScannerScopeSummary(BaseModel):
+    market: MarketCode
+    category: ScannerCategory
+    duration: ScannerDuration
+    recommended_duration: ScannerDuration
+    universe_scope: ScannerUniverseScope
+    symbol_count: int
+    processed_count: int
+    max_results: int
+    runtime_seconds: float
+    partial_scan: bool
+    partial_scan_note: str | None = None
+
+
+class ScannerResponse(BaseModel):
+    scope: ScannerScopeSummary
+    results: list[ScannerResult]
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class BacktestSnapshotMetrics(BaseModel):
     total_trades: int
     win_rate: float

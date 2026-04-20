@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import { useAnalysisContext } from "@/components/analysis-context";
 
 const tabs = [
+  { label: "Scanner", href: "/scanner" },
   { label: "Analysis", href: "/analysis" },
   { label: "Backtest", href: "/backtest" },
   { label: "Logic", href: "/logic" }

@@ -2,6 +2,10 @@ export type AnalysisWindow = "5d" | "1m" | "3m" | "6m" | "1y" | "2y" | "3y" | "4
 export type BacktestHistoryWindow = "1y" | "2y" | "3y" | "4y" | "5y";
 export type MarketCode = "us" | "bist";
 export type StrategyMode = "aggressive" | "balanced" | "conservative" | "custom";
+export type ScannerCategory = "trend_mode" | "build_up" | "overextended";
+export type ScannerDuration = "1y" | "2y" | "3y" | "5y";
+export type ScannerUniverseScope = "full_universe" | "watchlist" | "capped_universe";
+export type ScannerPriority = "high" | "medium" | "low";
 
 export type RegimeFilterSettings = {
   regime_mode: string;
@@ -441,4 +445,42 @@ export type BacktestSnapshot = {
   artifacts: Record<string, string>;
   comments: BacktestSnapshotComment[];
   github_mapping_hint: Record<string, string | null>;
+};
+
+export type ScannerScopeSummary = {
+  market: MarketCode;
+  category: ScannerCategory;
+  duration: ScannerDuration;
+  recommended_duration: ScannerDuration;
+  universe_scope: ScannerUniverseScope;
+  symbol_count: number;
+  processed_count: number;
+  max_results: number;
+  runtime_seconds: number;
+  partial_scan: boolean;
+  partial_scan_note: string | null;
+};
+
+export type ScannerResult = {
+  symbol: string;
+  normalized_symbol: string;
+  scanner_score: number;
+  category_tag: string;
+  priority: ScannerPriority;
+  short_reason: string;
+  trend_state: string;
+  setup_status: string;
+  price_vs_ema200_pct: number;
+  ema200_slope_state: string;
+  ema_stack_alignment: string;
+  support_distance_pct: number;
+  resistance_room_pct: number;
+  bars_since_reclaim: number | null;
+  compression_state: string;
+};
+
+export type ScannerResponse = {
+  scope: ScannerScopeSummary;
+  results: ScannerResult[];
+  generated_at: string;
 };

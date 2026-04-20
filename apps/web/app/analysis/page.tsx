@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { UnifiedAnalysisChart } from "@/components/unified-analysis-chart";
 import { ChartMapSectionCard, QuantEdgeSectionCard, SwingPulseSectionCard } from "@/components/unified-sections";
 import { useAnalysisContext } from "@/components/analysis-context";
@@ -76,6 +76,14 @@ function InfoHint({ label, text }: { label: string; text: string }) {
   );
 }
 
+export default function AnalysisPage() {
+  return (
+    <Suspense fallback={<main className="space-y-4"><Panel><SectionTitle title="Loading Analysis..." /></Panel></main>}>
+      <AnalysisPageInner />
+    </Suspense>
+  );
+}
+
 function toPanelValues(config: AnalysisConfig | null): ModePreset {
   if (!config) {
     return MODE_PRESETS.balanced;
@@ -94,7 +102,7 @@ function toPanelValues(config: AnalysisConfig | null): ModePreset {
   };
 }
 
-export default function AnalysisPage() {
+function AnalysisPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { analysis, setAnalysis } = useAnalysisContext();

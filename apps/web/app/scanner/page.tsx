@@ -88,6 +88,18 @@ const operatorOptions: Array<{ value: ScannerRuleOperator; label: string }> = [
   { value: "in", label: "in (csv)" },
 ];
 
+const ruleDefaultByField: Record<ScannerRuleField, ScannerCustomRule> = {
+  price_vs_ema200_pct: { field: "price_vs_ema200_pct", operator: "gt", value_number: 0 },
+  distance_to_ema20_pct: { field: "distance_to_ema20_pct", operator: "lt", value_number: 5 },
+  distance_to_ema50_pct: { field: "distance_to_ema50_pct", operator: "lt", value_number: 8 },
+  rsi_14: { field: "rsi_14", operator: "lt", value_number: 35 },
+  volume_ratio_20: { field: "volume_ratio_20", operator: "gt", value_number: 1.5 },
+  support_distance_pct: { field: "support_distance_pct", operator: "lt", value_number: 6 },
+  resistance_room_pct: { field: "resistance_room_pct", operator: "gt", value_number: 2 },
+  ema200_slope_state: { field: "ema200_slope_state", operator: "eq", value_text: "rising" },
+  trend_state: { field: "trend_state", operator: "eq", value_text: "bullish_trend" },
+};
+
 export default function ScannerPage() {
   const router = useRouter();
   const [market, setMarket] = useState<MarketCode>("us");
@@ -125,10 +137,9 @@ export default function ScannerPage() {
         category,
         max_results: maxResults,
         universe_scope: universeScope,
-        use_custom_rules: useCustomRules,
-        custom_rules: useCustomRules ? customRules : [],
-        range_start: rangeStart || null,
-        range_end: rangeEnd || null,
+        use_custom_rules: useCustomRules && customRules.length > 0,
+        ...(useCustomRules && customRules.length > 0 ? { custom_rules: customRules } : {}),
+        ...(rangeStart && rangeEnd ? { range_start: rangeStart, range_end: rangeEnd } : {}),
       };
       const response = await api.scanner(payload);
       setResult(response);
@@ -174,16 +185,38 @@ export default function ScannerPage() {
     setUseCustomRules(true);
     setCustomRules((prev) => [
       ...prev,
-      {
-        field: "price_vs_ema200_pct",
-        operator: "gt",
-        value_number: 0,
-      },
+      { ...ruleDefaultByField.price_vs_ema200_pct },
     ]);
   };
 
   const updateRule = (index: number, patch: Partial<ScannerCustomRule>) => {
     setCustomRules((prev) => prev.map((rule, i) => (i === index ? { ...rule, ...patch } : rule)));
+  };
+
+  const setRuleFieldWithDefault = (index: number, field: ScannerRuleField) => {
+    const template = ruleDefaultByField[field];
+    updateRule(index, {
+      field,
+      operator: template.operator,
+      value_number: template.value_number ?? null,
+      value_text: template.value_text ?? null,
+      value_list: template.value_list ?? [],
+    });
+  };
+
+  const addPresetRule = (field: ScannerRuleField) => {
+    setUseCustomRules(true);
+    setCustomRules((prev) => [...prev, { ...ruleDefaultByField[field] }]);
+  };
+
+  const addBuildUpPreset = () => {
+    setUseCustomRules(true);
+    setCustomRules((prev) => [
+      ...prev,
+      { ...ruleDefaultByField.price_vs_ema200_pct },
+      { ...ruleDefaultByField.distance_to_ema20_pct },
+      { ...ruleDefaultByField.volume_ratio_20 },
+    ]);
   };
 
   const removeRule = (index: number) => {
@@ -257,15 +290,23 @@ export default function ScannerPage() {
 
         <div className="mt-4 rounded-xl border border-stroke/70 bg-panelSoft p-3">
           <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-semibold text-slate-200">Custom Rule Builder (AND conditions)</p>
+            <p className="text-sm font-semibold text-slate-200">Optional Custom Filters (AND conditions)</p>
             <label className="inline-flex items-center gap-2 text-xs text-slate-300">
               <input type="checkbox" checked={useCustomRules} onChange={(event) => setUseCustomRules(event.target.checked)} />
-              Enable custom rules
+              Enable custom filters
             </label>
           </div>
-          <p className="mt-1 text-xs text-slate-300">Optional deterministic filter layer. Each symbol must satisfy all enabled rules.</p>
+          <p className="mt-1 text-xs text-slate-300">Custom filters refine the selected category results. They do not replace the selected category.</p>
+          <p className="mt-1 text-xs text-slate-300">Each symbol must satisfy all enabled rules in addition to the selected category.</p>
           {useCustomRules ? (
             <div className="mt-3 space-y-2">
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={() => addPresetRule("price_vs_ema200_pct")} className="rounded-lg border border-stroke px-2 py-1 text-xs hover:text-cyan">Above EMA200</button>
+                <button type="button" onClick={() => addPresetRule("distance_to_ema20_pct")} className="rounded-lg border border-stroke px-2 py-1 text-xs hover:text-cyan">Near EMA20</button>
+                <button type="button" onClick={() => addPresetRule("volume_ratio_20")} className="rounded-lg border border-stroke px-2 py-1 text-xs hover:text-cyan">Volume Expansion</button>
+                <button type="button" onClick={() => addPresetRule("rsi_14")} className="rounded-lg border border-stroke px-2 py-1 text-xs hover:text-cyan">Oversold RSI</button>
+                <button type="button" onClick={addBuildUpPreset} className="rounded-lg border border-stroke px-2 py-1 text-xs hover:text-cyan">Build-up Basic</button>
+              </div>
               {customRules.length === 0 ? <p className="text-xs text-slate-400">No custom rules yet.</p> : null}
               {customRules.map((rule, index) => {
                 const fieldMeta = ruleFieldOptions.find((f) => f.value === rule.field) ?? ruleFieldOptions[0];
@@ -273,7 +314,7 @@ export default function ScannerPage() {
                   <div key={`${rule.field}-${index}`} className="grid gap-2 rounded-lg border border-stroke/60 p-2 md:grid-cols-4">
                     <select
                       value={rule.field}
-                      onChange={(event) => updateRule(index, { field: event.target.value as ScannerRuleField })}
+                      onChange={(event) => setRuleFieldWithDefault(index, event.target.value as ScannerRuleField)}
                       className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs"
                     >
                       {ruleFieldOptions.map((opt) => (
@@ -312,7 +353,7 @@ export default function ScannerPage() {
                           }
                           updateRule(index, { value_text: raw, value_number: null, value_list: [] });
                         }}
-                        placeholder={rule.operator === "in" ? "rising,flat" : "value"}
+                        placeholder={rule.operator === "in" ? "rising,flat" : "value (ex: rising)"}
                         className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs"
                       />
                     )}
@@ -383,7 +424,7 @@ export default function ScannerPage() {
               Scope summary: {result.scope.universe_scope.replaceAll("_", " ")}, max results {result.scope.max_results}, recommended duration {result.scope.recommended_duration.toUpperCase()}.
             </p>
             <p className="mt-1 text-xs text-slate-300">
-              Custom rules: {useCustomRules ? `${customRules.length} active` : "off"} | Manual range: {rangeStart && rangeEnd ? `${rangeStart} to ${rangeEnd}` : "off"}
+              Custom filters: {useCustomRules && customRules.length > 0 ? `${customRules.length} active` : "off"} | Manual range: {rangeStart && rangeEnd ? `${rangeStart} to ${rangeEnd}` : "off"}
             </p>
             {result.scope.partial_scan ? (
               <p className="mt-1 text-xs text-amber-300">{result.scope.partial_scan_note}</p>
@@ -401,7 +442,7 @@ export default function ScannerPage() {
                       <th key={option.key} className="px-2 py-2">
                         <button type="button" onClick={() => toggleSort(option.key)} className="inline-flex items-center gap-1 hover:text-slate-200">
                           {option.label}
-                          {sortKey === option.key ? (sortDirection === "asc" ? "↑" : "↓") : ""}
+                          {sortKey === option.key ? (sortDirection === "asc" ? "up" : "down") : ""}
                         </button>
                       </th>
                     ))}

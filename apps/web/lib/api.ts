@@ -9,6 +9,7 @@ import {
   BacktestSnapshot,
   ScannerCategory,
   ScannerDuration,
+  ScannerRequest,
   ScannerResponse,
   ScannerUniverseScope,
   BacktestResponse,
@@ -88,15 +89,11 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ commentator, content, tags })
     }),
-  scanner: (
-    market: MarketCode,
-    duration: ScannerDuration,
-    category: ScannerCategory,
-    maxResults: number,
-    universeScope: ScannerUniverseScope
-  ) =>
-    fetchJson<ScannerResponse>(
-      `/api/scanner?market=${encodeURIComponent(market)}&duration=${encodeURIComponent(duration)}&category=${encodeURIComponent(category)}&max_results=${encodeURIComponent(maxResults)}&universe_scope=${encodeURIComponent(universeScope)}`
-    ),
+  scanner: (payload: ScannerRequest) =>
+    fetchJson<ScannerResponse>("/api/scanner", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
   health: () => fetchJson<{ status: string; app: string }>("/api/health")
 };

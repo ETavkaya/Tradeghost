@@ -175,7 +175,7 @@ def add_backtest_snapshot_comment(snapshot_id: str, payload: BacktestSnapshotCom
 
 
 @app.get("/scanner", response_model=ScannerResponse)
-def scanner(
+def scanner_legacy(
     market: str = Query(default="us"),
     duration: str = Query(default="2y"),
     category: str = Query(default="trend_mode"),
@@ -192,6 +192,14 @@ def scanner(
             universe_scope=universe_scope,
             max_runtime_seconds=max_runtime_seconds,
         )
+        return scanner_engine.scan(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/scanner", response_model=ScannerResponse)
+def scanner(payload: ScannerRequest) -> ScannerResponse:
+    try:
         return scanner_engine.scan(payload)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc

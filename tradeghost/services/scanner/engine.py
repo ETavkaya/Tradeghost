@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from datetime import date
 
 from tradeghost.services.analysis_engine import AnalysisEngine
 from tradeghost.services.charts.payloads import WINDOW_TO_PERIOD
@@ -11,6 +12,8 @@ from tradeghost.shared.models.schemas import (
     ScannerCategory,
     ScannerDuration,
     ScannerPriority,
+    ScannerRuleField,
+    ScannerRuleOperator,
     ScannerRequest,
     ScannerResponse,
     ScannerResult,
@@ -75,6 +78,13 @@ class _ScoreDynamics:
     score_dynamics_state: str
 
 
+@dataclass
+class _LevelTests:
+    resistance_test_count: int
+    ema200_test_count: int
+    repeated_test_count: int
+
+
 class ScannerEngine:
     def __init__(self, analysis_engine: AnalysisEngine | None = None) -> None:
         self.analysis_engine = analysis_engine or AnalysisEngine()
@@ -122,6 +132,97 @@ class ScannerEngine:
             return "weakening"
         return "stable"
 
+    @staticmethod
+    def _tradingview_url(market: str, symbol: str) -> str:
+        exchange_prefix = "BIST" if market == "bist" else "NASDAQ"
+        return f"https://www.tradingview.com/chart/?symbol={exchange_prefix}%3A{symbol}"
+
+    @staticmethod
+    def _count_test_events(mask) -> int:
+        return int((mask & ~mask.shift(1).fillna(False)).sum())
+
+    def _level_test_counts(self, daily, snapshot: dict) -> _LevelTests:
+        close = daily["close"]
+        ema200 = daily["ema_200"]
+        resistance = float(snapshot.get("support_resistance", {}).get("resistance", close.iloc[-1]))
+
+        near_ema200 = ((close - ema200).abs() / ema200.clip(lower=0.01) * 100) <= 1.0
+        resistance_gap_pct = ((resistance - close) / close.clip(lower=0.01)) * 100
+        near_resistance = (resistance_gap_pct >= 0) & (resistance_gap_pct <= 1.5)
+
+        ema_tests = self._count_test_events(near_ema200)
+        resistance_tests = self._count_test_events(near_resistance)
+        repeated_tests = ema_tests + resistance_tests
+        return _LevelTests(
+            resistance_test_count=int(resistance_tests),
+            ema200_test_count=int(ema_tests),
+            repeated_test_count=int(repeated_tests),
+        )
+
+    @staticmethod
+    def _range_metrics(daily, range_start: date | None, range_end: date | None) -> tuple[float | None, float | None, float | None, float | None]:
+        if range_start is None or range_end is None:
+            return None, None, None, None
+        if range_end < range_start:
+            return None, None, None, None
+
+        window = daily[(daily.index.date >= range_start) & (daily.index.date <= range_end)]
+        if window.empty:
+            return None, None, None, None
+
+        range_low = float(window["low"].min())
+        range_high = float(window["high"].max())
+        close = float(daily["close"].iloc[-1])
+        from_low = ((close - range_low) / max(range_low, 0.01)) * 100
+        to_high = ((range_high - close) / max(close, 0.01)) * 100
+        return round(range_low, 2), round(range_high, 2), round(from_low, 2), round(to_high, 2)
+
+    @staticmethod
+    def _field_value(field: ScannerRuleField, *, regime, location, setup, snapshot: dict) -> float | str:
+        if field == ScannerRuleField.PRICE_VS_EMA200_PCT:
+            return float(regime.price_vs_ema200_pct)
+        if field == ScannerRuleField.DISTANCE_TO_EMA20_PCT:
+            return float(location.distance_to_ema20_pct)
+        if field == ScannerRuleField.DISTANCE_TO_EMA50_PCT:
+            return float(location.distance_to_ema50_pct)
+        if field == ScannerRuleField.RSI_14:
+            return float(snapshot.get("rsi_14", 0.0))
+        if field == ScannerRuleField.VOLUME_RATIO_20:
+            return float(snapshot.get("volume", {}).get("volume_ratio", 0.0))
+        if field == ScannerRuleField.SUPPORT_DISTANCE_PCT:
+            return float(location.support_distance_pct)
+        if field == ScannerRuleField.RESISTANCE_ROOM_PCT:
+            return float(location.resistance_room_pct)
+        if field == ScannerRuleField.EMA200_SLOPE_STATE:
+            return str(regime.ema200_slope_state)
+        if field == ScannerRuleField.TREND_STATE:
+            return str(setup.trend_state)
+        return 0.0
+
+    @staticmethod
+    def _rule_matches(*, actual: float | str, operator: ScannerRuleOperator, value_number: float | None, value_text: str | None, value_list: list[str]) -> bool:
+        if operator in {ScannerRuleOperator.GT, ScannerRuleOperator.GTE, ScannerRuleOperator.LT, ScannerRuleOperator.LTE}:
+            if not isinstance(actual, (int, float)) or value_number is None:
+                return False
+            if operator == ScannerRuleOperator.GT:
+                return actual > value_number
+            if operator == ScannerRuleOperator.GTE:
+                return actual >= value_number
+            if operator == ScannerRuleOperator.LT:
+                return actual < value_number
+            return actual <= value_number
+
+        if operator == ScannerRuleOperator.EQ:
+            if isinstance(actual, (int, float)):
+                return value_number is not None and float(actual) == float(value_number)
+            return value_text is not None and str(actual) == value_text
+
+        if operator == ScannerRuleOperator.IN:
+            normalized = {str(item) for item in value_list}
+            return str(actual) in normalized
+
+        return False
+
     def _compute_score_dynamics(self, *, daily, weekly, market_cap, config, current_score: float) -> _ScoreDynamics:
 
         short_score = current_score
@@ -149,7 +250,7 @@ class ScannerEngine:
             score_dynamics_state=self._classify_score_dynamics(short_delta, medium_delta),
         )
 
-    def _score_for_category(self, category: ScannerCategory, final_score: float, regime, location, setup, trigger, dynamics: _ScoreDynamics, snapshot: dict) -> _Eval:
+    def _score_for_category(self, category: ScannerCategory, final_score: float, regime, location, setup, trigger, dynamics: _ScoreDynamics, snapshot: dict, volume_ratio_20: float) -> _Eval:
         dynamics_boost = max(0.0, (dynamics.score_delta_short * 1.5) + (dynamics.score_delta_medium * 0.8))
         dynamics_penalty = max(0.0, ((-dynamics.score_delta_short) * 1.5) + ((-dynamics.score_delta_medium) * 0.8))
         breakout_candidate = bool(snapshot.get("breakout_candidate", False))
@@ -160,6 +261,7 @@ class ScannerEngine:
                 + (20.0 if regime.price_above_ema200 else 0.0)
                 + (12.0 if regime.ema200_slope_state in {"flat", "rising"} else 0.0)
                 + (10.0 if regime.ema_stack_alignment in {"partial_bullish", "stacked_bullish"} else 0.0)
+                + (6.0 if volume_ratio_20 >= 1.1 else 0.0)
                 + (0.35 * dynamics_boost)
                 - (10.0 if location.overextended_flag else 0.0)
                 - (0.4 * dynamics_penalty)
@@ -179,6 +281,7 @@ class ScannerEngine:
                 + (18.0 if near_ema200 else 0.0)
                 + (10.0 if trigger.trigger_state in {"pending", "confirmed"} else 0.0)
                 + (8.0 if setup.setup_status in {"watchlist", "early_trend_transition"} else 0.0)
+                + (5.0 if volume_ratio_20 >= 1.05 else 0.0)
                 + (0.55 * dynamics_boost)
                 - max(0.0, abs(regime.price_vs_ema200_pct) - 5.0) * 2.2
                 - max(0.0, location.support_distance_pct - 6.0) * 2.4
@@ -199,6 +302,7 @@ class ScannerEngine:
                 + (10.0 if regime.ema_stack_alignment in {"partial_bullish", "stacked_bullish"} else 0.0)
                 + (8.0 if setup.trend_state in {"bullish_trend", "weakening_trend", "early_trend_transition"} else 0.0)
                 + (8.0 if breakout_candidate or trigger.trigger_type in {"breakout_confirmation", "pullback_continuation"} else 0.0)
+                + (8.0 if volume_ratio_20 >= 1.15 else 0.0)
                 + (0.8 * dynamics_boost)
                 - extension_penalty
                 - blowoff_penalty
@@ -261,6 +365,9 @@ class ScannerEngine:
                 location = state.location
                 setup = state.setup_interpretation
                 trigger = state.trigger
+                snapshot = state.snapshot
+                volume_ratio_20 = float(snapshot.get("volume", {}).get("volume_ratio", 0.0))
+                counts = self._level_test_counts(bundle.daily, snapshot)
                 dynamics = self._compute_score_dynamics(
                     daily=bundle.daily,
                     weekly=bundle.weekly,
@@ -268,7 +375,34 @@ class ScannerEngine:
                     config=per_symbol_config,
                     current_score=float(state.final_score),
                 )
-                scored = self._score_for_category(req.category, state.final_score, regime, location, setup, trigger, dynamics, state.snapshot)
+                scored = self._score_for_category(req.category, state.final_score, regime, location, setup, trigger, dynamics, snapshot, volume_ratio_20)
+
+                if req.use_custom_rules and req.custom_rules:
+                    matched = 0
+                    for rule in req.custom_rules:
+                        actual = self._field_value(rule.field, regime=regime, location=location, setup=setup, snapshot=snapshot)
+                        if self._rule_matches(
+                            actual=actual,
+                            operator=rule.operator,
+                            value_number=rule.value_number,
+                            value_text=rule.value_text,
+                            value_list=rule.value_list,
+                        ):
+                            matched += 1
+                    if matched != len(req.custom_rules):
+                        processed += 1
+                        continue
+                    scored = _Eval(
+                        score=min(100.0, scored.score + min(10.0, 2.0 * matched)),
+                        tag=f"{scored.tag}_custom",
+                        reason=f"{scored.reason} Matched {matched}/{len(req.custom_rules)} custom rules.",
+                    )
+
+                range_low, range_high, from_low_pct, to_high_pct = self._range_metrics(
+                    bundle.daily,
+                    req.range_start,
+                    req.range_end,
+                )
                 results.append(
                     ScannerResult(
                         symbol=bundle.ticker,
@@ -288,6 +422,15 @@ class ScannerEngine:
                         ema_stack_alignment=regime.ema_stack_alignment,
                         support_distance_pct=location.support_distance_pct,
                         resistance_room_pct=location.resistance_room_pct,
+                        volume_ratio_20=round(volume_ratio_20, 2),
+                        resistance_test_count=counts.resistance_test_count,
+                        ema200_test_count=counts.ema200_test_count,
+                        repeated_test_count=counts.repeated_test_count,
+                        distance_from_range_low_pct=from_low_pct,
+                        distance_to_range_high_pct=to_high_pct,
+                        range_low=range_low,
+                        range_high=range_high,
+                        tradingview_url=self._tradingview_url(req.market.value, bundle.normalized_ticker),
                         bars_since_reclaim=regime.bars_since_reclaim,
                         compression_state=self._compression_state(location.support_distance_pct, location.resistance_room_pct),
                     )

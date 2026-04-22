@@ -6,6 +6,17 @@ export type ScannerCategory = "trend_mode" | "build_up" | "momentum_mode" | "ove
 export type ScannerDuration = "1y" | "2y" | "3y" | "5y";
 export type ScannerUniverseScope = "full_universe" | "watchlist" | "capped_universe";
 export type ScannerPriority = "high" | "medium" | "low";
+export type ScannerRuleField =
+  | "price_vs_ema200_pct"
+  | "distance_to_ema20_pct"
+  | "distance_to_ema50_pct"
+  | "rsi_14"
+  | "volume_ratio_20"
+  | "support_distance_pct"
+  | "resistance_room_pct"
+  | "ema200_slope_state"
+  | "trend_state";
+export type ScannerRuleOperator = "gt" | "gte" | "lt" | "lte" | "eq" | "in";
 
 export type RegimeFilterSettings = {
   regime_mode: string;
@@ -461,6 +472,27 @@ export type ScannerScopeSummary = {
   partial_scan_note: string | null;
 };
 
+export type ScannerCustomRule = {
+  field: ScannerRuleField;
+  operator: ScannerRuleOperator;
+  value_number?: number | null;
+  value_text?: string | null;
+  value_list?: string[];
+};
+
+export type ScannerRequest = {
+  market: MarketCode;
+  duration: ScannerDuration;
+  category: ScannerCategory;
+  max_results: number;
+  universe_scope: ScannerUniverseScope;
+  max_runtime_seconds?: number;
+  use_custom_rules?: boolean;
+  custom_rules?: ScannerCustomRule[];
+  range_start?: string | null;
+  range_end?: string | null;
+};
+
 export type ScannerResult = {
   symbol: string;
   normalized_symbol: string;
@@ -479,6 +511,15 @@ export type ScannerResult = {
   ema_stack_alignment: string;
   support_distance_pct: number;
   resistance_room_pct: number;
+  volume_ratio_20: number;
+  resistance_test_count: number;
+  ema200_test_count: number;
+  repeated_test_count: number;
+  distance_from_range_low_pct: number | null;
+  distance_to_range_high_pct: number | null;
+  range_low: number | null;
+  range_high: number | null;
+  tradingview_url: string;
   bars_since_reclaim: number | null;
   compression_state: string;
 };

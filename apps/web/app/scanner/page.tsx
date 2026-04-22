@@ -6,9 +6,14 @@ import { Panel, SectionTitle, StatCard } from "@/components/ui";
 import { api } from "@/lib/api";
 import {
   MarketCode,
+  ScannerCustomRule,
   ScannerCategory,
   ScannerDuration,
+  ScannerRequest,
   ScannerResponse,
+  ScannerResult,
+  ScannerRuleField,
+  ScannerRuleOperator,
   ScannerUniverseScope,
 } from "@/lib/types";
 
@@ -49,6 +54,40 @@ const categoryDefinition: Record<ScannerCategory, { title: string; desc: string;
   },
 };
 
+const sortOptions: Array<{ key: keyof ScannerResult; label: string; numeric?: boolean }> = [
+  { key: "scanner_score", label: "Score", numeric: true },
+  { key: "current_score", label: "Current", numeric: true },
+  { key: "score_delta_short", label: "D(5)", numeric: true },
+  { key: "score_delta_medium", label: "D(20)", numeric: true },
+  { key: "price_vs_ema200_pct", label: "Price vs EMA200", numeric: true },
+  { key: "support_distance_pct", label: "Support%", numeric: true },
+  { key: "resistance_room_pct", label: "Room%", numeric: true },
+  { key: "volume_ratio_20", label: "VolRatio20", numeric: true },
+  { key: "resistance_test_count", label: "Res Tests", numeric: true },
+  { key: "ema200_test_count", label: "EMA200 Tests", numeric: true },
+];
+
+const ruleFieldOptions: Array<{ value: ScannerRuleField; label: string; numeric: boolean }> = [
+  { value: "price_vs_ema200_pct", label: "Price vs EMA200 %", numeric: true },
+  { value: "distance_to_ema20_pct", label: "Distance to EMA20 %", numeric: true },
+  { value: "distance_to_ema50_pct", label: "Distance to EMA50 %", numeric: true },
+  { value: "rsi_14", label: "RSI 14", numeric: true },
+  { value: "volume_ratio_20", label: "Volume Ratio 20", numeric: true },
+  { value: "support_distance_pct", label: "Support Distance %", numeric: true },
+  { value: "resistance_room_pct", label: "Resistance Room %", numeric: true },
+  { value: "ema200_slope_state", label: "EMA200 Slope State", numeric: false },
+  { value: "trend_state", label: "Trend State", numeric: false },
+];
+
+const operatorOptions: Array<{ value: ScannerRuleOperator; label: string }> = [
+  { value: "gt", label: ">" },
+  { value: "gte", label: ">=" },
+  { value: "lt", label: "<" },
+  { value: "lte", label: "<=" },
+  { value: "eq", label: "=" },
+  { value: "in", label: "in (csv)" },
+];
+
 export default function ScannerPage() {
   const router = useRouter();
   const [market, setMarket] = useState<MarketCode>("us");
@@ -60,6 +99,12 @@ export default function ScannerPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ScannerResponse | null>(null);
+  const [sortKey, setSortKey] = useState<keyof ScannerResult>("scanner_score");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
+  const [useCustomRules, setUseCustomRules] = useState(false);
+  const [customRules, setCustomRules] = useState<ScannerCustomRule[]>([]);
+  const [rangeStart, setRangeStart] = useState("");
+  const [rangeEnd, setRangeEnd] = useState("");
 
   const recommended = recommendedDurationByCategory[category];
 
@@ -74,7 +119,18 @@ export default function ScannerPage() {
     setLoading(true);
     setError(null);
     try {
-      const response = await api.scanner(market, duration, category, maxResults, universeScope);
+      const payload: ScannerRequest = {
+        market,
+        duration,
+        category,
+        max_results: maxResults,
+        universe_scope: universeScope,
+        use_custom_rules: useCustomRules,
+        custom_rules: useCustomRules ? customRules : [],
+        range_start: rangeStart || null,
+        range_end: rangeEnd || null,
+      };
+      const response = await api.scanner(payload);
       setResult(response);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Scanner request failed.");
@@ -86,6 +142,53 @@ export default function ScannerPage() {
   const scopeLabel = useMemo(() => {
     return `Scanner finds candidates. Analysis explains structure. Backtest validates historical behavior.`;
   }, []);
+
+  const sortedResults = useMemo(() => {
+    if (!result) return [];
+    const next = [...result.results];
+    next.sort((a, b) => {
+      const av = a[sortKey] as number | string | null;
+      const bv = b[sortKey] as number | string | null;
+      if (av === null && bv === null) return 0;
+      if (av === null) return 1;
+      if (bv === null) return -1;
+      if (typeof av === "number" && typeof bv === "number") {
+        return sortDirection === "asc" ? av - bv : bv - av;
+      }
+      const cmp = String(av).localeCompare(String(bv));
+      return sortDirection === "asc" ? cmp : -cmp;
+    });
+    return next;
+  }, [result, sortKey, sortDirection]);
+
+  const toggleSort = (key: keyof ScannerResult) => {
+    if (sortKey === key) {
+      setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setSortKey(key);
+    setSortDirection("desc");
+  };
+
+  const addRule = () => {
+    setUseCustomRules(true);
+    setCustomRules((prev) => [
+      ...prev,
+      {
+        field: "price_vs_ema200_pct",
+        operator: "gt",
+        value_number: 0,
+      },
+    ]);
+  };
+
+  const updateRule = (index: number, patch: Partial<ScannerCustomRule>) => {
+    setCustomRules((prev) => prev.map((rule, i) => (i === index ? { ...rule, ...patch } : rule)));
+  };
+
+  const removeRule = (index: number) => {
+    setCustomRules((prev) => prev.filter((_, i) => i !== index));
+  };
 
   return (
     <main className="space-y-4">
@@ -152,6 +255,95 @@ export default function ScannerPage() {
           Planned scan scope: {market.toUpperCase()} | {categoryDefinition[category].title} | {duration.toUpperCase()} | {universeScope.replaceAll("_", " ")} | top {maxResults}.
         </p>
 
+        <div className="mt-4 rounded-xl border border-stroke/70 bg-panelSoft p-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-semibold text-slate-200">Custom Rule Builder (AND conditions)</p>
+            <label className="inline-flex items-center gap-2 text-xs text-slate-300">
+              <input type="checkbox" checked={useCustomRules} onChange={(event) => setUseCustomRules(event.target.checked)} />
+              Enable custom rules
+            </label>
+          </div>
+          <p className="mt-1 text-xs text-slate-300">Optional deterministic filter layer. Each symbol must satisfy all enabled rules.</p>
+          {useCustomRules ? (
+            <div className="mt-3 space-y-2">
+              {customRules.length === 0 ? <p className="text-xs text-slate-400">No custom rules yet.</p> : null}
+              {customRules.map((rule, index) => {
+                const fieldMeta = ruleFieldOptions.find((f) => f.value === rule.field) ?? ruleFieldOptions[0];
+                return (
+                  <div key={`${rule.field}-${index}`} className="grid gap-2 rounded-lg border border-stroke/60 p-2 md:grid-cols-4">
+                    <select
+                      value={rule.field}
+                      onChange={(event) => updateRule(index, { field: event.target.value as ScannerRuleField })}
+                      className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs"
+                    >
+                      {ruleFieldOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={rule.operator}
+                      onChange={(event) => updateRule(index, { operator: event.target.value as ScannerRuleOperator })}
+                      className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs"
+                    >
+                      {operatorOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                    {fieldMeta.numeric && rule.operator !== "in" ? (
+                      <input
+                        type="number"
+                        value={rule.value_number ?? 0}
+                        onChange={(event) => updateRule(index, { value_number: Number(event.target.value), value_text: null, value_list: [] })}
+                        className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs"
+                      />
+                    ) : (
+                      <input
+                        type="text"
+                        value={rule.operator === "in" ? (rule.value_list ?? []).join(",") : (rule.value_text ?? "")}
+                        onChange={(event) => {
+                          const raw = event.target.value;
+                          if (rule.operator === "in") {
+                            updateRule(index, {
+                              value_list: raw.split(",").map((v) => v.trim()).filter(Boolean),
+                              value_text: null,
+                              value_number: null,
+                            });
+                            return;
+                          }
+                          updateRule(index, { value_text: raw, value_number: null, value_list: [] });
+                        }}
+                        placeholder={rule.operator === "in" ? "rising,flat" : "value"}
+                        className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs"
+                      />
+                    )}
+                    <button type="button" onClick={() => removeRule(index)} className="h-9 rounded-lg border border-stroke px-2 text-xs text-red">
+                      Remove
+                    </button>
+                  </div>
+                );
+              })}
+              <button type="button" onClick={addRule} className="rounded-lg border border-stroke px-3 py-2 text-xs text-slate-200 hover:text-cyan">
+                Add Rule
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="mt-3 rounded-xl border border-stroke/70 bg-panelSoft p-3">
+          <p className="text-sm font-semibold text-slate-200">Manual Relative Range Comparison (optional)</p>
+          <p className="mt-1 text-xs text-slate-300">Set a date range to compute current distance from that range low/high for each symbol.</p>
+          <div className="mt-2 grid gap-2 md:grid-cols-2">
+            <label className="space-y-1 text-xs text-slate-300">
+              <span>Range Start</span>
+              <input type="date" value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} className="h-9 w-full rounded-lg border border-stroke bg-bg px-2" />
+            </label>
+            <label className="space-y-1 text-xs text-slate-300">
+              <span>Range End</span>
+              <input type="date" value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} className="h-9 w-full rounded-lg border border-stroke bg-bg px-2" />
+            </label>
+          </div>
+        </div>
+
         <button type="button" onClick={runScan} disabled={loading} className="mt-4 h-11 rounded-lg bg-cyan px-6 text-sm font-semibold text-bg transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">
           {loading ? "Scanning..." : "Run Scanner"}
         </button>
@@ -190,6 +382,9 @@ export default function ScannerPage() {
             <p className="text-xs text-slate-300">
               Scope summary: {result.scope.universe_scope.replaceAll("_", " ")}, max results {result.scope.max_results}, recommended duration {result.scope.recommended_duration.toUpperCase()}.
             </p>
+            <p className="mt-1 text-xs text-slate-300">
+              Custom rules: {useCustomRules ? `${customRules.length} active` : "off"} | Manual range: {rangeStart && rangeEnd ? `${rangeStart} to ${rangeEnd}` : "off"}
+            </p>
             {result.scope.partial_scan ? (
               <p className="mt-1 text-xs text-amber-300">{result.scope.partial_scan_note}</p>
             ) : null}
@@ -202,44 +397,60 @@ export default function ScannerPage() {
                 <thead>
                   <tr className="border-b border-stroke text-left text-slate-400">
                     <th className="px-2 py-2">Symbol</th>
-                    <th className="px-2 py-2">Score</th>
-                    <th className="px-2 py-2">Current</th>
-                    <th className="px-2 py-2">D(5)</th>
-                    <th className="px-2 py-2">D(20)</th>
+                    {sortOptions.map((option) => (
+                      <th key={option.key} className="px-2 py-2">
+                        <button type="button" onClick={() => toggleSort(option.key)} className="inline-flex items-center gap-1 hover:text-slate-200">
+                          {option.label}
+                          {sortKey === option.key ? (sortDirection === "asc" ? "↑" : "↓") : ""}
+                        </button>
+                      </th>
+                    ))}
                     <th className="px-2 py-2">Dynamics</th>
                     <th className="px-2 py-2">Priority</th>
                     <th className="px-2 py-2">Category</th>
                     <th className="px-2 py-2">Reason</th>
                     <th className="px-2 py-2">Trend State</th>
-                    <th className="px-2 py-2">Price vs EMA200</th>
                     <th className="px-2 py-2">EMA200 Slope</th>
-                    <th className="px-2 py-2">Support%</th>
-                    <th className="px-2 py-2">Room%</th>
+                    <th className="px-2 py-2">Rep Tests</th>
+                    <th className="px-2 py-2">Range Low%</th>
+                    <th className="px-2 py-2">Range High%</th>
+                    <th className="px-2 py-2">TV</th>
                     <th className="px-2 py-2">Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {result.results.length === 0 ? (
+                  {sortedResults.length === 0 ? (
                     <tr>
-                      <td className="px-2 py-3 text-slate-400" colSpan={15}>No candidates found for selected scope.</td>
+                      <td className="px-2 py-3 text-slate-400" colSpan={20}>No candidates found for selected scope.</td>
                     </tr>
                   ) : (
-                    result.results.map((row) => (
+                    sortedResults.map((row) => (
                       <tr key={row.normalized_symbol} className="border-b border-stroke/50">
                         <td className="px-2 py-2">{row.symbol}</td>
                         <td className="px-2 py-2">{row.scanner_score.toFixed(2)}</td>
                         <td className="px-2 py-2">{row.current_score.toFixed(2)}</td>
                         <td className={`px-2 py-2 ${row.score_delta_short >= 0 ? "text-green" : "text-red"}`}>{row.score_delta_short.toFixed(2)}</td>
                         <td className={`px-2 py-2 ${row.score_delta_medium >= 0 ? "text-green" : "text-red"}`}>{row.score_delta_medium.toFixed(2)}</td>
+                        <td className="px-2 py-2">{row.price_vs_ema200_pct.toFixed(2)}%</td>
+                        <td className="px-2 py-2">{row.support_distance_pct.toFixed(2)}%</td>
+                        <td className="px-2 py-2">{row.resistance_room_pct.toFixed(2)}%</td>
+                        <td className="px-2 py-2">{row.volume_ratio_20.toFixed(2)}</td>
+                        <td className="px-2 py-2">{row.resistance_test_count}</td>
+                        <td className="px-2 py-2">{row.ema200_test_count}</td>
                         <td className="px-2 py-2">{row.score_dynamics_state}</td>
                         <td className="px-2 py-2 capitalize">{row.priority}</td>
                         <td className="px-2 py-2">{row.category_tag.replaceAll("_", " ")}</td>
                         <td className="max-w-[300px] px-2 py-2 text-xs text-slate-300">{row.short_reason}</td>
                         <td className="px-2 py-2">{row.trend_state}</td>
-                        <td className="px-2 py-2">{row.price_vs_ema200_pct.toFixed(2)}%</td>
                         <td className="px-2 py-2">{row.ema200_slope_state}</td>
-                        <td className="px-2 py-2">{row.support_distance_pct.toFixed(2)}%</td>
-                        <td className="px-2 py-2">{row.resistance_room_pct.toFixed(2)}%</td>
+                        <td className="px-2 py-2">{row.repeated_test_count}</td>
+                        <td className="px-2 py-2">{row.distance_from_range_low_pct !== null ? `${row.distance_from_range_low_pct.toFixed(2)}%` : "n/a"}</td>
+                        <td className="px-2 py-2">{row.distance_to_range_high_pct !== null ? `${row.distance_to_range_high_pct.toFixed(2)}%` : "n/a"}</td>
+                        <td className="px-2 py-2">
+                          <a href={row.tradingview_url} target="_blank" rel="noreferrer" className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan">
+                            TradingView
+                          </a>
+                        </td>
                         <td className="px-2 py-2">
                           <button
                             type="button"

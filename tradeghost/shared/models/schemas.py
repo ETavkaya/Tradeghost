@@ -437,6 +437,35 @@ class ScannerPriority(str, Enum):
     LOW = "low"
 
 
+class ScannerRuleField(str, Enum):
+    PRICE_VS_EMA200_PCT = "price_vs_ema200_pct"
+    DISTANCE_TO_EMA20_PCT = "distance_to_ema20_pct"
+    DISTANCE_TO_EMA50_PCT = "distance_to_ema50_pct"
+    RSI_14 = "rsi_14"
+    VOLUME_RATIO_20 = "volume_ratio_20"
+    SUPPORT_DISTANCE_PCT = "support_distance_pct"
+    RESISTANCE_ROOM_PCT = "resistance_room_pct"
+    EMA200_SLOPE_STATE = "ema200_slope_state"
+    TREND_STATE = "trend_state"
+
+
+class ScannerRuleOperator(str, Enum):
+    GT = "gt"
+    GTE = "gte"
+    LT = "lt"
+    LTE = "lte"
+    EQ = "eq"
+    IN = "in"
+
+
+class ScannerCustomRule(BaseModel):
+    field: ScannerRuleField
+    operator: ScannerRuleOperator
+    value_number: float | None = None
+    value_text: str | None = None
+    value_list: list[str] = Field(default_factory=list)
+
+
 class ScannerRequest(BaseModel):
     market: MarketCode
     duration: ScannerDuration
@@ -444,6 +473,10 @@ class ScannerRequest(BaseModel):
     max_results: int = Field(default=20, ge=1, le=100)
     universe_scope: ScannerUniverseScope = ScannerUniverseScope.CAPPED
     max_runtime_seconds: float = Field(default=18.0, ge=3.0, le=45.0)
+    use_custom_rules: bool = False
+    custom_rules: list[ScannerCustomRule] = Field(default_factory=list)
+    range_start: date | None = None
+    range_end: date | None = None
 
 
 class ScannerResult(BaseModel):
@@ -464,6 +497,15 @@ class ScannerResult(BaseModel):
     ema_stack_alignment: str
     support_distance_pct: float
     resistance_room_pct: float
+    volume_ratio_20: float
+    resistance_test_count: int
+    ema200_test_count: int
+    repeated_test_count: int
+    distance_from_range_low_pct: float | None = None
+    distance_to_range_high_pct: float | None = None
+    range_low: float | None = None
+    range_high: float | None = None
+    tradingview_url: str
     bars_since_reclaim: int | None = None
     compression_state: str
 

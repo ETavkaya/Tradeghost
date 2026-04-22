@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Panel, SectionTitle, StatCard } from "@/components/ui";
 import { api } from "@/lib/api";
@@ -15,6 +15,11 @@ import {
   ScannerRuleField,
   ScannerRuleOperator,
   ScannerUniverseScope,
+  Watchlist,
+  AlertEvent,
+  AlertRule,
+  AlertSeverity,
+  MonitoringRunSummary,
 } from "@/lib/types";
 
 const recommendedDurationByCategory: Record<ScannerCategory, ScannerDuration> = {
@@ -117,6 +122,14 @@ export default function ScannerPage() {
   const [customRules, setCustomRules] = useState<ScannerCustomRule[]>([]);
   const [rangeStart, setRangeStart] = useState("");
   const [rangeEnd, setRangeEnd] = useState("");
+  const [watchlists, setWatchlists] = useState<Watchlist[]>([]);
+  const [watchlistName, setWatchlistName] = useState("");
+  const [selectedWatchlistId, setSelectedWatchlistId] = useState("");
+  const [alerts, setAlerts] = useState<AlertEvent[]>([]);
+  const [alertRules, setAlertRules] = useState<AlertRule[]>([]);
+  const [monitoringSummary, setMonitoringSummary] = useState<MonitoringRunSummary | null>(null);
+  const [alertSeverityFilter, setAlertSeverityFilter] = useState<string>("");
+  const [alertStatusFilter, setAlertStatusFilter] = useState<string>("");
 
   const recommended = recommendedDurationByCategory[category];
 
@@ -140,6 +153,13 @@ export default function ScannerPage() {
         use_custom_rules: useCustomRules && customRules.length > 0,
         ...(useCustomRules && customRules.length > 0 ? { custom_rules: customRules } : {}),
         ...(rangeStart && rangeEnd ? { range_start: rangeStart, range_end: rangeEnd } : {}),
+        ...(selectedWatchlistId && universeScope === "watchlist"
+          ? {
+              symbol_overrides: (watchlists.find((wl) => wl.id === selectedWatchlistId)?.items ?? [])
+                .filter((it) => it.market === market)
+                .map((it) => it.symbol),
+            }
+          : {}),
       };
       const response = await api.scanner(payload);
       setResult(response);
@@ -153,6 +173,29 @@ export default function ScannerPage() {
   const scopeLabel = useMemo(() => {
     return `Scanner finds candidates. Analysis explains structure. Backtest validates historical behavior.`;
   }, []);
+
+  const refreshMonitoringData = async () => {
+    try {
+      const [watchlistRows, alertRows, ruleRows] = await Promise.all([
+        api.listWatchlists(),
+        api.listAlertEvents(alertStatusFilter || undefined, alertSeverityFilter || undefined, undefined),
+        api.listAlertRules(),
+      ]);
+      setWatchlists(watchlistRows);
+      setAlerts(alertRows);
+      setAlertRules(ruleRows);
+      if (watchlistRows.length > 0 && !selectedWatchlistId) {
+        setSelectedWatchlistId(watchlistRows[0].id);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load monitoring data.");
+    }
+  };
+
+  useEffect(() => {
+    refreshMonitoringData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [alertSeverityFilter, alertStatusFilter]);
 
   const sortedResults = useMemo(() => {
     if (!result) return [];
@@ -223,6 +266,46 @@ export default function ScannerPage() {
     setCustomRules((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const createWatchlist = async () => {
+    if (!watchlistName.trim()) return;
+    await api.createWatchlist(watchlistName.trim());
+    setWatchlistName("");
+    await refreshMonitoringData();
+  };
+
+  const addToWatchlist = async (symbol: string) => {
+    if (!selectedWatchlistId) return;
+    await api.addWatchlistItem(selectedWatchlistId, symbol, market);
+    await refreshMonitoringData();
+  };
+
+  const createBasicAlertFromRow = async (row: ScannerResult) => {
+    await api.createAlertRule({
+      scope_type: "symbol",
+      scope_ref: row.symbol,
+      market,
+      symbol: row.symbol,
+      name: `${row.symbol} near EMA50`,
+      rule_type: "near_ema50",
+      parameters: { threshold_pct: 3.0 },
+      timeframe: "daily",
+      severity: "watch",
+      color: "yellow",
+      is_enabled: true,
+    });
+    await refreshMonitoringData();
+  };
+
+  const runMonitoringNow = async () => {
+    const summary = await api.runMonitoring({
+      market,
+      watchlist_id: selectedWatchlistId || null,
+      symbols: [],
+    });
+    setMonitoringSummary(summary);
+    await refreshMonitoringData();
+  };
+
   return (
     <main className="space-y-4">
       <Panel>
@@ -287,6 +370,11 @@ export default function ScannerPage() {
         <p className="mt-2 text-xs text-slate-300">
           Planned scan scope: {market.toUpperCase()} | {categoryDefinition[category].title} | {duration.toUpperCase()} | {universeScope.replaceAll("_", " ")} | top {maxResults}.
         </p>
+        {universeScope === "watchlist" && selectedWatchlistId ? (
+          <p className="mt-1 text-xs text-slate-300">
+            Active watchlist scope: {watchlists.find((wl) => wl.id === selectedWatchlistId)?.name ?? "selected"}.
+          </p>
+        ) : null}
 
         <div className="mt-4 rounded-xl border border-stroke/70 bg-panelSoft p-3">
           <div className="flex items-center justify-between gap-3">
@@ -463,12 +551,13 @@ export default function ScannerPage() {
                     <th className="px-2 py-2">Range High%</th>
                     <th className="px-2 py-2">TV</th>
                     <th className="px-2 py-2">Action</th>
+                    <th className="px-2 py-2">Monitor</th>
                   </tr>
                 </thead>
                 <tbody>
                   {sortedResults.length === 0 ? (
                     <tr>
-                      <td className="px-2 py-3 text-slate-400" colSpan={20}>No candidates found for selected scope.</td>
+                      <td className="px-2 py-3 text-slate-400" colSpan={21}>No candidates found for selected scope.</td>
                     </tr>
                   ) : (
                     sortedResults.map((row) => (
@@ -511,11 +600,107 @@ export default function ScannerPage() {
                             Open Analysis
                           </button>
                         </td>
+                        <td className="px-2 py-2">
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              onClick={() => addToWatchlist(row.symbol)}
+                              className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan"
+                            >
+                              Add WL
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => createBasicAlertFromRow(row)}
+                              className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan"
+                            >
+                              Alert
+                            </button>
+                          </div>
+                        </td>
                       </tr>
                     ))
                   )}
                 </tbody>
               </table>
+            </div>
+          </Panel>
+
+          <Panel>
+            <SectionTitle title="Monitoring Layer" subtitle="Watchlists + alerts + manual/scheduled monitoring hooks" />
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="space-y-3">
+                <p className="text-xs text-slate-300">Create and manage watchlists. Scanner results can be added directly.</p>
+                <div className="flex gap-2">
+                  <input
+                    value={watchlistName}
+                    onChange={(event) => setWatchlistName(event.target.value)}
+                    placeholder="New watchlist name"
+                    className="h-9 flex-1 rounded-lg border border-stroke bg-bg px-2 text-sm"
+                  />
+                  <button type="button" onClick={createWatchlist} className="rounded-lg border border-stroke px-3 py-2 text-xs hover:text-cyan">Create</button>
+                </div>
+                <label className="space-y-1 text-sm">
+                  <span className="text-xs text-slate-400">Active Watchlist</span>
+                  <select value={selectedWatchlistId} onChange={(event) => setSelectedWatchlistId(event.target.value)} className="h-10 w-full rounded-lg border border-stroke bg-bg px-3">
+                    <option value="">Select watchlist</option>
+                    {watchlists.map((wl) => (
+                      <option key={wl.id} value={wl.id}>{wl.name} ({wl.items.length})</option>
+                    ))}
+                  </select>
+                </label>
+                {watchlists.find((wl) => wl.id === selectedWatchlistId)?.items?.length ? (
+                  <div className="rounded-lg border border-stroke/70 p-2 text-xs text-slate-300">
+                    {watchlists.find((wl) => wl.id === selectedWatchlistId)?.items.map((it) => (
+                      <span key={`${it.symbol}-${it.market}`} className="mr-2 inline-block rounded border border-stroke px-2 py-1">
+                        {it.symbol} ({it.market.toUpperCase()})
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="space-y-3">
+                <p className="text-xs text-slate-300">Run bounded monitoring checks and inspect alert-ready events.</p>
+                <button type="button" onClick={runMonitoringNow} className="rounded-lg border border-stroke px-3 py-2 text-xs hover:text-cyan">
+                  Run Monitoring Now
+                </button>
+                {monitoringSummary ? (
+                  <div className="rounded-lg border border-stroke/70 p-2 text-xs text-slate-300">
+                    Rules: {monitoringSummary.processed_rules}, symbols: {monitoringSummary.evaluated_symbols}, events: {monitoringSummary.events_created}
+                    {monitoringSummary.partial_run ? `, partial: ${monitoringSummary.note ?? "yes"}` : ""}
+                  </div>
+                ) : null}
+                <div className="grid gap-2 md:grid-cols-2">
+                  <select value={alertSeverityFilter} onChange={(event) => setAlertSeverityFilter(event.target.value)} className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs">
+                    <option value="">All severities</option>
+                    {(["info", "watch", "important", "critical"] as AlertSeverity[]).map((sev) => (
+                      <option key={sev} value={sev}>{sev}</option>
+                    ))}
+                  </select>
+                  <select value={alertStatusFilter} onChange={(event) => setAlertStatusFilter(event.target.value)} className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs">
+                    <option value="">All status</option>
+                    <option value="new">new</option>
+                    <option value="seen">seen</option>
+                    <option value="archived">archived</option>
+                  </select>
+                </div>
+                <div className="rounded-lg border border-stroke/70 p-2 text-xs text-slate-300">
+                  Active rules: {alertRules.length} | Alert events: {alerts.length}
+                </div>
+                <div className="max-h-64 overflow-auto rounded-lg border border-stroke/70 p-2 text-xs">
+                  {alerts.length === 0 ? (
+                    <p className="text-slate-400">No alert events yet.</p>
+                  ) : (
+                    alerts.slice(0, 50).map((ev) => (
+                      <div key={ev.id} className="mb-2 border-b border-stroke/40 pb-2">
+                        <p className="text-slate-100">{ev.message}</p>
+                        <p className="text-slate-400">{ev.symbol} | {ev.severity} | {ev.status} | {new Date(ev.timestamp).toLocaleString()}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
             </div>
           </Panel>
         </>

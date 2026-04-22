@@ -497,6 +497,7 @@ export type ScannerRequest = {
   custom_rules?: ScannerCustomRule[];
   range_start?: string | null;
   range_end?: string | null;
+  symbol_overrides?: string[];
 };
 
 export type ScannerResult = {
@@ -534,4 +535,101 @@ export type ScannerResponse = {
   scope: ScannerScopeSummary;
   results: ScannerResult[];
   generated_at: string;
+};
+
+export type WatchlistItem = {
+  watchlist_id: string;
+  symbol: string;
+  market: MarketCode;
+  added_at: string;
+  notes: string | null;
+};
+
+export type Watchlist = {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  items: WatchlistItem[];
+};
+
+export type AlertSeverity = "info" | "watch" | "important" | "critical";
+export type AlertScopeType = "symbol" | "watchlist";
+export type AlertRuleType =
+  | "near_ema20"
+  | "near_ema50"
+  | "near_ema200"
+  | "price_gte"
+  | "price_lte"
+  | "trend_state_is"
+  | "dynamics_state_is"
+  | "scanner_top_n"
+  | "reclaim_ema200"
+  | "resistance_test_count_gte"
+  | "volume_ratio_20_gte"
+  | "rsi14_lte"
+  | "rsi14_gte";
+
+export type AlertRule = {
+  id: string;
+  scope_type: AlertScopeType;
+  scope_ref: string;
+  market: MarketCode;
+  symbol: string | null;
+  name: string;
+  rule_type: AlertRuleType;
+  parameters: Record<string, unknown>;
+  timeframe: string;
+  severity: AlertSeverity;
+  color: string;
+  is_enabled: boolean;
+  created_at: string;
+  updated_at: string;
+  preferred_regime_mode: string | null;
+  notification_email_enabled: boolean;
+  notification_webhook_enabled: boolean;
+};
+
+export type AlertEventStatus = "new" | "seen" | "archived";
+
+export type AlertEvent = {
+  id: string;
+  alert_rule_id: string;
+  timestamp: string;
+  symbol: string;
+  market: MarketCode;
+  triggered_value: number | string | null;
+  trigger_context: Record<string, unknown>;
+  severity: AlertSeverity;
+  status: AlertEventStatus;
+  message: string;
+  scanner_context: Record<string, unknown>;
+  analysis_context: Record<string, unknown>;
+};
+
+export type MonitoringSchedule = {
+  id: string;
+  name: string;
+  market: MarketCode;
+  frequency: string;
+  watchlist_id: string | null;
+  symbols: string[];
+  category: ScannerCategory;
+  duration: ScannerDuration;
+  max_results: number;
+  is_enabled: boolean;
+  created_at: string;
+  updated_at: string;
+  last_run_at: string | null;
+  next_run_at: string | null;
+};
+
+export type MonitoringRunSummary = {
+  started_at: string;
+  finished_at: string;
+  processed_rules: number;
+  evaluated_symbols: number;
+  events_created: number;
+  partial_run: boolean;
+  note: string | null;
 };

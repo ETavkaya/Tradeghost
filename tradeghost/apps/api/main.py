@@ -5,9 +5,16 @@ from fastapi import FastAPI, HTTPException, Query
 from tradeghost.services.analysis_engine import AnalysisEngine
 from tradeghost.services.backtest.engine import BacktestEngine
 from tradeghost.services.backtest.review_log import BacktestReviewLogService
+from tradeghost.services.monitoring.service import MonitoringService
 from tradeghost.services.scanner.engine import ScannerEngine
 from tradeghost.shared.config.settings import get_settings
 from tradeghost.shared.models.schemas import (
+    AlertEvent,
+    AlertEventStatus,
+    AlertEventStatusUpdateRequest,
+    AlertRule,
+    AlertRuleCreateRequest,
+    AlertRuleUpdateRequest,
     AnalysisResponse,
     BacktestFromAnalysisRequest,
     BacktestFromAnalysisResponse,
@@ -16,11 +23,21 @@ from tradeghost.shared.models.schemas import (
     BacktestSnapshotCommentCreateRequest,
     BacktestSnapshotCreateRequest,
     CombinedAnalysisResponse,
+    MonitoringRunRequest,
+    MonitoringRunDueRequest,
+    MonitoringRunSummary,
+    MonitoringSchedule,
+    MonitoringScheduleCreateRequest,
+    MonitoringScheduleUpdateRequest,
     ScannerRequest,
     ScannerResponse,
     ScoreResponse,
     StrategyMode,
     TradePlanResponse,
+    Watchlist,
+    WatchlistCreateRequest,
+    WatchlistItemCreateRequest,
+    WatchlistRenameRequest,
 )
 
 settings = get_settings()
@@ -30,6 +47,7 @@ analysis_engine = AnalysisEngine()
 backtest_engine = BacktestEngine(analysis_engine=analysis_engine)
 review_log_service = BacktestReviewLogService()
 scanner_engine = ScannerEngine(analysis_engine=analysis_engine)
+monitoring_service = MonitoringService(analysis_engine=analysis_engine, scanner_engine=scanner_engine)
 
 
 @app.get("/health")
@@ -201,5 +219,178 @@ def scanner_legacy(
 def scanner(payload: ScannerRequest) -> ScannerResponse:
     try:
         return scanner_engine.scan(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/watchlists", response_model=list[Watchlist])
+def list_watchlists() -> list[Watchlist]:
+    try:
+        return monitoring_service.list_watchlists()
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/watchlists", response_model=Watchlist)
+def create_watchlist(payload: WatchlistCreateRequest) -> Watchlist:
+    try:
+        return monitoring_service.create_watchlist(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/watchlists/{watchlist_id}", response_model=Watchlist)
+def rename_watchlist(watchlist_id: str, payload: WatchlistRenameRequest) -> Watchlist:
+    try:
+        return monitoring_service.rename_watchlist(watchlist_id, payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/watchlists/{watchlist_id}")
+def delete_watchlist(watchlist_id: str) -> dict[str, str]:
+    try:
+        monitoring_service.delete_watchlist(watchlist_id)
+        return {"status": "ok"}
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/watchlists/{watchlist_id}/items", response_model=Watchlist)
+def add_watchlist_item(watchlist_id: str, payload: WatchlistItemCreateRequest) -> Watchlist:
+    try:
+        return monitoring_service.add_watchlist_item(watchlist_id, payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/watchlists/{watchlist_id}/items")
+def remove_watchlist_item(
+    watchlist_id: str,
+    symbol: str = Query(...),
+    market: str = Query(...),
+) -> Watchlist:
+    try:
+        return monitoring_service.remove_watchlist_item(watchlist_id, symbol=symbol, market=market)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/alert-rules", response_model=list[AlertRule])
+def list_alert_rules() -> list[AlertRule]:
+    try:
+        return monitoring_service.list_alert_rules()
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/alert-rules", response_model=AlertRule)
+def create_alert_rule(payload: AlertRuleCreateRequest) -> AlertRule:
+    try:
+        return monitoring_service.create_alert_rule(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/alert-rules/{rule_id}", response_model=AlertRule)
+def update_alert_rule(rule_id: str, payload: AlertRuleUpdateRequest) -> AlertRule:
+    try:
+        return monitoring_service.update_alert_rule(rule_id, payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/alert-rules/{rule_id}")
+def delete_alert_rule(rule_id: str) -> dict[str, str]:
+    try:
+        monitoring_service.delete_alert_rule(rule_id)
+        return {"status": "ok"}
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/alert-events", response_model=list[AlertEvent])
+def list_alert_events(
+    status: AlertEventStatus | None = Query(default=None),
+    severity: str | None = Query(default=None),
+    symbol: str | None = Query(default=None),
+) -> list[AlertEvent]:
+    try:
+        return monitoring_service.list_alert_events(status=status, severity=severity, symbol=symbol)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/alert-events/{event_id}/status", response_model=AlertEvent)
+def update_alert_event_status(event_id: str, payload: AlertEventStatusUpdateRequest) -> AlertEvent:
+    try:
+        return monitoring_service.update_event_status(event_id, payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/monitoring/schedules", response_model=list[MonitoringSchedule])
+def list_monitoring_schedules() -> list[MonitoringSchedule]:
+    try:
+        return monitoring_service.list_schedules()
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/monitoring/schedules", response_model=MonitoringSchedule)
+def create_monitoring_schedule(payload: MonitoringScheduleCreateRequest) -> MonitoringSchedule:
+    try:
+        return monitoring_service.create_schedule(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/monitoring/schedules/{schedule_id}", response_model=MonitoringSchedule)
+def update_monitoring_schedule(schedule_id: str, payload: MonitoringScheduleUpdateRequest) -> MonitoringSchedule:
+    try:
+        return monitoring_service.update_schedule(schedule_id, payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/monitoring/schedules/{schedule_id}")
+def delete_monitoring_schedule(schedule_id: str) -> dict[str, str]:
+    try:
+        monitoring_service.delete_schedule(schedule_id)
+        return {"status": "ok"}
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/monitoring/run", response_model=MonitoringRunSummary)
+def run_monitoring(payload: MonitoringRunRequest) -> MonitoringRunSummary:
+    try:
+        return monitoring_service.run_monitoring(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/monitoring/run-due", response_model=MonitoringRunSummary)
+def run_due_monitoring(payload: MonitoringRunDueRequest) -> MonitoringRunSummary:
+    try:
+        return monitoring_service.run_due_schedules(max_runtime_seconds=payload.max_runtime_seconds)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc

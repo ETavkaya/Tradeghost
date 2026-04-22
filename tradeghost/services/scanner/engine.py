@@ -382,7 +382,7 @@ class ScannerEngine:
 
     def scan(self, req: ScannerRequest) -> ScannerResponse:
         started = time.monotonic()
-        symbols = self._universe(req.market.value, req.universe_scope)
+        symbols = [sym.strip().upper() for sym in req.symbol_overrides if sym.strip()] if req.symbol_overrides else self._universe(req.market.value, req.universe_scope)
         strict_results: list[ScannerResult] = []
         relaxed_results: list[ScannerResult] = []
         processed = 0

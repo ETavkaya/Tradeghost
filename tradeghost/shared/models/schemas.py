@@ -477,6 +477,7 @@ class ScannerRequest(BaseModel):
     custom_rules: list[ScannerCustomRule] = Field(default_factory=list)
     range_start: date | None = None
     range_end: date | None = None
+    symbol_overrides: list[str] = Field(default_factory=list)
 
 
 class ScannerResult(BaseModel):
@@ -534,6 +535,193 @@ class ScannerResponse(BaseModel):
     scope: ScannerScopeSummary
     results: list[ScannerResult]
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class WatchlistItem(BaseModel):
+    watchlist_id: str
+    symbol: str
+    market: MarketCode
+    added_at: datetime
+    notes: str | None = None
+
+
+class Watchlist(BaseModel):
+    id: str
+    name: str
+    created_at: datetime
+    updated_at: datetime
+    items: list[WatchlistItem] = Field(default_factory=list)
+
+
+class WatchlistCreateRequest(BaseModel):
+    name: str
+
+
+class WatchlistRenameRequest(BaseModel):
+    name: str
+
+
+class WatchlistItemCreateRequest(BaseModel):
+    symbol: str
+    market: MarketCode
+    notes: str | None = None
+
+
+class AlertSeverity(str, Enum):
+    INFO = "info"
+    WATCH = "watch"
+    IMPORTANT = "important"
+    CRITICAL = "critical"
+
+
+class AlertScopeType(str, Enum):
+    SYMBOL = "symbol"
+    WATCHLIST = "watchlist"
+
+
+class AlertRuleType(str, Enum):
+    NEAR_EMA20 = "near_ema20"
+    NEAR_EMA50 = "near_ema50"
+    NEAR_EMA200 = "near_ema200"
+    PRICE_GTE = "price_gte"
+    PRICE_LTE = "price_lte"
+    TREND_STATE_IS = "trend_state_is"
+    DYNAMICS_STATE_IS = "dynamics_state_is"
+    SCANNER_TOP_N = "scanner_top_n"
+    RECLAIM_EMA200 = "reclaim_ema200"
+    RESISTANCE_TEST_COUNT_GTE = "resistance_test_count_gte"
+    VOLUME_RATIO_20_GTE = "volume_ratio_20_gte"
+    RSI14_LTE = "rsi14_lte"
+    RSI14_GTE = "rsi14_gte"
+
+
+class AlertRule(BaseModel):
+    id: str
+    scope_type: AlertScopeType
+    scope_ref: str
+    market: MarketCode
+    symbol: str | None = None
+    name: str
+    rule_type: AlertRuleType
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    timeframe: str = "daily"
+    severity: AlertSeverity = AlertSeverity.WATCH
+    color: str = "yellow"
+    is_enabled: bool = True
+    created_at: datetime
+    updated_at: datetime
+    preferred_regime_mode: str | None = None
+    notification_email_enabled: bool = False
+    notification_webhook_enabled: bool = False
+
+
+class AlertRuleCreateRequest(BaseModel):
+    scope_type: AlertScopeType
+    scope_ref: str
+    market: MarketCode
+    symbol: str | None = None
+    name: str
+    rule_type: AlertRuleType
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    timeframe: str = "daily"
+    severity: AlertSeverity = AlertSeverity.WATCH
+    color: str = "yellow"
+    is_enabled: bool = True
+
+
+class AlertRuleUpdateRequest(BaseModel):
+    name: str | None = None
+    parameters: dict[str, Any] | None = None
+    severity: AlertSeverity | None = None
+    color: str | None = None
+    is_enabled: bool | None = None
+    timeframe: str | None = None
+
+
+class MonitoringSchedule(BaseModel):
+    id: str
+    name: str
+    market: MarketCode
+    frequency: str
+    watchlist_id: str | None = None
+    symbols: list[str] = Field(default_factory=list)
+    category: ScannerCategory = ScannerCategory.TREND_MODE
+    duration: ScannerDuration = ScannerDuration.TWO_YEAR
+    max_results: int = 20
+    is_enabled: bool = True
+    created_at: datetime
+    updated_at: datetime
+    last_run_at: datetime | None = None
+    next_run_at: datetime | None = None
+
+
+class MonitoringScheduleCreateRequest(BaseModel):
+    name: str
+    market: MarketCode
+    frequency: str = "daily"
+    watchlist_id: str | None = None
+    symbols: list[str] = Field(default_factory=list)
+    category: ScannerCategory = ScannerCategory.TREND_MODE
+    duration: ScannerDuration = ScannerDuration.TWO_YEAR
+    max_results: int = Field(default=20, ge=1, le=100)
+    is_enabled: bool = True
+
+
+class MonitoringScheduleUpdateRequest(BaseModel):
+    name: str | None = None
+    frequency: str | None = None
+    watchlist_id: str | None = None
+    symbols: list[str] | None = None
+    category: ScannerCategory | None = None
+    duration: ScannerDuration | None = None
+    max_results: int | None = Field(default=None, ge=1, le=100)
+    is_enabled: bool | None = None
+
+
+class AlertEventStatus(str, Enum):
+    NEW = "new"
+    SEEN = "seen"
+    ARCHIVED = "archived"
+
+
+class AlertEvent(BaseModel):
+    id: str
+    alert_rule_id: str
+    timestamp: datetime
+    symbol: str
+    market: MarketCode
+    triggered_value: float | str | None = None
+    trigger_context: dict[str, Any] = Field(default_factory=dict)
+    severity: AlertSeverity
+    status: AlertEventStatus = AlertEventStatus.NEW
+    message: str
+    scanner_context: dict[str, Any] = Field(default_factory=dict)
+    analysis_context: dict[str, Any] = Field(default_factory=dict)
+
+
+class AlertEventStatusUpdateRequest(BaseModel):
+    status: AlertEventStatus
+
+
+class MonitoringRunRequest(BaseModel):
+    market: MarketCode | None = None
+    watchlist_id: str | None = None
+    symbols: list[str] = Field(default_factory=list)
+    max_runtime_seconds: float = Field(default=20.0, ge=3.0, le=90.0)
+
+
+class MonitoringRunSummary(BaseModel):
+    started_at: datetime
+    finished_at: datetime
+    processed_rules: int
+    evaluated_symbols: int
+    events_created: int
+    partial_run: bool
+    note: str | None = None
+
+
+class MonitoringRunDueRequest(BaseModel):
+    max_runtime_seconds: float = Field(default=30.0, ge=5.0, le=120.0)
 
 
 class BacktestSnapshotMetrics(BaseModel):

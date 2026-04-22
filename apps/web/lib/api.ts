@@ -7,6 +7,11 @@ import {
   BacktestFromAnalysisRequest,
   BacktestFromAnalysisResponse,
   BacktestSnapshot,
+  Watchlist,
+  AlertRule,
+  AlertEvent,
+  MonitoringSchedule,
+  MonitoringRunSummary,
   ScannerCategory,
   ScannerDuration,
   ScannerRequest,
@@ -95,5 +100,71 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)
     }),
-  health: () => fetchJson<{ status: string; app: string }>("/api/health")
+  health: () => fetchJson<{ status: string; app: string }>("/api/health"),
+  listWatchlists: () => fetchJson<Watchlist[]>("/api/watchlists"),
+  createWatchlist: (name: string) =>
+    fetchJson<Watchlist>("/api/watchlists", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name })
+    }),
+  renameWatchlist: (watchlistId: string, name: string) =>
+    fetchJson<Watchlist>(`/api/watchlists/${encodeURIComponent(watchlistId)}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name })
+    }),
+  deleteWatchlist: (watchlistId: string) =>
+    fetchJson<{ status: string }>(`/api/watchlists/${encodeURIComponent(watchlistId)}`, { method: "DELETE" }),
+  addWatchlistItem: (watchlistId: string, symbol: string, market: MarketCode, notes?: string) =>
+    fetchJson<Watchlist>(`/api/watchlists/${encodeURIComponent(watchlistId)}/items`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ symbol, market, notes: notes ?? null })
+    }),
+  removeWatchlistItem: (watchlistId: string, symbol: string, market: MarketCode) =>
+    fetchJson<Watchlist>(`/api/watchlists/${encodeURIComponent(watchlistId)}/items?symbol=${encodeURIComponent(symbol)}&market=${encodeURIComponent(market)}`, { method: "DELETE" }),
+  listAlertRules: () => fetchJson<AlertRule[]>("/api/alert-rules"),
+  createAlertRule: (payload: Record<string, unknown>) =>
+    fetchJson<AlertRule>("/api/alert-rules", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
+  deleteAlertRule: (ruleId: string) =>
+    fetchJson<{ status: string }>(`/api/alert-rules/${encodeURIComponent(ruleId)}`, { method: "DELETE" }),
+  listAlertEvents: (status?: string, severity?: string, symbol?: string) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (severity) params.set("severity", severity);
+    if (symbol) params.set("symbol", symbol);
+    return fetchJson<AlertEvent[]>(`/api/alert-events${params.toString() ? `?${params.toString()}` : ""}`);
+  },
+  updateAlertEventStatus: (eventId: string, status: "new" | "seen" | "archived") =>
+    fetchJson<AlertEvent>(`/api/alert-events/${encodeURIComponent(eventId)}/status`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status })
+    }),
+  runMonitoring: (payload: Record<string, unknown>) =>
+    fetchJson<MonitoringRunSummary>("/api/monitoring/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
+  runDueMonitoring: (maxRuntimeSeconds = 30) =>
+    fetchJson<MonitoringRunSummary>("/api/monitoring/run-due", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ max_runtime_seconds: maxRuntimeSeconds })
+    }),
+  listMonitoringSchedules: () => fetchJson<MonitoringSchedule[]>("/api/monitoring/schedules"),
+  createMonitoringSchedule: (payload: Record<string, unknown>) =>
+    fetchJson<MonitoringSchedule>("/api/monitoring/schedules", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
+  deleteMonitoringSchedule: (scheduleId: string) =>
+    fetchJson<{ status: string }>(`/api/monitoring/schedules/${encodeURIComponent(scheduleId)}`, { method: "DELETE" }),
 };

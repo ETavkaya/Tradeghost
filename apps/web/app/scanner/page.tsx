@@ -426,6 +426,12 @@ export default function ScannerPage() {
             <p className="mt-1 text-xs text-slate-300">
               Custom filters: {useCustomRules && customRules.length > 0 ? `${customRules.length} active` : "off"} | Manual range: {rangeStart && rangeEnd ? `${rangeStart} to ${rangeEnd}` : "off"}
             </p>
+            <p className="mt-1 text-xs text-slate-300">
+              Diagnostics: eligible {result.scope.category_eligible_count}, relaxed eligible {result.scope.relaxed_eligible_count}, custom-filtered {result.scope.custom_filtered_count}, ranked {result.scope.ranked_count}, returned {result.scope.final_returned_count}.
+            </p>
+            {result.scope.used_relaxed_fallback ? (
+              <p className="mt-1 text-xs text-amber-300">Relaxed fallback was used because strict category eligibility returned zero symbols.</p>
+            ) : null}
             {result.scope.partial_scan ? (
               <p className="mt-1 text-xs text-amber-300">{result.scope.partial_scan_note}</p>
             ) : null}

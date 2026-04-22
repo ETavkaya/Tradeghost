@@ -85,6 +85,12 @@ class _LevelTests:
     repeated_test_count: int
 
 
+@dataclass
+class _Eligibility:
+    strict: bool
+    relaxed: bool
+
+
 class ScannerEngine:
     def __init__(self, analysis_engine: AnalysisEngine | None = None) -> None:
         self.analysis_engine = analysis_engine or AnalysisEngine()
@@ -143,7 +149,7 @@ class ScannerEngine:
 
     def _level_test_counts(self, daily, snapshot: dict) -> _LevelTests:
         close = daily["close"]
-        ema200 = daily["ema_200"]
+        ema200 = close.ewm(span=200, adjust=False).mean()
         resistance = float(snapshot.get("support_resistance", {}).get("resistance", close.iloc[-1]))
 
         near_ema200 = ((close - ema200).abs() / ema200.clip(lower=0.01) * 100) <= 1.0
@@ -158,6 +164,53 @@ class ScannerEngine:
             ema200_test_count=int(ema_tests),
             repeated_test_count=int(repeated_tests),
         )
+
+    def _category_eligibility(self, *, category: ScannerCategory, regime, location, setup, trigger, dynamics: _ScoreDynamics, snapshot: dict) -> _Eligibility:
+        breakout_candidate = bool(snapshot.get("breakout_candidate", False))
+        compression = self._compression_state(location.support_distance_pct, location.resistance_room_pct)
+        improving = dynamics.score_dynamics_state in {"improving", "accelerating"}
+
+        if category == ScannerCategory.TREND_MODE:
+            strict = bool(
+                regime.price_above_ema200
+                and regime.ema200_slope_state in {"flat", "rising"}
+                and setup.trend_state in {"bullish_trend", "weakening_trend", "early_trend_transition"}
+            )
+            relaxed = bool(
+                regime.price_above_ema200
+                or regime.ema200_slope_state in {"flat", "rising"}
+                or setup.trend_state in {"bullish_trend", "weakening_trend", "early_trend_transition"}
+            )
+            return _Eligibility(strict=strict, relaxed=relaxed)
+
+        if category == ScannerCategory.BUILD_UP:
+            near_ema200 = abs(regime.price_vs_ema200_pct) <= 8.0
+            reclaiming = regime.bars_since_reclaim is not None and regime.bars_since_reclaim <= 15
+            strict = bool((near_ema200 or reclaiming) and compression in {"compressed", "balanced"})
+            relaxed = bool(
+                near_ema200
+                or reclaiming
+                or compression == "compressed"
+                or setup.setup_status in {"watchlist", "early_trend_transition"}
+            )
+            return _Eligibility(strict=strict, relaxed=relaxed)
+
+        if category == ScannerCategory.MOMENTUM_MODE:
+            strict = bool(
+                regime.price_above_ema200
+                and setup.trend_state in {"bullish_trend", "weakening_trend", "early_trend_transition"}
+                and (breakout_candidate or improving or trigger.trigger_state in {"pending", "confirmed"})
+            )
+            relaxed = bool(
+                (regime.price_above_ema200 and setup.trend_state in {"bullish_trend", "weakening_trend", "early_trend_transition"})
+                or breakout_candidate
+                or improving
+            )
+            return _Eligibility(strict=strict, relaxed=relaxed)
+
+        strict = bool(location.overextended_flag or location.overextension_ema20_pct >= 8.0)
+        relaxed = bool(strict or location.support_distance_pct >= 8.0 or regime.price_above_ema200)
+        return _Eligibility(strict=strict, relaxed=relaxed)
 
     @staticmethod
     def _range_metrics(daily, range_start: date | None, range_end: date | None) -> tuple[float | None, float | None, float | None, float | None]:
@@ -330,10 +383,14 @@ class ScannerEngine:
     def scan(self, req: ScannerRequest) -> ScannerResponse:
         started = time.monotonic()
         symbols = self._universe(req.market.value, req.universe_scope)
-        results: list[ScannerResult] = []
+        strict_results: list[ScannerResult] = []
+        relaxed_results: list[ScannerResult] = []
         processed = 0
         partial = False
         partial_note = None
+        category_eligible_count = 0
+        relaxed_eligible_count = 0
+        custom_filtered_count = 0
 
         config = build_analysis_config(
             ticker="DUMMY",
@@ -376,6 +433,15 @@ class ScannerEngine:
                     current_score=float(state.final_score),
                 )
                 scored = self._score_for_category(req.category, state.final_score, regime, location, setup, trigger, dynamics, snapshot, volume_ratio_20)
+                eligibility = self._category_eligibility(
+                    category=req.category,
+                    regime=regime,
+                    location=location,
+                    setup=setup,
+                    trigger=trigger,
+                    dynamics=dynamics,
+                    snapshot=snapshot,
+                )
 
                 if req.use_custom_rules and req.custom_rules:
                     matched = 0
@@ -390,6 +456,7 @@ class ScannerEngine:
                         ):
                             matched += 1
                     if matched != len(req.custom_rules):
+                        custom_filtered_count += 1
                         processed += 1
                         continue
                     scored = _Eval(
@@ -403,45 +470,62 @@ class ScannerEngine:
                     req.range_start,
                     req.range_end,
                 )
-                results.append(
-                    ScannerResult(
-                        symbol=bundle.ticker,
-                        normalized_symbol=bundle.normalized_ticker,
-                        scanner_score=round(scored.score, 2),
-                        category_tag=scored.tag,
-                        priority=self._priority(scored.score),
-                        short_reason=scored.reason,
-                        current_score=dynamics.current_score,
-                        score_delta_short=dynamics.score_delta_short,
-                        score_delta_medium=dynamics.score_delta_medium,
-                        score_dynamics_state=dynamics.score_dynamics_state,
-                        trend_state=setup.trend_state,
-                        setup_status=setup.setup_status,
-                        price_vs_ema200_pct=regime.price_vs_ema200_pct,
-                        ema200_slope_state=regime.ema200_slope_state,
-                        ema_stack_alignment=regime.ema_stack_alignment,
-                        support_distance_pct=location.support_distance_pct,
-                        resistance_room_pct=location.resistance_room_pct,
-                        volume_ratio_20=round(volume_ratio_20, 2),
-                        resistance_test_count=counts.resistance_test_count,
-                        ema200_test_count=counts.ema200_test_count,
-                        repeated_test_count=counts.repeated_test_count,
-                        distance_from_range_low_pct=from_low_pct,
-                        distance_to_range_high_pct=to_high_pct,
-                        range_low=range_low,
-                        range_high=range_high,
-                        tradingview_url=self._tradingview_url(req.market.value, bundle.normalized_ticker),
-                        bars_since_reclaim=regime.bars_since_reclaim,
-                        compression_state=self._compression_state(location.support_distance_pct, location.resistance_room_pct),
-                    )
+                row = ScannerResult(
+                    symbol=bundle.ticker,
+                    normalized_symbol=bundle.normalized_ticker,
+                    scanner_score=round(scored.score, 2),
+                    category_tag=scored.tag,
+                    priority=self._priority(scored.score),
+                    short_reason=scored.reason,
+                    current_score=dynamics.current_score,
+                    score_delta_short=dynamics.score_delta_short,
+                    score_delta_medium=dynamics.score_delta_medium,
+                    score_dynamics_state=dynamics.score_dynamics_state,
+                    trend_state=setup.trend_state,
+                    setup_status=setup.setup_status,
+                    price_vs_ema200_pct=regime.price_vs_ema200_pct,
+                    ema200_slope_state=regime.ema200_slope_state,
+                    ema_stack_alignment=regime.ema_stack_alignment,
+                    support_distance_pct=location.support_distance_pct,
+                    resistance_room_pct=location.resistance_room_pct,
+                    volume_ratio_20=round(volume_ratio_20, 2),
+                    resistance_test_count=counts.resistance_test_count,
+                    ema200_test_count=counts.ema200_test_count,
+                    repeated_test_count=counts.repeated_test_count,
+                    distance_from_range_low_pct=from_low_pct,
+                    distance_to_range_high_pct=to_high_pct,
+                    range_low=range_low,
+                    range_high=range_high,
+                    tradingview_url=self._tradingview_url(req.market.value, bundle.normalized_ticker),
+                    bars_since_reclaim=regime.bars_since_reclaim,
+                    compression_state=self._compression_state(location.support_distance_pct, location.resistance_room_pct),
                 )
+                if eligibility.strict:
+                    category_eligible_count += 1
+                    strict_results.append(row)
+                if eligibility.relaxed:
+                    relaxed_eligible_count += 1
+                    relaxed_results.append(row)
                 processed += 1
             except Exception:
                 processed += 1
                 continue
 
+        source = strict_results
+        used_relaxed_fallback = False
+        if len(source) == 0 and len(relaxed_results) > 0:
+            source = [
+                row.model_copy(
+                    update={
+                        "short_reason": f"{row.short_reason} Relaxed scanner fallback used (broad discovery mode).",
+                    }
+                )
+                for row in relaxed_results
+            ]
+            used_relaxed_fallback = True
+
         ranked = sorted(
-            results,
+            source,
             key=lambda row: (
                 row.scanner_score,
                 row.current_score,
@@ -450,7 +534,9 @@ class ScannerEngine:
                 0 if row.priority == ScannerPriority.HIGH else 1 if row.priority == ScannerPriority.MEDIUM else 2,
             ),
             reverse=True,
-        )[: req.max_results]
+        )
+        ranked_count = len(ranked)
+        final_rows = ranked[: req.max_results]
 
         runtime = round(time.monotonic() - started, 2)
         return ScannerResponse(
@@ -466,6 +552,12 @@ class ScannerEngine:
                 runtime_seconds=runtime,
                 partial_scan=partial,
                 partial_scan_note=partial_note,
+                category_eligible_count=category_eligible_count,
+                relaxed_eligible_count=relaxed_eligible_count,
+                custom_filtered_count=custom_filtered_count,
+                ranked_count=ranked_count,
+                final_returned_count=len(final_rows),
+                used_relaxed_fallback=used_relaxed_fallback,
             ),
-            results=ranked,
+            results=final_rows,
         )

@@ -470,6 +470,12 @@ export type ScannerScopeSummary = {
   runtime_seconds: number;
   partial_scan: boolean;
   partial_scan_note: string | null;
+  category_eligible_count: number;
+  relaxed_eligible_count: number;
+  custom_filtered_count: number;
+  ranked_count: number;
+  final_returned_count: number;
+  used_relaxed_fallback: boolean;
 };
 
 export type ScannerCustomRule = {

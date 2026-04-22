@@ -522,6 +522,12 @@ class ScannerScopeSummary(BaseModel):
     runtime_seconds: float
     partial_scan: bool
     partial_scan_note: str | None = None
+    category_eligible_count: int = 0
+    relaxed_eligible_count: int = 0
+    custom_filtered_count: int = 0
+    ranked_count: int = 0
+    final_returned_count: int = 0
+    used_relaxed_fallback: bool = False
 
 
 class ScannerResponse(BaseModel):

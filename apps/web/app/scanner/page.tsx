@@ -16,10 +16,6 @@ import {
   ScannerRuleOperator,
   ScannerUniverseScope,
   Watchlist,
-  AlertEvent,
-  AlertRule,
-  AlertSeverity,
-  MonitoringRunSummary,
 } from "@/lib/types";
 
 const recommendedDurationByCategory: Record<ScannerCategory, ScannerDuration> = {
@@ -59,17 +55,17 @@ const categoryDefinition: Record<ScannerCategory, { title: string; desc: string;
   },
 };
 
-const sortOptions: Array<{ key: keyof ScannerResult; label: string; numeric?: boolean }> = [
-  { key: "scanner_score", label: "Score", numeric: true },
-  { key: "current_score", label: "Current", numeric: true },
-  { key: "score_delta_short", label: "D(5)", numeric: true },
-  { key: "score_delta_medium", label: "D(20)", numeric: true },
-  { key: "price_vs_ema200_pct", label: "Price vs EMA200", numeric: true },
-  { key: "support_distance_pct", label: "Support%", numeric: true },
-  { key: "resistance_room_pct", label: "Room%", numeric: true },
-  { key: "volume_ratio_20", label: "VolRatio20", numeric: true },
-  { key: "resistance_test_count", label: "Res Tests", numeric: true },
-  { key: "ema200_test_count", label: "EMA200 Tests", numeric: true },
+const sortOptions: Array<{ key: keyof ScannerResult; label: string }> = [
+  { key: "scanner_score", label: "Score" },
+  { key: "current_score", label: "Current" },
+  { key: "score_delta_short", label: "D(5)" },
+  { key: "score_delta_medium", label: "D(20)" },
+  { key: "price_vs_ema200_pct", label: "Price vs EMA200" },
+  { key: "support_distance_pct", label: "Support%" },
+  { key: "resistance_room_pct", label: "Room%" },
+  { key: "volume_ratio_20", label: "VolRatio20" },
+  { key: "resistance_test_count", label: "Res Tests" },
+  { key: "ema200_test_count", label: "EMA200 Tests" },
 ];
 
 const ruleFieldOptions: Array<{ value: ScannerRuleField; label: string; numeric: boolean }> = [
@@ -113,25 +109,43 @@ export default function ScannerPage() {
   const [keepManualDuration, setKeepManualDuration] = useState(false);
   const [maxResults, setMaxResults] = useState(20);
   const [universeScope, setUniverseScope] = useState<ScannerUniverseScope>("capped_universe");
+  const [selectedWatchlistId, setSelectedWatchlistId] = useState("");
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [result, setResult] = useState<ScannerResponse | null>(null);
+  const [watchlists, setWatchlists] = useState<Watchlist[]>([]);
+
   const [sortKey, setSortKey] = useState<keyof ScannerResult>("scanner_score");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const [useCustomRules, setUseCustomRules] = useState(false);
   const [customRules, setCustomRules] = useState<ScannerCustomRule[]>([]);
   const [rangeStart, setRangeStart] = useState("");
   const [rangeEnd, setRangeEnd] = useState("");
-  const [watchlists, setWatchlists] = useState<Watchlist[]>([]);
-  const [watchlistName, setWatchlistName] = useState("");
-  const [selectedWatchlistId, setSelectedWatchlistId] = useState("");
-  const [alerts, setAlerts] = useState<AlertEvent[]>([]);
-  const [alertRules, setAlertRules] = useState<AlertRule[]>([]);
-  const [monitoringSummary, setMonitoringSummary] = useState<MonitoringRunSummary | null>(null);
-  const [alertSeverityFilter, setAlertSeverityFilter] = useState<string>("");
-  const [alertStatusFilter, setAlertStatusFilter] = useState<string>("");
 
   const recommended = recommendedDurationByCategory[category];
+
+  useEffect(() => {
+    const loadWatchlists = async () => {
+      try {
+        const rows = await api.listWatchlists();
+        setWatchlists(rows);
+        if (rows.length > 0) {
+          setSelectedWatchlistId((prev) => prev || rows[0].id);
+        }
+      } catch {
+        setWatchlists([]);
+      }
+    };
+    loadWatchlists();
+  }, []);
+
+  useEffect(() => {
+    if (!notice) return;
+    const id = setTimeout(() => setNotice(null), 2500);
+    return () => clearTimeout(id);
+  }, [notice]);
 
   const onCategoryChange = (next: ScannerCategory) => {
     setCategory(next);
@@ -170,33 +184,6 @@ export default function ScannerPage() {
     }
   };
 
-  const scopeLabel = useMemo(() => {
-    return `Scanner finds candidates. Analysis explains structure. Backtest validates historical behavior.`;
-  }, []);
-
-  const refreshMonitoringData = async () => {
-    try {
-      const [watchlistRows, alertRows, ruleRows] = await Promise.all([
-        api.listWatchlists(),
-        api.listAlertEvents(alertStatusFilter || undefined, alertSeverityFilter || undefined, undefined),
-        api.listAlertRules(),
-      ]);
-      setWatchlists(watchlistRows);
-      setAlerts(alertRows);
-      setAlertRules(ruleRows);
-      if (watchlistRows.length > 0 && !selectedWatchlistId) {
-        setSelectedWatchlistId(watchlistRows[0].id);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load monitoring data.");
-    }
-  };
-
-  useEffect(() => {
-    refreshMonitoringData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [alertSeverityFilter, alertStatusFilter]);
-
   const sortedResults = useMemo(() => {
     if (!result) return [];
     const next = [...result.results];
@@ -226,10 +213,7 @@ export default function ScannerPage() {
 
   const addRule = () => {
     setUseCustomRules(true);
-    setCustomRules((prev) => [
-      ...prev,
-      { ...ruleDefaultByField.price_vs_ema200_pct },
-    ]);
+    setCustomRules((prev) => [...prev, { ...ruleDefaultByField.price_vs_ema200_pct }]);
   };
 
   const updateRule = (index: number, patch: Partial<ScannerCustomRule>) => {
@@ -266,56 +250,56 @@ export default function ScannerPage() {
     setCustomRules((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const createWatchlist = async () => {
-    if (!watchlistName.trim()) return;
-    await api.createWatchlist(watchlistName.trim());
-    setWatchlistName("");
-    await refreshMonitoringData();
-  };
-
   const addToWatchlist = async (symbol: string) => {
-    if (!selectedWatchlistId) return;
-    await api.addWatchlistItem(selectedWatchlistId, symbol, market);
-    await refreshMonitoringData();
+    if (!selectedWatchlistId) {
+      setNotice("Select a target watchlist first.");
+      return;
+    }
+    try {
+      await api.addWatchlistItem(selectedWatchlistId, symbol, market);
+      setNotice(`${symbol} added to watchlist.`);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Failed to add symbol to watchlist.");
+    }
   };
 
   const createBasicAlertFromRow = async (row: ScannerResult) => {
-    await api.createAlertRule({
-      scope_type: "symbol",
-      scope_ref: row.symbol,
-      market,
-      symbol: row.symbol,
-      name: `${row.symbol} near EMA50`,
-      rule_type: "near_ema50",
-      parameters: { threshold_pct: 3.0 },
-      timeframe: "daily",
-      severity: "watch",
-      color: "yellow",
-      is_enabled: true,
-    });
-    await refreshMonitoringData();
-  };
-
-  const runMonitoringNow = async () => {
-    const summary = await api.runMonitoring({
-      market,
-      watchlist_id: selectedWatchlistId || null,
-      symbols: [],
-    });
-    setMonitoringSummary(summary);
-    await refreshMonitoringData();
+    try {
+      await api.createAlertRule({
+        scope_type: "symbol",
+        scope_ref: row.symbol,
+        market,
+        symbol: row.symbol,
+        name: `${row.symbol} near EMA50`,
+        rule_type: "near_ema50",
+        parameters: { threshold_pct: 3.0 },
+        timeframe: "daily",
+        severity: "watch",
+        color: "yellow",
+        is_enabled: true,
+      });
+      setNotice(`Alert created for ${row.symbol}.`);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Failed to create alert.");
+    }
   };
 
   return (
     <main className="space-y-4">
       <Panel>
-        <SectionTitle title="Stock Scanner" subtitle="Bounded deterministic discovery layer feeding analysis/backtest workflow" />
-        <p className="text-sm text-slate-300">{scopeLabel}</p>
+        <SectionTitle title="Stock Scanner" subtitle="Bounded deterministic discovery layer" />
+        <p className="text-sm text-slate-300">Scanner = discovery shortlist. Use Monitor tab for persistent watchlists and alert tracking.</p>
       </Panel>
 
+      {notice ? (
+        <Panel className="border-cyan/30 bg-cyan/10">
+          <p className="text-sm text-cyan">{notice}</p>
+        </Panel>
+      ) : null}
+
       <Panel>
-        <SectionTitle title="Scanner Inputs" subtitle="Single-pass bounded scan across selected universe" />
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        <SectionTitle title="Scanner Inputs" subtitle="Single-pass bounded scan across selected scope" />
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
           <label className="space-y-1 text-sm">
             <span className="text-xs text-slate-400">Stock Type</span>
             <select value={market} onChange={(event) => setMarket(event.target.value as MarketCode)} className="h-10 w-full rounded-lg border border-stroke bg-bg px-3">
@@ -357,24 +341,24 @@ export default function ScannerPage() {
               <option value="capped_universe">Capped Universe</option>
             </select>
           </label>
+          <label className="space-y-1 text-sm">
+            <span className="text-xs text-slate-400">Target Watchlist</span>
+            <select value={selectedWatchlistId} onChange={(event) => setSelectedWatchlistId(event.target.value)} className="h-10 w-full rounded-lg border border-stroke bg-bg px-3">
+              <option value="">Select watchlist</option>
+              {watchlists.map((wl) => (
+                <option key={wl.id} value={wl.id}>{wl.name}</option>
+              ))}
+            </select>
+          </label>
         </div>
 
         <div className="mt-3 rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
-          Selected duration: {duration.toUpperCase()} | Recommended duration for {categoryDefinition[category].title}: {recommended.toUpperCase()}.
-          {" "}Reason: {rationaleByCategory[category]}
+          Selected duration: {duration.toUpperCase()} | Recommended duration for {categoryDefinition[category].title}: {recommended.toUpperCase()}. Reason: {rationaleByCategory[category]}
         </div>
         <label className="mt-3 inline-flex items-center gap-2 text-xs text-slate-300">
           <input type="checkbox" checked={keepManualDuration} onChange={(event) => setKeepManualDuration(event.target.checked)} />
           Keep manual duration when category changes
         </label>
-        <p className="mt-2 text-xs text-slate-300">
-          Planned scan scope: {market.toUpperCase()} | {categoryDefinition[category].title} | {duration.toUpperCase()} | {universeScope.replaceAll("_", " ")} | top {maxResults}.
-        </p>
-        {universeScope === "watchlist" && selectedWatchlistId ? (
-          <p className="mt-1 text-xs text-slate-300">
-            Active watchlist scope: {watchlists.find((wl) => wl.id === selectedWatchlistId)?.name ?? "selected"}.
-          </p>
-        ) : null}
 
         <div className="mt-4 rounded-xl border border-stroke/70 bg-panelSoft p-3">
           <div className="flex items-center justify-between gap-3">
@@ -384,8 +368,6 @@ export default function ScannerPage() {
               Enable custom filters
             </label>
           </div>
-          <p className="mt-1 text-xs text-slate-300">Custom filters refine the selected category results. They do not replace the selected category.</p>
-          <p className="mt-1 text-xs text-slate-300">Each symbol must satisfy all enabled rules in addition to the selected category.</p>
           {useCustomRules ? (
             <div className="mt-3 space-y-2">
               <div className="flex flex-wrap gap-2">
@@ -395,36 +377,18 @@ export default function ScannerPage() {
                 <button type="button" onClick={() => addPresetRule("rsi_14")} className="rounded-lg border border-stroke px-2 py-1 text-xs hover:text-cyan">Oversold RSI</button>
                 <button type="button" onClick={addBuildUpPreset} className="rounded-lg border border-stroke px-2 py-1 text-xs hover:text-cyan">Build-up Basic</button>
               </div>
-              {customRules.length === 0 ? <p className="text-xs text-slate-400">No custom rules yet.</p> : null}
               {customRules.map((rule, index) => {
                 const fieldMeta = ruleFieldOptions.find((f) => f.value === rule.field) ?? ruleFieldOptions[0];
                 return (
                   <div key={`${rule.field}-${index}`} className="grid gap-2 rounded-lg border border-stroke/60 p-2 md:grid-cols-4">
-                    <select
-                      value={rule.field}
-                      onChange={(event) => setRuleFieldWithDefault(index, event.target.value as ScannerRuleField)}
-                      className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs"
-                    >
-                      {ruleFieldOptions.map((opt) => (
-                        <option key={opt.value} value={opt.value}>{opt.label}</option>
-                      ))}
+                    <select value={rule.field} onChange={(event) => setRuleFieldWithDefault(index, event.target.value as ScannerRuleField)} className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs">
+                      {ruleFieldOptions.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                     </select>
-                    <select
-                      value={rule.operator}
-                      onChange={(event) => updateRule(index, { operator: event.target.value as ScannerRuleOperator })}
-                      className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs"
-                    >
-                      {operatorOptions.map((opt) => (
-                        <option key={opt.value} value={opt.value}>{opt.label}</option>
-                      ))}
+                    <select value={rule.operator} onChange={(event) => updateRule(index, { operator: event.target.value as ScannerRuleOperator })} className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs">
+                      {operatorOptions.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                     </select>
                     {fieldMeta.numeric && rule.operator !== "in" ? (
-                      <input
-                        type="number"
-                        value={rule.value_number ?? 0}
-                        onChange={(event) => updateRule(index, { value_number: Number(event.target.value), value_text: null, value_list: [] })}
-                        className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs"
-                      />
+                      <input type="number" value={rule.value_number ?? 0} onChange={(event) => updateRule(index, { value_number: Number(event.target.value), value_text: null, value_list: [] })} className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs" />
                     ) : (
                       <input
                         type="text"
@@ -441,46 +405,30 @@ export default function ScannerPage() {
                           }
                           updateRule(index, { value_text: raw, value_number: null, value_list: [] });
                         }}
-                        placeholder={rule.operator === "in" ? "rising,flat" : "value (ex: rising)"}
+                        placeholder={rule.operator === "in" ? "rising,flat" : "value"}
                         className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs"
                       />
                     )}
-                    <button type="button" onClick={() => removeRule(index)} className="h-9 rounded-lg border border-stroke px-2 text-xs text-red">
-                      Remove
-                    </button>
+                    <button type="button" onClick={() => removeRule(index)} className="h-9 rounded-lg border border-stroke px-2 text-xs text-red">Remove</button>
                   </div>
                 );
               })}
-              <button type="button" onClick={addRule} className="rounded-lg border border-stroke px-3 py-2 text-xs text-slate-200 hover:text-cyan">
-                Add Rule
-              </button>
+              <button type="button" onClick={addRule} className="rounded-lg border border-stroke px-3 py-2 text-xs text-slate-200 hover:text-cyan">Add Rule</button>
             </div>
           ) : null}
-        </div>
-
-        <div className="mt-3 rounded-xl border border-stroke/70 bg-panelSoft p-3">
-          <p className="text-sm font-semibold text-slate-200">Manual Relative Range Comparison (optional)</p>
-          <p className="mt-1 text-xs text-slate-300">Set a date range to compute current distance from that range low/high for each symbol.</p>
-          <div className="mt-2 grid gap-2 md:grid-cols-2">
-            <label className="space-y-1 text-xs text-slate-300">
-              <span>Range Start</span>
-              <input type="date" value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} className="h-9 w-full rounded-lg border border-stroke bg-bg px-2" />
-            </label>
-            <label className="space-y-1 text-xs text-slate-300">
-              <span>Range End</span>
-              <input type="date" value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} className="h-9 w-full rounded-lg border border-stroke bg-bg px-2" />
-            </label>
-          </div>
         </div>
 
         <button type="button" onClick={runScan} disabled={loading} className="mt-4 h-11 rounded-lg bg-cyan px-6 text-sm font-semibold text-bg transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">
           {loading ? "Scanning..." : "Run Scanner"}
         </button>
+        <button type="button" onClick={() => router.push("/monitor")} className="ml-2 mt-4 h-11 rounded-lg border border-stroke px-4 text-sm text-slate-300 hover:text-cyan">
+          Open Monitor Workspace
+        </button>
       </Panel>
 
       <Panel>
         <SectionTitle title="Category Definitions" subtitle="Scanner is candidate discovery, not direct execution" />
-        <div className="grid gap-3 md:grid-cols-3">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           {(Object.keys(categoryDefinition) as ScannerCategory[]).map((key) => (
             <div key={key} className="rounded-xl border border-stroke/70 bg-panelSoft p-3">
               <p className="text-sm font-semibold text-slate-100">{categoryDefinition[key].title}</p>
@@ -507,22 +455,9 @@ export default function ScannerPage() {
             <StatCard label="Processed" value={`${result.scope.processed_count}`} />
             <StatCard label="Runtime" value={`${result.scope.runtime_seconds.toFixed(2)}s`} />
           </div>
+
           <Panel className="bg-panelSoft">
-            <p className="text-xs text-slate-300">
-              Scope summary: {result.scope.universe_scope.replaceAll("_", " ")}, max results {result.scope.max_results}, recommended duration {result.scope.recommended_duration.toUpperCase()}.
-            </p>
-            <p className="mt-1 text-xs text-slate-300">
-              Custom filters: {useCustomRules && customRules.length > 0 ? `${customRules.length} active` : "off"} | Manual range: {rangeStart && rangeEnd ? `${rangeStart} to ${rangeEnd}` : "off"}
-            </p>
-            <p className="mt-1 text-xs text-slate-300">
-              Diagnostics: eligible {result.scope.category_eligible_count}, relaxed eligible {result.scope.relaxed_eligible_count}, custom-filtered {result.scope.custom_filtered_count}, ranked {result.scope.ranked_count}, returned {result.scope.final_returned_count}.
-            </p>
-            {result.scope.used_relaxed_fallback ? (
-              <p className="mt-1 text-xs text-amber-300">Relaxed fallback was used because strict category eligibility returned zero symbols.</p>
-            ) : null}
-            {result.scope.partial_scan ? (
-              <p className="mt-1 text-xs text-amber-300">{result.scope.partial_scan_note}</p>
-            ) : null}
+            <p className="text-xs text-slate-300">Diagnostics: eligible {result.scope.category_eligible_count}, relaxed eligible {result.scope.relaxed_eligible_count}, custom-filtered {result.scope.custom_filtered_count}, ranked {result.scope.ranked_count}, returned {result.scope.final_returned_count}.</p>
           </Panel>
 
           <Panel>
@@ -547,17 +482,15 @@ export default function ScannerPage() {
                     <th className="px-2 py-2">Trend State</th>
                     <th className="px-2 py-2">EMA200 Slope</th>
                     <th className="px-2 py-2">Rep Tests</th>
-                    <th className="px-2 py-2">Range Low%</th>
-                    <th className="px-2 py-2">Range High%</th>
                     <th className="px-2 py-2">TV</th>
                     <th className="px-2 py-2">Action</th>
-                    <th className="px-2 py-2">Monitor</th>
+                    <th className="px-2 py-2">Track</th>
                   </tr>
                 </thead>
                 <tbody>
                   {sortedResults.length === 0 ? (
                     <tr>
-                      <td className="px-2 py-3 text-slate-400" colSpan={21}>No candidates found for selected scope.</td>
+                      <td className="px-2 py-3 text-slate-400" colSpan={19}>No candidates found for selected scope.</td>
                     </tr>
                   ) : (
                     sortedResults.map((row) => (
@@ -576,16 +509,12 @@ export default function ScannerPage() {
                         <td className="px-2 py-2">{row.score_dynamics_state}</td>
                         <td className="px-2 py-2 capitalize">{row.priority}</td>
                         <td className="px-2 py-2">{row.category_tag.replaceAll("_", " ")}</td>
-                        <td className="max-w-[300px] px-2 py-2 text-xs text-slate-300">{row.short_reason}</td>
+                        <td className="max-w-[260px] px-2 py-2 text-xs text-slate-300">{row.short_reason}</td>
                         <td className="px-2 py-2">{row.trend_state}</td>
                         <td className="px-2 py-2">{row.ema200_slope_state}</td>
                         <td className="px-2 py-2">{row.repeated_test_count}</td>
-                        <td className="px-2 py-2">{row.distance_from_range_low_pct !== null ? `${row.distance_from_range_low_pct.toFixed(2)}%` : "n/a"}</td>
-                        <td className="px-2 py-2">{row.distance_to_range_high_pct !== null ? `${row.distance_to_range_high_pct.toFixed(2)}%` : "n/a"}</td>
                         <td className="px-2 py-2">
-                          <a href={row.tradingview_url} target="_blank" rel="noreferrer" className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan">
-                            TradingView
-                          </a>
+                          <a href={row.tradingview_url} target="_blank" rel="noreferrer" className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan">TradingView</a>
                         </td>
                         <td className="px-2 py-2">
                           <button
@@ -602,20 +531,8 @@ export default function ScannerPage() {
                         </td>
                         <td className="px-2 py-2">
                           <div className="flex gap-1">
-                            <button
-                              type="button"
-                              onClick={() => addToWatchlist(row.symbol)}
-                              className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan"
-                            >
-                              Add WL
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => createBasicAlertFromRow(row)}
-                              className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan"
-                            >
-                              Alert
-                            </button>
+                            <button type="button" onClick={() => addToWatchlist(row.symbol)} className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan">Add WL</button>
+                            <button type="button" onClick={() => createBasicAlertFromRow(row)} className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan">Alert</button>
                           </div>
                         </td>
                       </tr>
@@ -623,84 +540,6 @@ export default function ScannerPage() {
                   )}
                 </tbody>
               </table>
-            </div>
-          </Panel>
-
-          <Panel>
-            <SectionTitle title="Monitoring Layer" subtitle="Watchlists + alerts + manual/scheduled monitoring hooks" />
-            <div className="grid gap-4 lg:grid-cols-2">
-              <div className="space-y-3">
-                <p className="text-xs text-slate-300">Create and manage watchlists. Scanner results can be added directly.</p>
-                <div className="flex gap-2">
-                  <input
-                    value={watchlistName}
-                    onChange={(event) => setWatchlistName(event.target.value)}
-                    placeholder="New watchlist name"
-                    className="h-9 flex-1 rounded-lg border border-stroke bg-bg px-2 text-sm"
-                  />
-                  <button type="button" onClick={createWatchlist} className="rounded-lg border border-stroke px-3 py-2 text-xs hover:text-cyan">Create</button>
-                </div>
-                <label className="space-y-1 text-sm">
-                  <span className="text-xs text-slate-400">Active Watchlist</span>
-                  <select value={selectedWatchlistId} onChange={(event) => setSelectedWatchlistId(event.target.value)} className="h-10 w-full rounded-lg border border-stroke bg-bg px-3">
-                    <option value="">Select watchlist</option>
-                    {watchlists.map((wl) => (
-                      <option key={wl.id} value={wl.id}>{wl.name} ({wl.items.length})</option>
-                    ))}
-                  </select>
-                </label>
-                {watchlists.find((wl) => wl.id === selectedWatchlistId)?.items?.length ? (
-                  <div className="rounded-lg border border-stroke/70 p-2 text-xs text-slate-300">
-                    {watchlists.find((wl) => wl.id === selectedWatchlistId)?.items.map((it) => (
-                      <span key={`${it.symbol}-${it.market}`} className="mr-2 inline-block rounded border border-stroke px-2 py-1">
-                        {it.symbol} ({it.market.toUpperCase()})
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="space-y-3">
-                <p className="text-xs text-slate-300">Run bounded monitoring checks and inspect alert-ready events.</p>
-                <button type="button" onClick={runMonitoringNow} className="rounded-lg border border-stroke px-3 py-2 text-xs hover:text-cyan">
-                  Run Monitoring Now
-                </button>
-                {monitoringSummary ? (
-                  <div className="rounded-lg border border-stroke/70 p-2 text-xs text-slate-300">
-                    Rules: {monitoringSummary.processed_rules}, symbols: {monitoringSummary.evaluated_symbols}, events: {monitoringSummary.events_created}
-                    {monitoringSummary.partial_run ? `, partial: ${monitoringSummary.note ?? "yes"}` : ""}
-                  </div>
-                ) : null}
-                <div className="grid gap-2 md:grid-cols-2">
-                  <select value={alertSeverityFilter} onChange={(event) => setAlertSeverityFilter(event.target.value)} className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs">
-                    <option value="">All severities</option>
-                    {(["info", "watch", "important", "critical"] as AlertSeverity[]).map((sev) => (
-                      <option key={sev} value={sev}>{sev}</option>
-                    ))}
-                  </select>
-                  <select value={alertStatusFilter} onChange={(event) => setAlertStatusFilter(event.target.value)} className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs">
-                    <option value="">All status</option>
-                    <option value="new">new</option>
-                    <option value="seen">seen</option>
-                    <option value="archived">archived</option>
-                  </select>
-                </div>
-                <div className="rounded-lg border border-stroke/70 p-2 text-xs text-slate-300">
-                  Active rules: {alertRules.length} | Alert events: {alerts.length}
-                </div>
-                <div className="max-h-64 overflow-auto rounded-lg border border-stroke/70 p-2 text-xs">
-                  {alerts.length === 0 ? (
-                    <p className="text-slate-400">No alert events yet.</p>
-                  ) : (
-                    alerts.slice(0, 50).map((ev) => (
-                      <div key={ev.id} className="mb-2 border-b border-stroke/40 pb-2">
-                        <p className="text-slate-100">{ev.message}</p>
-                        <p className="text-slate-400">{ev.symbol} | {ev.severity} | {ev.status} | {new Date(ev.timestamp).toLocaleString()}</p>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
             </div>
           </Panel>
         </>

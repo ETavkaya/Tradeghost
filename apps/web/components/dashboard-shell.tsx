@@ -9,9 +9,9 @@ import { useAnalysisContext } from "@/components/analysis-context";
 import { api } from "@/lib/api";
 
 const tabs = [
+  { label: "Scanner", href: "/scanner" },
   { label: "Analysis", href: "/analysis" },
   { label: "Backtest", href: "/backtest" },
-  { label: "Scanner", href: "/scanner" },
   { label: "Monitor", href: "/monitor" },
   { label: "Logic", href: "/logic" }
 ];
@@ -20,20 +20,20 @@ export function DashboardShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { analysis } = useAnalysisContext();
   const [watchlistCount, setWatchlistCount] = useState(0);
-  const [activeAlertsCount, setActiveAlertsCount] = useState(0);
+  const [activeRulesCount, setActiveRulesCount] = useState(0);
 
   useEffect(() => {
     const load = async () => {
       try {
         const [watchlists, alerts] = await Promise.all([
           api.listWatchlists(),
-          api.listAlertEvents("new"),
+          api.listAlertRules(),
         ]);
         setWatchlistCount(watchlists.length);
-        setActiveAlertsCount(alerts.length);
+        setActiveRulesCount(alerts.filter((row) => row.is_enabled).length);
       } catch {
         setWatchlistCount(0);
-        setActiveAlertsCount(0);
+        setActiveRulesCount(0);
       }
     };
     load();
@@ -53,7 +53,7 @@ export function DashboardShell({ children }: { children: ReactNode }) {
             </div>
             <div className="flex flex-wrap gap-2 text-xs">
               <span className="rounded-md border border-stroke bg-panel/70 px-2 py-1 text-slate-300">Watchlists: {watchlistCount}</span>
-              <span className="rounded-md border border-stroke bg-panel/70 px-2 py-1 text-slate-300">Active Alerts: {activeAlertsCount}</span>
+              <span className="rounded-md border border-stroke bg-panel/70 px-2 py-1 text-slate-300">Active Rules: {activeRulesCount}</span>
             </div>
           </div>
           <nav className="flex flex-wrap gap-2">

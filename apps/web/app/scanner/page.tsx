@@ -466,7 +466,7 @@ export default function ScannerPage() {
               <table className="min-w-full text-sm">
                 <thead>
                   <tr className="border-b border-stroke text-left text-slate-400">
-                    <th className="px-2 py-2">Symbol</th>
+                    <th className="sticky left-0 z-20 bg-panel px-2 py-2 shadow-[8px_0_12px_-12px_rgba(0,0,0,0.6)]">Symbol</th>
                     {sortOptions.map((option) => (
                       <th key={option.key} className="px-2 py-2">
                         <button type="button" onClick={() => toggleSort(option.key)} className="inline-flex items-center gap-1 hover:text-slate-200">
@@ -482,20 +482,24 @@ export default function ScannerPage() {
                     <th className="px-2 py-2">Trend State</th>
                     <th className="px-2 py-2">EMA200 Slope</th>
                     <th className="px-2 py-2">Rep Tests</th>
-                    <th className="px-2 py-2">TV</th>
-                    <th className="px-2 py-2">Action</th>
-                    <th className="px-2 py-2">Track</th>
+                    <th className="px-2 py-2 whitespace-nowrap">TV</th>
+                    <th className="px-2 py-2 whitespace-nowrap">Open</th>
+                    <th className="px-2 py-2 whitespace-nowrap">Track</th>
                   </tr>
                 </thead>
                 <tbody>
                   {sortedResults.length === 0 ? (
                     <tr>
-                      <td className="px-2 py-3 text-slate-400" colSpan={19}>No candidates found for selected scope.</td>
+                      <td className="sticky left-0 z-10 bg-panel px-2 py-3 text-slate-400 shadow-[8px_0_12px_-12px_rgba(0,0,0,0.6)]">No candidates found for selected scope.</td>
+                      <td className="px-2 py-3 text-slate-400" colSpan={18}></td>
                     </tr>
                   ) : (
                     sortedResults.map((row) => (
                       <tr key={row.normalized_symbol} className="border-b border-stroke/50">
-                        <td className="px-2 py-2">{row.symbol}</td>
+                        <td className="sticky left-0 z-10 bg-panel px-2 py-2 shadow-[8px_0_12px_-12px_rgba(0,0,0,0.6)]">
+                          <div className="font-medium text-slate-100">{row.symbol}</div>
+                          <div className="text-[11px] text-slate-400">Score {row.scanner_score.toFixed(1)} | {row.priority}</div>
+                        </td>
                         <td className="px-2 py-2">{row.scanner_score.toFixed(2)}</td>
                         <td className="px-2 py-2">{row.current_score.toFixed(2)}</td>
                         <td className={`px-2 py-2 ${row.score_delta_short >= 0 ? "text-green" : "text-red"}`}>{row.score_delta_short.toFixed(2)}</td>
@@ -513,10 +517,10 @@ export default function ScannerPage() {
                         <td className="px-2 py-2">{row.trend_state}</td>
                         <td className="px-2 py-2">{row.ema200_slope_state}</td>
                         <td className="px-2 py-2">{row.repeated_test_count}</td>
-                        <td className="px-2 py-2">
+                        <td className="px-2 py-2 whitespace-nowrap">
                           <a href={row.tradingview_url} target="_blank" rel="noreferrer" className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan">TradingView</a>
                         </td>
-                        <td className="px-2 py-2">
+                        <td className="px-2 py-2 whitespace-nowrap">
                           <button
                             type="button"
                             onClick={() =>
@@ -529,7 +533,7 @@ export default function ScannerPage() {
                             Open Analysis
                           </button>
                         </td>
-                        <td className="px-2 py-2">
+                        <td className="px-2 py-2 whitespace-nowrap">
                           <div className="flex gap-1">
                             <button type="button" onClick={() => addToWatchlist(row.symbol)} className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan">Add WL</button>
                             <button type="button" onClick={() => createBasicAlertFromRow(row)} className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan">Alert</button>

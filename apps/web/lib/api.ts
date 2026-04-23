@@ -131,6 +131,12 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)
     }),
+  updateAlertRule: (ruleId: string, payload: Record<string, unknown>) =>
+    fetchJson<AlertRule>(`/api/alert-rules/${encodeURIComponent(ruleId)}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
   deleteAlertRule: (ruleId: string) =>
     fetchJson<{ status: string }>(`/api/alert-rules/${encodeURIComponent(ruleId)}`, { method: "DELETE" }),
   listAlertEvents: (status?: string, severity?: string, symbol?: string) => {

@@ -270,6 +270,16 @@ def add_watchlist_item(watchlist_id: str, payload: WatchlistItemCreateRequest) -
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/watchlists/{watchlist_id}/refresh-metrics", response_model=Watchlist)
+def refresh_watchlist_metrics(watchlist_id: str) -> Watchlist:
+    try:
+        return monitoring_service.refresh_watchlist_metrics(watchlist_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.delete("/watchlists/{watchlist_id}/items")
 def remove_watchlist_item(
     watchlist_id: str,
@@ -285,9 +295,19 @@ def remove_watchlist_item(
 
 
 @app.get("/alert-rules", response_model=list[AlertRule])
-def list_alert_rules() -> list[AlertRule]:
+def list_alert_rules(
+    symbol: str | None = Query(default=None),
+    watchlist_id: str | None = Query(default=None),
+    severity: str | None = Query(default=None),
+    enabled: bool | None = Query(default=None),
+) -> list[AlertRule]:
     try:
-        return monitoring_service.list_alert_rules()
+        return monitoring_service.list_alert_rules(
+            symbol=symbol,
+            watchlist_id=watchlist_id,
+            severity=severity,
+            enabled=enabled,
+        )
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -84,10 +84,51 @@ class MonitoringService:
         self._write_json(self.schedules_path, [row.model_dump(mode="json") for row in rows])
 
     @staticmethod
-    def _next_run_time(frequency: str, now: datetime) -> datetime:
-        if frequency == "hourly":
+    def _normalize_interval(interval: str | None) -> str:
+        value = (interval or "5m").strip().lower()
+        if value in {"1m", "5m", "hourly", "daily"}:
+            return value
+        if value == "manual":
+            return "manual"
+        return "5m"
+
+    @classmethod
+    def _next_run_time(cls, interval: str, now: datetime) -> datetime | None:
+        normalized = cls._normalize_interval(interval)
+        if normalized == "manual":
+            return None
+        if normalized == "1m":
+            return now + timedelta(minutes=1)
+        if normalized == "5m":
+            return now + timedelta(minutes=5)
+        if normalized == "hourly":
             return now + timedelta(hours=1)
         return now + timedelta(days=1)
+
+    def _ensure_default_schedule(self) -> None:
+        rows = self._read_schedules()
+        if rows:
+            return
+        now = datetime.now(UTC)
+        default_schedule = MonitoringSchedule(
+            id=str(uuid4()),
+            name="Default Auto Polling",
+            market="us",
+            frequency="5m",
+            watchlist_id=None,
+            symbols=[],
+            category="trend_mode",
+            duration="1y",
+            max_results=50,
+            is_enabled=True,
+            mode="auto",
+            interval="5m",
+            created_at=now,
+            updated_at=now,
+            last_run_at=None,
+            next_run_at=self._next_run_time("5m", now),
+        )
+        self._save_schedules([default_schedule])
 
     # Watchlists
     def list_watchlists(self) -> list[Watchlist]:
@@ -126,12 +167,29 @@ class MonitoringService:
             symbol = req.symbol.strip().upper()
             if any(item.symbol.upper() == symbol and item.market == req.market for item in row.items):
                 return row
+            added_price = None
+            added_price_estimated = False
+            try:
+                combined = self.analysis_engine.analyze_combined(
+                    ticker=symbol,
+                    market=req.market.value,
+                    window="1y",
+                    strategy_mode="balanced",
+                )
+                added_price = float(combined.indicator_summary.get("close", 0.0)) or None
+                added_price_estimated = added_price is not None
+            except Exception:
+                added_price = None
+                added_price_estimated = False
+
             item = WatchlistItem(
                 watchlist_id=row.id,
                 symbol=symbol,
                 market=req.market,
                 added_at=datetime.now(UTC),
                 notes=req.notes,
+                added_price=added_price,
+                added_price_estimated=added_price_estimated,
             )
             updated = row.model_copy(update={"items": [*row.items, item], "updated_at": datetime.now(UTC)})
             rows[idx] = updated
@@ -153,8 +211,30 @@ class MonitoringService:
         raise FileNotFoundError(watchlist_id)
 
     # Rules
-    def list_alert_rules(self) -> list[AlertRule]:
-        return self._read_rules()
+    def list_alert_rules(
+        self,
+        *,
+        symbol: str | None = None,
+        watchlist_id: str | None = None,
+        severity: str | None = None,
+        enabled: bool | None = None,
+    ) -> list[AlertRule]:
+        rows = self._read_rules()
+        filtered = rows
+        if symbol:
+            upper = symbol.strip().upper()
+            filtered = [
+                row
+                for row in filtered
+                if (row.symbol and row.symbol.upper() == upper) or row.scope_ref.upper() == upper
+            ]
+        if watchlist_id:
+            filtered = [row for row in filtered if row.scope_type.value == "watchlist" and row.scope_ref == watchlist_id]
+        if severity:
+            filtered = [row for row in filtered if row.severity.value == severity]
+        if enabled is not None:
+            filtered = [row for row in filtered if row.is_enabled is enabled]
+        return sorted(filtered, key=lambda row: row.updated_at, reverse=True)
 
     def create_alert_rule(self, req: AlertRuleCreateRequest) -> AlertRule:
         rows = self._read_rules()
@@ -213,26 +293,31 @@ class MonitoringService:
 
     # Schedules
     def list_schedules(self) -> list[MonitoringSchedule]:
+        self._ensure_default_schedule()
         return self._read_schedules()
 
     def create_schedule(self, req: MonitoringScheduleCreateRequest) -> MonitoringSchedule:
         rows = self._read_schedules()
         now = datetime.now(UTC)
+        interval = self._normalize_interval(req.interval or req.frequency)
+        mode = "manual" if interval == "manual" else "auto"
         row = MonitoringSchedule(
             id=str(uuid4()),
             name=req.name.strip() or "Monitoring Schedule",
             market=req.market,
-            frequency=req.frequency,
+            frequency=interval,
             watchlist_id=req.watchlist_id,
             symbols=[sym.strip().upper() for sym in req.symbols],
             category=req.category,
             duration=req.duration,
             max_results=req.max_results,
             is_enabled=req.is_enabled,
+            mode=mode,
+            interval=interval,
             created_at=now,
             updated_at=now,
             last_run_at=None,
-            next_run_at=self._next_run_time(req.frequency, now),
+            next_run_at=self._next_run_time(interval, now),
         )
         rows.append(row)
         self._save_schedules(rows)
@@ -244,10 +329,19 @@ class MonitoringService:
             if row.id != schedule_id:
                 continue
             payload = row.model_dump()
-            for key in ("name", "frequency", "watchlist_id", "category", "duration", "max_results", "is_enabled"):
+            for key in ("name", "watchlist_id", "category", "duration", "max_results", "is_enabled", "mode"):
                 value = getattr(req, key)
                 if value is not None:
                     payload[key] = value
+            interval = self._normalize_interval(req.interval or req.frequency or payload.get("interval"))
+            payload["interval"] = interval
+            payload["frequency"] = interval
+            if interval == "manual":
+                payload["mode"] = "manual"
+                payload["next_run_at"] = None
+            else:
+                payload["mode"] = "auto"
+                payload["next_run_at"] = self._next_run_time(interval, datetime.now(UTC))
             if req.symbols is not None:
                 payload["symbols"] = [sym.strip().upper() for sym in req.symbols]
             payload["updated_at"] = datetime.now(UTC)
@@ -340,10 +434,21 @@ class MonitoringService:
         ema20 = float(snapshot.get("ema_20", close))
         ema50 = float(snapshot.get("ema_50", close))
         ema200 = float(snapshot.get("ema_200", close))
+        ema100 = float(snapshot.get("ema_100", close))
         rsi14 = float(snapshot.get("rsi_14", 0.0))
         vol_ratio = float(snapshot.get("volume", {}).get("volume_ratio", 0.0))
         regime = combined.regime
         setup = combined.setup_interpretation
+
+        prev_close = close
+        prev_ema100 = ema100
+        prev_ema200 = ema200
+        if len(combined.chart.candles) >= 2:
+            prev_close = float(combined.chart.candles[-2].close)
+        if len(combined.chart.ema_100) >= 2:
+            prev_ema100 = float(combined.chart.ema_100[-2].value)
+        if len(combined.chart.ema_200) >= 2:
+            prev_ema200 = float(combined.chart.ema_200[-2].value)
 
         params = rule.parameters
         threshold = float(params.get("threshold_pct", 3.0))
@@ -374,6 +479,18 @@ class MonitoringService:
                     scanner_context={},
                     analysis_context={"trend_state": setup.trend_state},
                 )
+        elif rule.rule_type == AlertRuleType.NEAR_EMA100:
+            dist = abs((close - ema100) / max(ema100, 0.01) * 100.0)
+            if dist <= threshold:
+                return self._build_alert_event(
+                    rule=rule,
+                    symbol=symbol,
+                    triggered_value=round(dist, 2),
+                    message=f"{symbol} is within {dist:.2f}% of EMA100",
+                    trigger_context={"distance_pct": round(dist, 2), "ema": 100},
+                    scanner_context={},
+                    analysis_context={"trend_state": setup.trend_state},
+                )
         elif rule.rule_type == AlertRuleType.NEAR_EMA200:
             dist = abs((close - ema200) / max(ema200, 0.01) * 100.0)
             if dist <= threshold:
@@ -383,6 +500,50 @@ class MonitoringService:
                     triggered_value=round(dist, 2),
                     message=f"{symbol} is within {dist:.2f}% of EMA200",
                     trigger_context={"distance_pct": round(dist, 2), "ema": 200},
+                    scanner_context={},
+                    analysis_context={"trend_state": setup.trend_state},
+                )
+        elif rule.rule_type == AlertRuleType.CROSS_ABOVE_EMA100:
+            if prev_close <= prev_ema100 and close > ema100:
+                return self._build_alert_event(
+                    rule=rule,
+                    symbol=symbol,
+                    triggered_value=close,
+                    message=f"{symbol} crossed above EMA100",
+                    trigger_context={"prev_close": prev_close, "prev_ema100": prev_ema100, "close": close, "ema100": ema100},
+                    scanner_context={},
+                    analysis_context={"trend_state": setup.trend_state},
+                )
+        elif rule.rule_type == AlertRuleType.CROSS_ABOVE_EMA200:
+            if prev_close <= prev_ema200 and close > ema200:
+                return self._build_alert_event(
+                    rule=rule,
+                    symbol=symbol,
+                    triggered_value=close,
+                    message=f"{symbol} crossed above EMA200",
+                    trigger_context={"prev_close": prev_close, "prev_ema200": prev_ema200, "close": close, "ema200": ema200},
+                    scanner_context={},
+                    analysis_context={"trend_state": setup.trend_state},
+                )
+        elif rule.rule_type == AlertRuleType.CROSS_BELOW_EMA100:
+            if prev_close >= prev_ema100 and close < ema100:
+                return self._build_alert_event(
+                    rule=rule,
+                    symbol=symbol,
+                    triggered_value=close,
+                    message=f"{symbol} crossed below EMA100",
+                    trigger_context={"prev_close": prev_close, "prev_ema100": prev_ema100, "close": close, "ema100": ema100},
+                    scanner_context={},
+                    analysis_context={"trend_state": setup.trend_state},
+                )
+        elif rule.rule_type == AlertRuleType.CROSS_BELOW_EMA200:
+            if prev_close >= prev_ema200 and close < ema200:
+                return self._build_alert_event(
+                    rule=rule,
+                    symbol=symbol,
+                    triggered_value=close,
+                    message=f"{symbol} crossed below EMA200",
+                    trigger_context={"prev_close": prev_close, "prev_ema200": prev_ema200, "close": close, "ema200": ema200},
                     scanner_context={},
                     analysis_context={"trend_state": setup.trend_state},
                 )
@@ -510,8 +671,9 @@ class MonitoringService:
         started = datetime.now(UTC)
         started_monotonic = time.monotonic()
         rules = [rule for rule in self._read_rules() if rule.is_enabled]
-        watchlists = {row.id: row for row in self._read_watchlists()}
         events = self._read_events()
+        rules_all = self._read_rules()
+        rules_index = {row.id: row for row in rules_all}
         created: list[AlertEvent] = []
         processed_rules = 0
         evaluated_symbols = 0
@@ -527,6 +689,8 @@ class MonitoringService:
             if req.symbols:
                 symbols = [sym for sym in symbols if sym.upper() in {s.upper() for s in req.symbols}]
             symbols = sorted(set(symbols))
+            if len(symbols) > req.max_symbols_per_batch:
+                symbols = symbols[: req.max_symbols_per_batch]
             if not symbols:
                 continue
 
@@ -537,9 +701,12 @@ class MonitoringService:
                 break
 
             processed_rules += 1
+            matched_for_rule = False
             if rule.rule_type in {AlertRuleType.SCANNER_TOP_N, AlertRuleType.DYNAMICS_STATE_IS}:
                 if rule.rule_type == AlertRuleType.SCANNER_TOP_N:
-                    created.extend(self._evaluate_scanner_rule(rule, symbols))
+                    scanner_events = self._evaluate_scanner_rule(rule, symbols)
+                    created.extend(scanner_events)
+                    matched_for_rule = len(scanner_events) > 0
                 else:
                     category = rule.parameters.get("category", "momentum_mode")
                     target_state = str(rule.parameters.get("state", "accelerating"))
@@ -555,6 +722,12 @@ class MonitoringService:
                     for row in resp.results:
                         if row.score_dynamics_state != target_state:
                             continue
+                        self._refresh_watchlist_metrics_for_symbol(
+                            row.symbol,
+                            rule.market,
+                            current_score=row.current_score,
+                            score_dynamics_state=row.score_dynamics_state,
+                        )
                         created.append(
                             self._build_alert_event(
                                 rule=rule,
@@ -566,7 +739,14 @@ class MonitoringService:
                                 analysis_context={"trend_state": row.trend_state},
                             )
                         )
+                        matched_for_rule = True
                 evaluated_symbols += len(symbols)
+                rule_payload = rules_index.get(rule.id).model_dump() if rules_index.get(rule.id) else rule.model_dump()
+                now_checked = datetime.now(UTC)
+                rule_payload["last_checked"] = now_checked
+                if matched_for_rule:
+                    rule_payload["last_matched"] = now_checked
+                rules_index[rule.id] = AlertRule.model_validate(rule_payload)
                 continue
 
             for symbol in symbols:
@@ -574,10 +754,42 @@ class MonitoringService:
                 evaluated_symbols += 1
                 if event is not None:
                     created.append(event)
+                    matched_for_rule = True
+                try:
+                    scan = self.scanner_engine.scan(
+                        ScannerRequest(
+                            market=rule.market,
+                            duration="1y",
+                            category="trend_mode",
+                            max_results=20,
+                            universe_scope="watchlist",
+                            symbol_overrides=[symbol],
+                            use_custom_rules=False,
+                        )
+                    )
+                    row = scan.results[0] if scan.results else None
+                    if row is not None:
+                        self._refresh_watchlist_metrics_for_symbol(
+                            symbol,
+                            rule.market,
+                            current_score=row.current_score,
+                            score_dynamics_state=row.score_dynamics_state,
+                        )
+                except Exception:
+                    continue
+
+            rule_payload = rules_index.get(rule.id).model_dump() if rules_index.get(rule.id) else rule.model_dump()
+            now_checked = datetime.now(UTC)
+            rule_payload["last_checked"] = now_checked
+            if matched_for_rule:
+                rule_payload["last_matched"] = now_checked
+            rules_index[rule.id] = AlertRule.model_validate(rule_payload)
 
         if created:
             events.extend(created)
             self._save_events(events)
+        # persist rule check metadata even if no event
+        self._save_rules(list(rules_index.values()))
 
         # Update schedule run metadata if run was scoped by watchlist
         if req.watchlist_id is not None:
@@ -590,7 +802,7 @@ class MonitoringService:
                 schedules[idx] = schedule.model_copy(
                     update={
                         "last_run_at": now,
-                        "next_run_at": self._next_run_time(schedule.frequency, now),
+                        "next_run_at": self._next_run_time(schedule.interval or schedule.frequency, now),
                         "updated_at": now,
                     }
                 )
@@ -610,7 +822,12 @@ class MonitoringService:
         )
 
     def run_due_schedules(self, max_runtime_seconds: float = 30.0) -> MonitoringRunSummary:
-        schedules = [row for row in self._read_schedules() if row.is_enabled and row.next_run_at is not None and row.next_run_at <= datetime.now(UTC)]
+        self._ensure_default_schedule()
+        schedules = [
+            row
+            for row in self._read_schedules()
+            if row.is_enabled and row.mode != "manual" and row.next_run_at is not None and row.next_run_at <= datetime.now(UTC)
+        ]
         aggregate = MonitoringRunSummary(
             started_at=datetime.now(UTC),
             finished_at=datetime.now(UTC),
@@ -639,3 +856,131 @@ class MonitoringService:
             aggregate.partial_run = aggregate.partial_run or summary.partial_run
         aggregate.finished_at = datetime.now(UTC)
         return aggregate
+    @staticmethod
+    def _compute_return_pct(current: float | None, reference: float | None) -> float | None:
+        if current is None or reference is None or reference <= 0:
+            return None
+        return (current / reference - 1.0) * 100.0
+
+    @staticmethod
+    def _close_at_offset(closes: list[float], offset: int) -> float | None:
+        if not closes:
+            return None
+        idx = len(closes) - 1 - offset
+        if idx < 0:
+            idx = 0
+        return closes[idx]
+
+    @staticmethod
+    def _nearest_close_to_datetime(candles: list, ts: datetime) -> float | None:
+        if not candles:
+            return None
+        best = min(
+            candles,
+            key=lambda candle: abs(
+                datetime.combine(candle.date, datetime.min.time(), tzinfo=UTC).timestamp() - ts.timestamp()
+            ),
+        )
+        return float(best.close)
+
+    def _refresh_watchlist_metrics_for_symbol(
+        self,
+        symbol: str,
+        market,
+        *,
+        current_score: float,
+        score_dynamics_state: str,
+    ) -> None:
+        watchlists = self._read_watchlists()
+        changed = False
+        now = datetime.now(UTC)
+        try:
+            combined = self.analysis_engine.analyze_combined(
+                ticker=symbol,
+                market=market.value,
+                window="1y",
+                strategy_mode="balanced",
+            )
+        except Exception:
+            return
+
+        chart_candles = combined.chart.candles
+        closes = [float(c.close) for c in chart_candles]
+        current_price = closes[-1] if closes else float(combined.indicator_summary.get("close", 0.0))
+        price_vs_ema200 = combined.regime.price_vs_ema200_pct
+
+        for wl_idx, watchlist in enumerate(watchlists):
+            updated_items: list[WatchlistItem] = []
+            item_changed = False
+            for item in watchlist.items:
+                if item.symbol.upper() != symbol.upper() or item.market != market:
+                    updated_items.append(item)
+                    continue
+                added_price = item.added_price
+                added_price_estimated = item.added_price_estimated
+                if added_price is None:
+                    estimated = self._nearest_close_to_datetime(chart_candles, item.added_at)
+                    if estimated is not None:
+                        added_price = estimated
+                        added_price_estimated = True
+                        item_changed = True
+                updated_item = item.model_copy(
+                    update={
+                        "added_price": added_price,
+                        "added_price_estimated": added_price_estimated,
+                        "current_price": current_price,
+                        "pnl_since_added_pct": self._compute_return_pct(current_price, added_price),
+                        "return_1m_pct": self._compute_return_pct(current_price, self._close_at_offset(closes, 21)),
+                        "return_3m_pct": self._compute_return_pct(current_price, self._close_at_offset(closes, 63)),
+                        "return_6m_pct": self._compute_return_pct(current_price, self._close_at_offset(closes, 126)),
+                        "return_1y_pct": self._compute_return_pct(current_price, self._close_at_offset(closes, 252)),
+                        "trend_state": combined.setup_interpretation.trend_state,
+                        "score": current_score,
+                        "score_dynamics_state": score_dynamics_state,
+                        "price_vs_ema200_pct": price_vs_ema200,
+                        "last_checked": now,
+                    }
+                )
+                updated_items.append(updated_item)
+                item_changed = True
+            if item_changed:
+                watchlists[wl_idx] = watchlist.model_copy(update={"items": updated_items, "updated_at": now})
+                changed = True
+        if changed:
+            self._save_watchlists(watchlists)
+
+    def refresh_watchlist_metrics(self, watchlist_id: str) -> Watchlist:
+        rows = self._read_watchlists()
+        target = next((row for row in rows if row.id == watchlist_id), None)
+        if target is None:
+            raise FileNotFoundError(watchlist_id)
+
+        for item in target.items:
+            try:
+                scan = self.scanner_engine.scan(
+                    ScannerRequest(
+                        market=item.market,
+                        duration="1y",
+                        category="trend_mode",
+                        max_results=20,
+                        universe_scope="watchlist",
+                        symbol_overrides=[item.symbol],
+                        use_custom_rules=False,
+                    )
+                )
+                row = scan.results[0] if scan.results else None
+                score = row.current_score if row else 0.0
+                dynamics = row.score_dynamics_state if row else "stable"
+                self._refresh_watchlist_metrics_for_symbol(
+                    item.symbol,
+                    item.market,
+                    current_score=score,
+                    score_dynamics_state=dynamics,
+                )
+            except Exception:
+                continue
+        refreshed = self._read_watchlists()
+        for row in refreshed:
+            if row.id == watchlist_id:
+                return row
+        raise FileNotFoundError(watchlist_id)

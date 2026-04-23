@@ -543,6 +543,19 @@ class WatchlistItem(BaseModel):
     market: MarketCode
     added_at: datetime
     notes: str | None = None
+    added_price: float | None = None
+    added_price_estimated: bool = False
+    current_price: float | None = None
+    pnl_since_added_pct: float | None = None
+    return_1m_pct: float | None = None
+    return_3m_pct: float | None = None
+    return_6m_pct: float | None = None
+    return_1y_pct: float | None = None
+    trend_state: str | None = None
+    score: float | None = None
+    score_dynamics_state: str | None = None
+    price_vs_ema200_pct: float | None = None
+    last_checked: datetime | None = None
 
 
 class Watchlist(BaseModel):
@@ -582,7 +595,12 @@ class AlertScopeType(str, Enum):
 class AlertRuleType(str, Enum):
     NEAR_EMA20 = "near_ema20"
     NEAR_EMA50 = "near_ema50"
+    NEAR_EMA100 = "near_ema100"
     NEAR_EMA200 = "near_ema200"
+    CROSS_ABOVE_EMA100 = "cross_above_ema100"
+    CROSS_ABOVE_EMA200 = "cross_above_ema200"
+    CROSS_BELOW_EMA100 = "cross_below_ema100"
+    CROSS_BELOW_EMA200 = "cross_below_ema200"
     PRICE_GTE = "price_gte"
     PRICE_LTE = "price_lte"
     TREND_STATE_IS = "trend_state_is"
@@ -613,6 +631,8 @@ class AlertRule(BaseModel):
     preferred_regime_mode: str | None = None
     notification_email_enabled: bool = False
     notification_webhook_enabled: bool = False
+    last_checked: datetime | None = None
+    last_matched: datetime | None = None
 
 
 class AlertRuleCreateRequest(BaseModel):
@@ -649,6 +669,8 @@ class MonitoringSchedule(BaseModel):
     duration: ScannerDuration = ScannerDuration.TWO_YEAR
     max_results: int = 20
     is_enabled: bool = True
+    mode: str = "auto"
+    interval: str = "5m"
     created_at: datetime
     updated_at: datetime
     last_run_at: datetime | None = None
@@ -665,6 +687,8 @@ class MonitoringScheduleCreateRequest(BaseModel):
     duration: ScannerDuration = ScannerDuration.TWO_YEAR
     max_results: int = Field(default=20, ge=1, le=100)
     is_enabled: bool = True
+    mode: str = "auto"
+    interval: str = "5m"
 
 
 class MonitoringScheduleUpdateRequest(BaseModel):
@@ -676,6 +700,8 @@ class MonitoringScheduleUpdateRequest(BaseModel):
     duration: ScannerDuration | None = None
     max_results: int | None = Field(default=None, ge=1, le=100)
     is_enabled: bool | None = None
+    mode: str | None = None
+    interval: str | None = None
 
 
 class AlertEventStatus(str, Enum):
@@ -708,6 +734,7 @@ class MonitoringRunRequest(BaseModel):
     watchlist_id: str | None = None
     symbols: list[str] = Field(default_factory=list)
     max_runtime_seconds: float = Field(default=20.0, ge=3.0, le=90.0)
+    max_symbols_per_batch: int = Field(default=200, ge=10, le=500)
 
 
 class MonitoringRunSummary(BaseModel):

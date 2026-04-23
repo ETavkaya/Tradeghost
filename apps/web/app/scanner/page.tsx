@@ -101,6 +101,22 @@ const ruleDefaultByField: Record<ScannerRuleField, ScannerCustomRule> = {
   trend_state: { field: "trend_state", operator: "eq", value_text: "bullish_trend" },
 };
 
+const alertPresetDefaults: Record<string, { label: string; rule_type: string; valueKey: string | null; defaultValue: string | number }> = {
+  near_ema20: { label: "Price near EMA20", rule_type: "near_ema20", valueKey: "threshold_pct", defaultValue: 3 },
+  near_ema50: { label: "Price near EMA50", rule_type: "near_ema50", valueKey: "threshold_pct", defaultValue: 3 },
+  near_ema100: { label: "Price near EMA100", rule_type: "near_ema100", valueKey: "threshold_pct", defaultValue: 5 },
+  near_ema200: { label: "Price near EMA200", rule_type: "near_ema200", valueKey: "threshold_pct", defaultValue: 5 },
+  cross_above_ema100: { label: "Cross above EMA100", rule_type: "cross_above_ema100", valueKey: null, defaultValue: "" },
+  cross_above_ema200: { label: "Cross above EMA200", rule_type: "cross_above_ema200", valueKey: null, defaultValue: "" },
+  cross_below_ema100: { label: "Cross below EMA100", rule_type: "cross_below_ema100", valueKey: null, defaultValue: "" },
+  cross_below_ema200: { label: "Cross below EMA200", rule_type: "cross_below_ema200", valueKey: null, defaultValue: "" },
+  dynamics_state_is: { label: "Dynamics accelerating", rule_type: "dynamics_state_is", valueKey: "state", defaultValue: "accelerating" },
+  rsi14_lte: { label: "RSI14 below", rule_type: "rsi14_lte", valueKey: "value", defaultValue: 30 },
+  rsi14_gte: { label: "RSI14 above", rule_type: "rsi14_gte", valueKey: "value", defaultValue: 70 },
+  volume_ratio_20_gte: { label: "Volume ratio 20 above", rule_type: "volume_ratio_20_gte", valueKey: "value", defaultValue: 1.5 },
+  resistance_test_count_gte: { label: "Resistance tests >=", rule_type: "resistance_test_count_gte", valueKey: "count", defaultValue: 3 },
+};
+
 export default function ScannerPage() {
   const router = useRouter();
   const [market, setMarket] = useState<MarketCode>("us");
@@ -264,15 +280,34 @@ export default function ScannerPage() {
   };
 
   const createBasicAlertFromRow = async (row: ScannerResult) => {
+    const presetKey = window.prompt(
+      "Preset key (near_ema20, near_ema50, near_ema100, near_ema200, cross_above_ema100, cross_above_ema200, cross_below_ema100, cross_below_ema200, dynamics_state_is, rsi14_lte, rsi14_gte, volume_ratio_20_gte, resistance_test_count_gte)",
+      "near_ema50",
+    );
+    if (!presetKey) return;
+    const preset = alertPresetDefaults[presetKey.trim()];
+    if (!preset) {
+      setNotice("Unknown alert preset key.");
+      return;
+    }
+    const parameters: Record<string, unknown> = {};
+    if (preset.valueKey) {
+      const raw = window.prompt(`Value for ${preset.valueKey}`, String(preset.defaultValue));
+      if (raw === null) return;
+      parameters[preset.valueKey] = raw.trim() === "" ? preset.defaultValue : (Number.isNaN(Number(raw)) ? raw : Number(raw));
+      if (preset.rule_type === "dynamics_state_is") {
+        parameters.category = "momentum_mode";
+      }
+    }
     try {
       await api.createAlertRule({
         scope_type: "symbol",
         scope_ref: row.symbol,
         market,
         symbol: row.symbol,
-        name: `${row.symbol} near EMA50`,
-        rule_type: "near_ema50",
-        parameters: { threshold_pct: 3.0 },
+        name: `${row.symbol} ${preset.label}`,
+        rule_type: preset.rule_type,
+        parameters,
         timeframe: "daily",
         severity: "watch",
         color: "yellow",

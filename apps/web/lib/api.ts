@@ -124,7 +124,18 @@ export const api = {
     }),
   removeWatchlistItem: (watchlistId: string, symbol: string, market: MarketCode) =>
     fetchJson<Watchlist>(`/api/watchlists/${encodeURIComponent(watchlistId)}/items?symbol=${encodeURIComponent(symbol)}&market=${encodeURIComponent(market)}`, { method: "DELETE" }),
-  listAlertRules: () => fetchJson<AlertRule[]>("/api/alert-rules"),
+  refreshWatchlistMetrics: (watchlistId: string) =>
+    fetchJson<Watchlist>(`/api/watchlists/${encodeURIComponent(watchlistId)}/refresh-metrics`, {
+      method: "POST"
+    }),
+  listAlertRules: (filters?: { symbol?: string; watchlist_id?: string; severity?: string; enabled?: boolean }) => {
+    const params = new URLSearchParams();
+    if (filters?.symbol) params.set("symbol", filters.symbol);
+    if (filters?.watchlist_id) params.set("watchlist_id", filters.watchlist_id);
+    if (filters?.severity) params.set("severity", filters.severity);
+    if (filters?.enabled !== undefined) params.set("enabled", String(filters.enabled));
+    return fetchJson<AlertRule[]>(`/api/alert-rules${params.toString() ? `?${params.toString()}` : ""}`);
+  },
   createAlertRule: (payload: Record<string, unknown>) =>
     fetchJson<AlertRule>("/api/alert-rules", {
       method: "POST",
@@ -168,6 +179,12 @@ export const api = {
   createMonitoringSchedule: (payload: Record<string, unknown>) =>
     fetchJson<MonitoringSchedule>("/api/monitoring/schedules", {
       method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
+  updateMonitoringSchedule: (scheduleId: string, payload: Record<string, unknown>) =>
+    fetchJson<MonitoringSchedule>(`/api/monitoring/schedules/${encodeURIComponent(scheduleId)}`, {
+      method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)
     }),

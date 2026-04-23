@@ -543,6 +543,19 @@ export type WatchlistItem = {
   market: MarketCode;
   added_at: string;
   notes: string | null;
+  added_price: number | null;
+  added_price_estimated: boolean;
+  current_price: number | null;
+  pnl_since_added_pct: number | null;
+  return_1m_pct: number | null;
+  return_3m_pct: number | null;
+  return_6m_pct: number | null;
+  return_1y_pct: number | null;
+  trend_state: string | null;
+  score: number | null;
+  score_dynamics_state: string | null;
+  price_vs_ema200_pct: number | null;
+  last_checked: string | null;
 };
 
 export type Watchlist = {
@@ -558,7 +571,12 @@ export type AlertScopeType = "symbol" | "watchlist";
 export type AlertRuleType =
   | "near_ema20"
   | "near_ema50"
+  | "near_ema100"
   | "near_ema200"
+  | "cross_above_ema100"
+  | "cross_above_ema200"
+  | "cross_below_ema100"
+  | "cross_below_ema200"
   | "price_gte"
   | "price_lte"
   | "trend_state_is"
@@ -588,6 +606,8 @@ export type AlertRule = {
   preferred_regime_mode: string | null;
   notification_email_enabled: boolean;
   notification_webhook_enabled: boolean;
+  last_checked: string | null;
+  last_matched: string | null;
 };
 
 export type AlertEventStatus = "new" | "seen" | "archived";
@@ -618,6 +638,8 @@ export type MonitoringSchedule = {
   duration: ScannerDuration;
   max_results: number;
   is_enabled: boolean;
+  mode: string;
+  interval: string;
   created_at: string;
   updated_at: string;
   last_run_at: string | null;

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -42,6 +44,8 @@ class MonitoringService:
         self.schedules_path = self.base_dir / "monitoring_schedules.json"
         self.analysis_engine = analysis_engine or AnalysisEngine()
         self.scanner_engine = scanner_engine or ScannerEngine(analysis_engine=self.analysis_engine)
+        self._run_lock = threading.Lock()
+        self._logger = logging.getLogger(__name__)
 
     def _write_json(self, path: Path, payload: list[dict]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -129,6 +133,38 @@ class MonitoringService:
             next_run_at=self._next_run_time("5m", now),
         )
         self._save_schedules([default_schedule])
+
+    def _build_symbol_targets(self, req: MonitoringRunRequest) -> list[tuple[str, object]]:
+        watchlists = self._read_watchlists()
+        scoped_watchlists = watchlists
+        if req.watchlist_id:
+            scoped_watchlists = [row for row in watchlists if row.id == req.watchlist_id]
+
+        requested = {sym.strip().upper() for sym in req.symbols if sym.strip()}
+        targets: list[tuple[str, object]] = []
+        seen: set[tuple[str, str]] = set()
+        for watchlist in scoped_watchlists:
+            for item in watchlist.items:
+                if req.market is not None and item.market != req.market:
+                    continue
+                symbol_upper = item.symbol.upper()
+                if requested and symbol_upper not in requested:
+                    continue
+                key = (symbol_upper, item.market.value)
+                if key in seen:
+                    continue
+                seen.add(key)
+                targets.append((symbol_upper, item.market))
+
+        if requested and req.market is not None:
+            for symbol_upper in sorted(requested):
+                key = (symbol_upper, req.market.value)
+                if key in seen:
+                    continue
+                seen.add(key)
+                targets.append((symbol_upper, req.market))
+
+        return targets[: req.max_symbols_per_batch]
 
     # Watchlists
     def list_watchlists(self) -> list[Watchlist]:
@@ -670,6 +706,18 @@ class MonitoringService:
     def run_monitoring(self, req: MonitoringRunRequest) -> MonitoringRunSummary:
         started = datetime.now(UTC)
         started_monotonic = time.monotonic()
+        if not self._run_lock.acquire(blocking=False):
+            self._logger.info("monitoring skipped: previous run still active")
+            return MonitoringRunSummary(
+                started_at=started,
+                finished_at=datetime.now(UTC),
+                processed_rules=0,
+                evaluated_symbols=0,
+                events_created=0,
+                partial_run=True,
+                note="Monitoring run skipped because another run is still active.",
+            )
+        self._logger.info("monitoring started")
         rules = [rule for rule in self._read_rules() if rule.is_enabled]
         events = self._read_events()
         rules_all = self._read_rules()
@@ -679,86 +727,23 @@ class MonitoringService:
         evaluated_symbols = 0
         partial = False
         note = None
+        symbol_targets = self._build_symbol_targets(req)
+        symbol_timeout_seconds = 8.0
 
-        for rule in rules:
-            if req.market is not None and rule.market != req.market:
-                continue
-            symbols = self._symbols_for_rule(rule)
-            if req.watchlist_id is not None and rule.scope_ref != req.watchlist_id:
-                continue
-            if req.symbols:
-                symbols = [sym for sym in symbols if sym.upper() in {s.upper() for s in req.symbols}]
-            symbols = sorted(set(symbols))
-            if len(symbols) > req.max_symbols_per_batch:
-                symbols = symbols[: req.max_symbols_per_batch]
-            if not symbols:
-                continue
-
-            elapsed = time.monotonic() - started_monotonic
-            if elapsed >= req.max_runtime_seconds:
-                partial = True
-                note = f"Monitoring partial run: runtime budget {req.max_runtime_seconds:.1f}s reached."
-                break
-
-            processed_rules += 1
-            matched_for_rule = False
-            if rule.rule_type in {AlertRuleType.SCANNER_TOP_N, AlertRuleType.DYNAMICS_STATE_IS}:
-                if rule.rule_type == AlertRuleType.SCANNER_TOP_N:
-                    scanner_events = self._evaluate_scanner_rule(rule, symbols)
-                    created.extend(scanner_events)
-                    matched_for_rule = len(scanner_events) > 0
-                else:
-                    category = rule.parameters.get("category", "momentum_mode")
-                    target_state = str(rule.parameters.get("state", "accelerating"))
-                    req_scan = ScannerRequest(
-                        market=rule.market,
-                        duration=rule.parameters.get("duration", "1y"),
-                        category=category,
-                        max_results=100,
-                        universe_scope="watchlist" if rule.scope_type.value == "watchlist" else "capped_universe",
-                        symbol_overrides=symbols,
-                    )
-                    resp = self.scanner_engine.scan(req_scan)
-                    for row in resp.results:
-                        if row.score_dynamics_state != target_state:
-                            continue
-                        self._refresh_watchlist_metrics_for_symbol(
-                            row.symbol,
-                            rule.market,
-                            current_score=row.current_score,
-                            score_dynamics_state=row.score_dynamics_state,
-                        )
-                        created.append(
-                            self._build_alert_event(
-                                rule=rule,
-                                symbol=row.symbol,
-                                triggered_value=row.score_dynamics_state,
-                                message=f"{row.symbol} score dynamics became {row.score_dynamics_state}",
-                                trigger_context={"state": row.score_dynamics_state},
-                                scanner_context={"scanner_score": row.scanner_score},
-                                analysis_context={"trend_state": row.trend_state},
-                            )
-                        )
-                        matched_for_rule = True
-                evaluated_symbols += len(symbols)
-                rule_payload = rules_index.get(rule.id).model_dump() if rules_index.get(rule.id) else rule.model_dump()
-                now_checked = datetime.now(UTC)
-                rule_payload["last_checked"] = now_checked
-                if matched_for_rule:
-                    rule_payload["last_matched"] = now_checked
-                rules_index[rule.id] = AlertRule.model_validate(rule_payload)
-                continue
-
-            for symbol in symbols:
-                event = self._evaluate_symbol_rule(rule, symbol)
-                evaluated_symbols += 1
-                if event is not None:
-                    created.append(event)
-                    matched_for_rule = True
+        try:
+            # Always run base symbol metric cycle, even when no rules match.
+            symbols_processed = 0
+            for symbol, market in symbol_targets:
+                elapsed = time.monotonic() - started_monotonic
+                if elapsed >= req.max_runtime_seconds:
+                    partial = True
+                    note = f"Monitoring partial run: runtime budget {req.max_runtime_seconds:.1f}s reached."
+                    break
+                per_symbol_start = time.monotonic()
                 try:
                     scan = self.scanner_engine.scan(
                         ScannerRequest(
-                            market=rule.market,
+                            market=market,
                             duration="1y",
                             category="trend_mode",
                             max_results=20,
@@ -768,64 +753,158 @@ class MonitoringService:
                         )
                     )
                     row = scan.results[0] if scan.results else None
-                    if row is not None:
-                        self._refresh_watchlist_metrics_for_symbol(
-                            symbol,
-                            rule.market,
-                            current_score=row.current_score,
-                            score_dynamics_state=row.score_dynamics_state,
+                    score = row.current_score if row is not None else 0.0
+                    dynamics = row.score_dynamics_state if row is not None else "stable"
+                    self._refresh_watchlist_metrics_for_symbol(
+                        symbol,
+                        market,
+                        current_score=score,
+                        score_dynamics_state=dynamics,
+                    )
+                    symbols_processed += 1
+                except Exception as exc:
+                    self._logger.warning("monitoring symbol refresh failed for %s: %s", symbol, exc)
+                duration = time.monotonic() - per_symbol_start
+                if duration > symbol_timeout_seconds:
+                    self._logger.warning("monitoring symbol refresh slow for %s: %.2fs", symbol, duration)
+
+            evaluated_symbols = symbols_processed
+
+            for rule in rules:
+                if req.market is not None and rule.market != req.market:
+                    continue
+                symbols = self._symbols_for_rule(rule)
+                if req.watchlist_id is not None and rule.scope_ref != req.watchlist_id:
+                    continue
+                if req.symbols:
+                    symbols = [sym for sym in symbols if sym.upper() in {s.upper() for s in req.symbols}]
+                symbols = sorted(set(symbols))
+                if len(symbols) > req.max_symbols_per_batch:
+                    symbols = symbols[: req.max_symbols_per_batch]
+                if not symbols:
+                    continue
+
+                elapsed = time.monotonic() - started_monotonic
+                if elapsed >= req.max_runtime_seconds:
+                    partial = True
+                    note = f"Monitoring partial run: runtime budget {req.max_runtime_seconds:.1f}s reached."
+                    break
+
+                processed_rules += 1
+                matched_for_rule = False
+                if rule.rule_type in {AlertRuleType.SCANNER_TOP_N, AlertRuleType.DYNAMICS_STATE_IS}:
+                    if rule.rule_type == AlertRuleType.SCANNER_TOP_N:
+                        scanner_events = self._evaluate_scanner_rule(rule, symbols)
+                        created.extend(scanner_events)
+                        matched_for_rule = len(scanner_events) > 0
+                    else:
+                        category = rule.parameters.get("category", "momentum_mode")
+                        target_state = str(rule.parameters.get("state", "accelerating"))
+                        req_scan = ScannerRequest(
+                            market=rule.market,
+                            duration=rule.parameters.get("duration", "1y"),
+                            category=category,
+                            max_results=100,
+                            universe_scope="watchlist" if rule.scope_type.value == "watchlist" else "capped_universe",
+                            symbol_overrides=symbols,
                         )
-                except Exception:
+                        resp = self.scanner_engine.scan(req_scan)
+                        for row in resp.results:
+                            if row.score_dynamics_state != target_state:
+                                continue
+                            self._refresh_watchlist_metrics_for_symbol(
+                                row.symbol,
+                                rule.market,
+                                current_score=row.current_score,
+                                score_dynamics_state=row.score_dynamics_state,
+                            )
+                            created.append(
+                                self._build_alert_event(
+                                    rule=rule,
+                                    symbol=row.symbol,
+                                    triggered_value=row.score_dynamics_state,
+                                    message=f"{row.symbol} score dynamics became {row.score_dynamics_state}",
+                                    trigger_context={"state": row.score_dynamics_state},
+                                    scanner_context={"scanner_score": row.scanner_score},
+                                    analysis_context={"trend_state": row.trend_state},
+                                )
+                            )
+                            matched_for_rule = True
+                    evaluated_symbols = max(evaluated_symbols, len(symbol_targets))
+                    rule_payload = rules_index.get(rule.id).model_dump() if rules_index.get(rule.id) else rule.model_dump()
+                    now_checked = datetime.now(UTC)
+                    rule_payload["last_checked"] = now_checked
+                    if matched_for_rule:
+                        rule_payload["last_matched"] = now_checked
+                    rules_index[rule.id] = AlertRule.model_validate(rule_payload)
                     continue
 
-            rule_payload = rules_index.get(rule.id).model_dump() if rules_index.get(rule.id) else rule.model_dump()
-            now_checked = datetime.now(UTC)
-            rule_payload["last_checked"] = now_checked
-            if matched_for_rule:
-                rule_payload["last_matched"] = now_checked
-            rules_index[rule.id] = AlertRule.model_validate(rule_payload)
+                for symbol in symbols:
+                    event = self._evaluate_symbol_rule(rule, symbol)
+                    evaluated_symbols = max(evaluated_symbols, len(symbol_targets))
+                    if event is not None:
+                        created.append(event)
+                        matched_for_rule = True
 
-        if created:
-            events.extend(created)
-            self._save_events(events)
-        # persist rule check metadata even if no event
-        self._save_rules(list(rules_index.values()))
+                rule_payload = rules_index.get(rule.id).model_dump() if rules_index.get(rule.id) else rule.model_dump()
+                now_checked = datetime.now(UTC)
+                rule_payload["last_checked"] = now_checked
+                if matched_for_rule:
+                    rule_payload["last_matched"] = now_checked
+                rules_index[rule.id] = AlertRule.model_validate(rule_payload)
 
-        # Update schedule run metadata if run was scoped by watchlist
-        if req.watchlist_id is not None:
-            schedules = self._read_schedules()
-            changed = False
-            for idx, schedule in enumerate(schedules):
-                if schedule.watchlist_id != req.watchlist_id:
-                    continue
-                now = datetime.now(UTC)
-                schedules[idx] = schedule.model_copy(
-                    update={
-                        "last_run_at": now,
-                        "next_run_at": self._next_run_time(schedule.interval or schedule.frequency, now),
-                        "updated_at": now,
-                    }
-                )
-                changed = True
-            if changed:
-                self._save_schedules(schedules)
+            if created:
+                events.extend(created)
+                self._save_events(events)
+            # persist rule check metadata even if no event
+            self._save_rules(list(rules_index.values()))
 
-        finished = datetime.now(UTC)
-        return MonitoringRunSummary(
-            started_at=started,
-            finished_at=finished,
-            processed_rules=processed_rules,
-            evaluated_symbols=evaluated_symbols,
-            events_created=len(created),
-            partial_run=partial,
-            note=note,
-        )
+            # Update schedule run metadata if run was scoped by watchlist
+            if req.watchlist_id is not None:
+                schedules = self._read_schedules()
+                changed = False
+                for idx, schedule in enumerate(schedules):
+                    if schedule.watchlist_id != req.watchlist_id:
+                        continue
+                    now = datetime.now(UTC)
+                    schedules[idx] = schedule.model_copy(
+                        update={
+                            "last_run_at": now,
+                            "next_run_at": self._next_run_time(schedule.interval or schedule.frequency, now),
+                            "updated_at": now,
+                        }
+                    )
+                    changed = True
+                if changed:
+                    self._save_schedules(schedules)
+
+            finished = datetime.now(UTC)
+            duration = (finished - started).total_seconds()
+            self._logger.info(
+                "monitoring finished: symbols processed=%s rules evaluated=%s events=%s duration=%.2fs",
+                evaluated_symbols,
+                processed_rules,
+                len(created),
+                duration,
+            )
+            return MonitoringRunSummary(
+                started_at=started,
+                finished_at=finished,
+                processed_rules=processed_rules,
+                evaluated_symbols=evaluated_symbols,
+                events_created=len(created),
+                partial_run=partial,
+                note=note,
+            )
+        finally:
+            self._run_lock.release()
 
     def run_due_schedules(self, max_runtime_seconds: float = 30.0) -> MonitoringRunSummary:
         self._ensure_default_schedule()
+        all_schedules = self._read_schedules()
         schedules = [
             row
-            for row in self._read_schedules()
+            for row in all_schedules
             if row.is_enabled and row.mode != "manual" and row.next_run_at is not None and row.next_run_at <= datetime.now(UTC)
         ]
         aggregate = MonitoringRunSummary(
@@ -838,6 +917,7 @@ class MonitoringService:
             note=None,
         )
         start_mono = time.monotonic()
+        self._logger.info("due monitoring cycle started")
         for schedule in schedules:
             if time.monotonic() - start_mono >= max_runtime_seconds:
                 aggregate.partial_run = True
@@ -854,7 +934,24 @@ class MonitoringService:
             aggregate.evaluated_symbols += summary.evaluated_symbols
             aggregate.events_created += summary.events_created
             aggregate.partial_run = aggregate.partial_run or summary.partial_run
+            now = datetime.now(UTC)
+            updated_schedule = schedule.model_copy(
+                update={
+                    "last_run_at": now,
+                    "next_run_at": self._next_run_time(schedule.interval or schedule.frequency, now),
+                    "updated_at": now,
+                }
+            )
+            all_schedules = [updated_schedule if row.id == schedule.id else row for row in all_schedules]
+            self._save_schedules(all_schedules)
         aggregate.finished_at = datetime.now(UTC)
+        self._logger.info(
+            "due monitoring cycle finished: symbols processed=%s rules evaluated=%s events=%s duration=%.2fs",
+            aggregate.evaluated_symbols,
+            aggregate.processed_rules,
+            aggregate.events_created,
+            (aggregate.finished_at - aggregate.started_at).total_seconds(),
+        )
         return aggregate
     @staticmethod
     def _compute_return_pct(current: float | None, reference: float | None) -> float | None:

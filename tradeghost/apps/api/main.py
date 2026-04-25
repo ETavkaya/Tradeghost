@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import threading
 from fastapi import FastAPI, HTTPException, Query
 
 from tradeghost.services.analysis_engine import AnalysisEngine
@@ -42,12 +44,45 @@ from tradeghost.shared.models.schemas import (
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name, version="0.1.0")
+logger = logging.getLogger(__name__)
 
 analysis_engine = AnalysisEngine()
 backtest_engine = BacktestEngine(analysis_engine=analysis_engine)
 review_log_service = BacktestReviewLogService()
 scanner_engine = ScannerEngine(analysis_engine=analysis_engine)
 monitoring_service = MonitoringService(analysis_engine=analysis_engine, scanner_engine=scanner_engine)
+_monitor_stop_event = threading.Event()
+_monitor_thread: threading.Thread | None = None
+
+
+def _background_monitor_loop() -> None:
+    logger.info("background monitor loop started")
+    while not _monitor_stop_event.is_set():
+        try:
+            monitoring_service.run_due_schedules(max_runtime_seconds=30.0)
+        except Exception as exc:  # pragma: no cover
+            logger.warning("background monitor loop error: %s", exc)
+        _monitor_stop_event.wait(30.0)
+    logger.info("background monitor loop stopped")
+
+
+@app.on_event("startup")
+def startup_background_monitor() -> None:
+    global _monitor_thread
+    if _monitor_thread is not None and _monitor_thread.is_alive():
+        return
+    _monitor_stop_event.clear()
+    _monitor_thread = threading.Thread(target=_background_monitor_loop, name="tradeghost-monitor-loop", daemon=True)
+    _monitor_thread.start()
+
+
+@app.on_event("shutdown")
+def shutdown_background_monitor() -> None:
+    _monitor_stop_event.set()
+    global _monitor_thread
+    if _monitor_thread is not None and _monitor_thread.is_alive():
+        _monitor_thread.join(timeout=2.0)
+    _monitor_thread = None
 
 
 @app.get("/health")
@@ -273,6 +308,13 @@ def add_watchlist_item(watchlist_id: str, payload: WatchlistItemCreateRequest) -
 @app.post("/watchlists/{watchlist_id}/refresh-metrics", response_model=Watchlist)
 def refresh_watchlist_metrics(watchlist_id: str) -> Watchlist:
     try:
+        monitoring_service.run_monitoring(
+            MonitoringRunRequest(
+                watchlist_id=watchlist_id,
+                max_runtime_seconds=30.0,
+                max_symbols_per_batch=200,
+            )
+        )
         return monitoring_service.refresh_watchlist_metrics(watchlist_id)
     except FileNotFoundError as exc:  # pragma: no cover
         raise HTTPException(status_code=404, detail=str(exc)) from exc

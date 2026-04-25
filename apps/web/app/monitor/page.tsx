@@ -165,9 +165,13 @@ export default function MonitorPage() {
     if (pollMode !== "auto") return;
     const id = setInterval(async () => {
       try {
-        const summary = await api.runDueMonitoring(30);
+        const summary = await api.runMonitoring({
+          watchlist_id: selectedWatchlistId || null,
+          symbols: [],
+          max_runtime_seconds: 30,
+          max_symbols_per_batch: 200,
+        });
         setLastRunSummary(summary);
-        if (selectedWatchlistId) await api.refreshWatchlistMetrics(selectedWatchlistId);
         await refresh();
       } catch {
         // quiet retry on next interval
@@ -207,10 +211,8 @@ export default function MonitorPage() {
   };
 
   const refreshMetrics = async () => {
-    if (!selectedWatchlistId) return;
-    await api.refreshWatchlistMetrics(selectedWatchlistId);
-    setNotice("Watchlist metrics refreshed.");
-    await refresh();
+    await runMonitoring();
+    setNotice("Monitoring cycle completed and metrics refreshed.");
   };
 
   const createWatchlist = async () => {

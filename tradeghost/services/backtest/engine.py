@@ -7,7 +7,7 @@ from datetime import date
 import pandas as pd
 
 from tradeghost.services.analysis_engine import AnalysisEngine
-from tradeghost.services.charts.payloads import WINDOW_TO_PERIOD, build_analysis_chart, normalize_window, visible_window_slice
+from tradeghost.services.charts.payloads import WINDOW_TO_BARS, WINDOW_TO_PERIOD, build_analysis_chart, normalize_window, visible_window_slice
 from tradeghost.services.indicators.calculations import compute_indicator_snapshot
 from tradeghost.services.strategy.config import build_analysis_config
 from tradeghost.services.strategy.pipeline import run_analysis_pipeline
@@ -93,9 +93,50 @@ class _SimulationResult:
     evaluated_bars: int
     evaluation_start_date: date | None
     evaluation_end_date: date | None
+    path_diagnostics: dict[str, dict[str, int]]
 
 
 class BacktestEngine:
+    TESTED_SETUP_PATHS = {
+        "all_eligible_paths",
+        "pullback_continuation",
+        "momentum_continuation",
+        "value_rebuild",
+        "second_breakout_attempt",
+    }
+
+    @staticmethod
+    def _normalize_tested_setup_path(raw: str | None) -> str:
+        candidate = (raw or "all_eligible_paths").strip().lower()
+        return candidate if candidate in BacktestEngine.TESTED_SETUP_PATHS else "all_eligible_paths"
+
+    @staticmethod
+    def _path_key_from_setup_type(setup_type: str | None) -> str:
+        mapped = (setup_type or "pullback").strip().lower()
+        if mapped == "second_attempt_breakout":
+            return "second_breakout_attempt"
+        if mapped in {"pullback", "build_up"}:
+            return "pullback_continuation"
+        if mapped == "momentum_continuation":
+            return "momentum_continuation"
+        if mapped == "value_rebuild":
+            return "value_rebuild"
+        return "pullback_continuation"
+
+    @staticmethod
+    def _empty_path_diag() -> dict[str, int]:
+        return {
+            "candidates_checked": 0,
+            "skipped_threshold": 0,
+            "skipped_regime": 0,
+            "skipped_location": 0,
+            "skipped_trigger": 0,
+            "skipped_overextension": 0,
+            "skipped_blowoff": 0,
+            "skipped_setup": 0,
+            "entries_triggered": 0,
+        }
+
     def __init__(self, analysis_engine: AnalysisEngine | None = None) -> None:
         self.analysis_engine = analysis_engine or AnalysisEngine()
         self.settings = get_settings()
@@ -184,6 +225,8 @@ class BacktestEngine:
             )
         if reason == "trigger_filter":
             return f"trigger score {trigger.trigger_score:.2f} < minimum {min_trigger_score:.2f}"
+        if reason == "setup_path_filter":
+            return "setup did not match selected tested setup path"
         return "did not pass entry gate"
 
     @staticmethod
@@ -203,12 +246,22 @@ class BacktestEngine:
         market_cap: float | None,
         max_hold_days: int,
         config: AnalysisConfig,
+        tested_setup_path: str = "all_eligible_paths",
     ) -> _SimulationResult:
         trades: list[BacktestTrade] = []
         position: _Position | None = None
 
         warmup = min(config.warmup_bars, max(20, len(daily) // 3))
-        sim_start_idx = warmup
+        eval_bars = WINDOW_TO_BARS.get(config.lookback_window, len(daily))
+        sim_start_idx = max(warmup, max(0, len(daily) - eval_bars))
+        selected_path = self._normalize_tested_setup_path(tested_setup_path)
+        path_diagnostics: dict[str, dict[str, int]] = {
+            "all_eligible_paths": self._empty_path_diag(),
+            "pullback_continuation": self._empty_path_diag(),
+            "momentum_continuation": self._empty_path_diag(),
+            "value_rebuild": self._empty_path_diag(),
+            "second_breakout_attempt": self._empty_path_diag(),
+        }
 
         entries_considered = 0
         entries_triggered = 0
@@ -279,6 +332,10 @@ class BacktestEngine:
                 trigger = pipeline.trigger
                 setup = pipeline.setup_interpretation
                 entry_gate = pipeline.entry_gate
+                setup_path_key = self._path_key_from_setup_type(setup.setup_type)
+
+                path_diagnostics["all_eligible_paths"]["candidates_checked"] += 1
+                path_diagnostics[setup_path_key]["candidates_checked"] += 1
 
                 if setup.setup_status in {"actionable", "early_trend_transition"}:
                     actionable_setups += 1
@@ -287,30 +344,83 @@ class BacktestEngine:
                 else:
                     avoid_setups += 1
 
+                if selected_path != "all_eligible_paths" and setup_path_key != selected_path:
+                    skipped_due_to_setup += 1
+                    path_diagnostics["all_eligible_paths"]["skipped_setup"] += 1
+                    path_diagnostics[setup_path_key]["skipped_setup"] += 1
+                    decision_log.append(
+                        SkippedEntrySignal(
+                            date=current_date.date(),
+                            final_score=round(final_score, 2),
+                            threshold_used=round(entry_gate.score_threshold_used, 2),
+                            setup_status=setup.setup_status,
+                            first_failed_gate="setup_path_filter",
+                            reason="setup_path_filter",
+                            reason_detail=(
+                                f"setup type {setup.setup_type} does not match tested path {selected_path}"
+                            ),
+                            swing_candidate=False,
+                            strategy_mode_used=config.strategy_mode,
+                            regime_valid=regime.regime_valid,
+                            location_valid=location.location_valid,
+                            trigger_valid=trigger.trigger_valid,
+                            trigger_state=trigger.trigger_state,
+                            trigger_score=trigger.trigger_score,
+                            trend_state=setup.trend_state,
+                            setup_type=setup.setup_type,
+                            extension_state=location.extension_state,
+                            support_distance_pct=location.distance_to_support_pct,
+                            resistance_room_pct=location.resistance_room_pct,
+                            price_vs_ema200_pct=regime.price_vs_ema200_pct,
+                            ema200_slope_state=regime.ema200_slope_state,
+                            ema_stack_alignment=regime.ema_stack_alignment,
+                            regime_reason_code=regime.regime_reason_code,
+                        )
+                    )
+                    continue
+
                 if not entry_gate.final_entry_decision:
                     reason = entry_gate.skip_reason or "setup_filter"
-                    if reason == "score_threshold":
+                    if reason in {"score_threshold", "momentum_score_threshold"}:
                         skipped_due_to_threshold += 1
+                        path_diagnostics["all_eligible_paths"]["skipped_threshold"] += 1
+                        path_diagnostics[setup_path_key]["skipped_threshold"] += 1
                     elif reason == "regime_filter":
                         skipped_regime += 1
+                        path_diagnostics["all_eligible_paths"]["skipped_regime"] += 1
+                        path_diagnostics[setup_path_key]["skipped_regime"] += 1
                         if regime.regime_reason_code in {"ema200_reclaim_transition", "early_trend_rebuild", "post_regime_reclaim_watchlist"}:
                             skipped_ema200_transition += 1
                     elif reason in {"location_filter", "overextended_filter", "resistance_room_filter"}:
                         skipped_location += 1
+                        path_diagnostics["all_eligible_paths"]["skipped_location"] += 1
+                        path_diagnostics[setup_path_key]["skipped_location"] += 1
                         if reason == "overextended_filter":
                             skipped_overextended += 1
+                            path_diagnostics["all_eligible_paths"]["skipped_overextension"] += 1
+                            path_diagnostics[setup_path_key]["skipped_overextension"] += 1
                         if reason == "resistance_room_filter":
                             skipped_resistance_room += 1
                     elif reason == "blowoff_extension_filter":
                         skipped_location += 1
                         skipped_blowoff_extension += 1
-                    elif reason == "momentum_dynamics_filter":
+                        path_diagnostics["all_eligible_paths"]["skipped_location"] += 1
+                        path_diagnostics[setup_path_key]["skipped_location"] += 1
+                        path_diagnostics["all_eligible_paths"]["skipped_blowoff"] += 1
+                        path_diagnostics[setup_path_key]["skipped_blowoff"] += 1
+                    elif reason in {"momentum_dynamics_filter", "momentum_volume_filter", "momentum_trigger_type_filter"}:
                         skipped_trigger += 1
                         skipped_momentum_dynamics += 1
+                        path_diagnostics["all_eligible_paths"]["skipped_trigger"] += 1
+                        path_diagnostics[setup_path_key]["skipped_trigger"] += 1
                     elif reason == "trigger_filter":
                         skipped_trigger += 1
+                        path_diagnostics["all_eligible_paths"]["skipped_trigger"] += 1
+                        path_diagnostics[setup_path_key]["skipped_trigger"] += 1
                     else:
                         skipped_due_to_setup += 1
+                        path_diagnostics["all_eligible_paths"]["skipped_setup"] += 1
+                        path_diagnostics[setup_path_key]["skipped_setup"] += 1
 
                     decision_log.append(
                         SkippedEntrySignal(
@@ -338,7 +448,7 @@ class BacktestEngine:
                             trigger_state=trigger.trigger_state,
                             trigger_score=trigger.trigger_score,
                             trend_state=setup.trend_state,
-                            setup_type="momentum_continuation" if config.strategy_mode == StrategyMode.MOMENTUM_CONTINUATION else "pullback_continuation",
+                            setup_type=setup.setup_type,
                             extension_state=location.extension_state,
                             support_distance_pct=location.distance_to_support_pct,
                             resistance_room_pct=location.resistance_room_pct,
@@ -353,7 +463,7 @@ class BacktestEngine:
                 entry_price = float(current_row["close"])
                 major_conditions = self._format_major_conditions(final_score, entry_gate, regime, location, trigger)
                 is_early_transition = setup.setup_status == "early_trend_transition"
-                setup_type = "momentum_continuation" if config.strategy_mode == StrategyMode.MOMENTUM_CONTINUATION else "pullback_continuation"
+                setup_type = setup.setup_type
                 entry_reason = (
                     f"Entry gate passed ({config.strategy_mode.value}). Score {final_score:.2f}/{entry_gate.score_threshold_used:.2f}; "
                     f"regime={regime.ema_stack_quality}, location={location.location_score:.1f}, trigger={trigger.trigger_type}."
@@ -406,6 +516,8 @@ class BacktestEngine:
                     momentum_continuation_entries += 1
                 if location.extension_state == "controlled_extension":
                     controlled_extension_entries += 1
+                path_diagnostics["all_eligible_paths"]["entries_triggered"] += 1
+                path_diagnostics[setup_path_key]["entries_triggered"] += 1
                 entries_triggered += 1
                 next_trade_id += 1
                 continue
@@ -570,6 +682,7 @@ class BacktestEngine:
             evaluated_bars=evaluated_bars,
             evaluation_start_date=evaluation_start_date,
             evaluation_end_date=evaluation_end_date,
+            path_diagnostics=path_diagnostics,
         )
 
     @staticmethod
@@ -707,6 +820,7 @@ class BacktestEngine:
             market_cap=bundle.metadata.market_cap,
             max_hold_days=self.settings.backtest_max_hold_days,
             config=config,
+            tested_setup_path="all_eligible_paths",
         )
         metrics = self._compute_metrics(sim.trades)
 
@@ -730,6 +844,7 @@ class BacktestEngine:
     def run_from_analysis(self, context: BacktestFromAnalysisRequest) -> BacktestFromAnalysisResponse:
         evaluation_window = normalize_window(context.backtest_history_window or "2y")
         visible_chart_window = normalize_window(context.visible_chart_window or evaluation_window)
+        tested_setup_path = self._normalize_tested_setup_path(context.tested_setup_path)
 
         if context.analysis_config is not None:
             config = context.analysis_config.model_copy(update={"lookback_window": evaluation_window})
@@ -741,7 +856,10 @@ class BacktestEngine:
                 strategy_mode=context.strategy_mode,
                 score_threshold=context.backtest_score_threshold,
             )
-        period = WINDOW_TO_PERIOD[config.lookback_window]
+        run_config = config
+        if tested_setup_path == "momentum_continuation" and config.strategy_mode != StrategyMode.MOMENTUM_CONTINUATION:
+            run_config = config.model_copy(update={"strategy_mode": StrategyMode.MOMENTUM_CONTINUATION})
+        period = WINDOW_TO_PERIOD[run_config.lookback_window]
         bundle = self.analysis_engine.data_service.get_market_data(config.ticker, market=config.market, period=period)
 
         sim = self._simulate(
@@ -749,7 +867,8 @@ class BacktestEngine:
             weekly=bundle.weekly,
             market_cap=bundle.metadata.market_cap,
             max_hold_days=self.settings.backtest_max_hold_days,
-            config=config,
+            config=run_config,
+            tested_setup_path=tested_setup_path,
         )
         metrics = self._compute_metrics(sim.trades)
         chart, markers, visible_start, visible_end = self._build_chart(bundle.daily, visible_chart_window, context.trade_plan, sim.trades)
@@ -766,10 +885,10 @@ class BacktestEngine:
             ticker=bundle.ticker,
             normalized_ticker=bundle.normalized_ticker,
             market=bundle.market,
-            window=config.lookback_window,
+            window=run_config.lookback_window,
             generated_from_analysis=True,
             analysis_as_of=context.analysis_as_of or date.today(),
-            analysis_config=config,
+            analysis_config=run_config,
             evaluation_history_window=evaluation_window,
             visible_chart_window=visible_chart_window,
             fetched_data_range_start=bundle.daily.index[0].date(),
@@ -784,8 +903,8 @@ class BacktestEngine:
             max_drawdown=metrics["max_drawdown"],
             average_hold_days=metrics["average_hold_days"],
             expectancy=metrics["expectancy"],
-            score_threshold_used=round(config.score_threshold, 2),
-            strategy_mode_used=config.strategy_mode,
+            score_threshold_used=round(run_config.score_threshold, 2),
+            strategy_mode_used=run_config.strategy_mode,
             warmup_bars_used=sim.warmup_bars_used,
             evaluated_bars=sim.evaluated_bars,
             visible_start=visible_start,
@@ -811,6 +930,9 @@ class BacktestEngine:
             early_transition_skip_share_pct=sim.early_transition_skip_share_pct,
             momentum_continuation_entries=sim.momentum_continuation_entries,
             controlled_extension_entries=sim.controlled_extension_entries,
+            tested_setup_path=tested_setup_path,
+            source_analysis_window=context.window,
+            path_diagnostics=sim.path_diagnostics,
             fib_mode="visual_only",
             fib_anchor_method="latest_snapshot_lookback_90",
             nearest_fib_level=round(nearest_fib_level, 4) if nearest_fib_level is not None else None,

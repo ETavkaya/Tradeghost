@@ -422,6 +422,7 @@ class BacktestFromAnalysisRequest(BaseModel):
     strategy_mode: StrategyMode | None = None
     backtest_history_window: str | None = None
     visible_chart_window: str | None = None
+    tested_setup_path: str | None = None
 
 
 class BacktestFromAnalysisResponse(BaseModel):
@@ -473,6 +474,9 @@ class BacktestFromAnalysisResponse(BaseModel):
     early_transition_skip_share_pct: float
     momentum_continuation_entries: int
     controlled_extension_entries: int
+    tested_setup_path: str = "all_eligible_paths"
+    source_analysis_window: str | None = None
+    path_diagnostics: dict[str, dict[str, int]] = Field(default_factory=dict)
     fib_mode: str = "visual_only"
     fib_anchor_method: str = "latest_snapshot_lookback_90"
     nearest_fib_level: float | None = None

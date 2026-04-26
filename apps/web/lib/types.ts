@@ -399,6 +399,12 @@ export type BacktestFromAnalysisRequest = {
   strategy_mode?: StrategyMode;
   backtest_history_window?: BacktestHistoryWindow;
   visible_chart_window?: AnalysisWindow;
+  tested_setup_path?:
+    | "all_eligible_paths"
+    | "pullback_continuation"
+    | "momentum_continuation"
+    | "value_rebuild"
+    | "second_breakout_attempt";
 };
 
 export type BacktestFromAnalysisResponse = {
@@ -450,6 +456,14 @@ export type BacktestFromAnalysisResponse = {
   early_transition_skip_share_pct: number;
   momentum_continuation_entries: number;
   controlled_extension_entries: number;
+  tested_setup_path:
+    | "all_eligible_paths"
+    | "pullback_continuation"
+    | "momentum_continuation"
+    | "value_rebuild"
+    | "second_breakout_attempt";
+  source_analysis_window: AnalysisWindow | null;
+  path_diagnostics: Record<string, Record<string, number>>;
   fib_mode: string;
   fib_anchor_method: string;
   nearest_fib_level: number | null;

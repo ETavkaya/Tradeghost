@@ -19,6 +19,12 @@ import {
 type ChartTab = "trades" | "decision";
 type DecisionFilter = "all" | "watchlist" | "threshold" | "regime" | "location" | "trigger";
 type ReviewStatus = "exploratory" | "candidate_strategy" | "issue_detected" | "approved_baseline";
+type TestedSetupPath =
+  | "all_eligible_paths"
+  | "pullback_continuation"
+  | "momentum_continuation"
+  | "value_rebuild"
+  | "second_breakout_attempt";
 
 function InfoHint({ label, text }: { label: string; text: string }) {
   return (
@@ -82,6 +88,7 @@ export default function BacktestPage() {
   const [decisionFilter, setDecisionFilter] = useState<DecisionFilter>("all");
   const [historyWindow, setHistoryWindow] = useState<BacktestHistoryWindow>("2y");
   const [visibleWindow, setVisibleWindow] = useState<BacktestHistoryWindow>("2y");
+  const [testedSetupPath, setTestedSetupPath] = useState<TestedSetupPath>("all_eligible_paths");
 
   const [threshold, setThreshold] = useState(60);
   const [regimeMode, setRegimeMode] = useState("medium");
@@ -143,6 +150,7 @@ export default function BacktestPage() {
     if (!result) return;
     setHistoryWindow(result.evaluation_history_window);
     setVisibleWindow(result.visible_chart_window as BacktestHistoryWindow);
+    setTestedSetupPath(result.tested_setup_path);
   }, [result]);
 
   const buildTunedConfig = (): AnalysisConfig | null => {
@@ -194,6 +202,7 @@ export default function BacktestPage() {
         strategy_mode: tunedConfig.strategy_mode,
         backtest_history_window: historyWindow,
         visible_chart_window: visibleWindow as AnalysisWindow,
+        tested_setup_path: testedSetupPath,
         trade_plan:
           analysis.chart.trade_plan_overlay ?? {
             bias: "neutral",
@@ -313,7 +322,17 @@ export default function BacktestPage() {
   const setupTypeInRun = useMemo(() => {
     if (!result) return "n/a";
     const found = result.trades_table.find((trade) => trade.setup_type)?.setup_type;
-    return found ?? (result.strategy_mode_used === "momentum_continuation" ? "momentum_continuation" : "pullback_continuation");
+    return found ?? testedSetupPath;
+  }, [result, testedSetupPath]);
+
+  const nvdaPathHint = useMemo(() => {
+    if (!result) return null;
+    if (result.normalized_ticker !== "NVDA") return null;
+    if (result.trades > 0) return null;
+    if (result.tested_setup_path !== "pullback_continuation") return null;
+    const locationSkips = result.skipped_location + result.skipped_overextended;
+    if (locationSkips === 0) return null;
+    return "NVDA is being tested with pullback logic. Most candidates are rejected by location/overextension because this stock behaves like a momentum continuation runner.";
   }, [result]);
 
   const tunedConfig = useMemo(() => buildTunedConfig(), [
@@ -375,6 +394,20 @@ export default function BacktestPage() {
               <option value="3y">3Y</option>
               <option value="4y">4Y</option>
               <option value="5y">5Y</option>
+            </select>
+          </label>
+          <label className="space-y-1 text-sm">
+            <InfoHint label="Tested Setup Path" text="Chooses which deterministic setup path is evaluated in this run." />
+            <select
+              value={testedSetupPath}
+              onChange={(event) => setTestedSetupPath(event.target.value as TestedSetupPath)}
+              className="h-10 w-full rounded-lg border border-stroke bg-bg px-3"
+            >
+              <option value="all_eligible_paths">All Eligible Paths</option>
+              <option value="pullback_continuation">Pullback Continuation</option>
+              <option value="momentum_continuation">Momentum Continuation</option>
+              <option value="value_rebuild">Value Rebuild</option>
+              <option value="second_breakout_attempt">Second Breakout Attempt</option>
             </select>
           </label>
           <StatCard label="Mode" value={analysis?.analysis_config.strategy_mode ?? "n/a"} />
@@ -457,7 +490,8 @@ export default function BacktestPage() {
         <>
           <Panel>
             <SectionTitle title="Backtest Scope" subtitle="Evaluation, fetched warmup, and visible windows are separated" />
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+              <StatCard label="Source Analysis Window" value={(result.source_analysis_window ?? result.window).toUpperCase()} />
               <StatCard label="Evaluation History" value={result.evaluation_history_window.toUpperCase()} />
               <StatCard label="Evaluation Range" value={`${result.evaluation_start} > ${result.evaluation_end}`} />
               <StatCard label="Fetched/Warmup Data" value={`${result.fetched_data_range_start} > ${result.fetched_data_range_end}`} />
@@ -503,7 +537,8 @@ export default function BacktestPage() {
             <SectionTitle title="Backtest Strategy Snapshot" subtitle="Shared AnalysisConfig + active deterministic gates used by this run" />
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <StatCard label="Strategy Mode" value={result.analysis_config.strategy_mode} />
-              <StatCard label="Setup Type Focus" value={setupTypeInRun.replaceAll("_", " ")} />
+              <StatCard label="Tested Setup Path" value={result.tested_setup_path.replaceAll("_", " ")} />
+              <StatCard label="Observed Setup Type" value={setupTypeInRun.replaceAll("_", " ")} />
               <StatCard label="Active Gates" value="threshold / regime / location / trigger / overextension" />
               <StatCard label="Entry Scope" value="deterministic shared analysis->backtest config" />
             </div>
@@ -515,6 +550,7 @@ export default function BacktestPage() {
               Fib used in entry: {result.fib_used_in_entry ? "yes" : "no"} | Fib used in exit: {result.fib_used_in_exit ? "yes" : "no"}.
               {result.fib_mode === "visual_only" ? " Fib levels are visual/current analysis only and are not used as historical backtest entry/exit rules." : ""}
             </div>
+            {nvdaPathHint ? <p className="mt-2 text-xs text-amber-300">{nvdaPathHint}</p> : null}
           </Panel>
 
           <Panel>
@@ -598,6 +634,25 @@ export default function BacktestPage() {
             <p className="mt-3 text-xs text-slate-300">
               Insight: {result.early_transition_skip_share_pct.toFixed(2)}% of skipped setups were EMA200 transition related.
             </p>
+            <div className="mt-3">
+              <p className="mb-2 text-sm text-slate-300">Setup Path Diagnostics</p>
+              <div className="grid gap-3 md:grid-cols-2">
+                {Object.entries(result.path_diagnostics).map(([path, diag]) => (
+                  <div key={path} className="rounded-lg border border-stroke/70 bg-panelSoft p-2 text-xs text-slate-300">
+                    <p className="font-semibold capitalize">{path.replaceAll("_", " ")}</p>
+                    <p>Candidates checked: {diag.candidates_checked ?? 0}</p>
+                    <p>Entries triggered: {diag.entries_triggered ?? 0}</p>
+                    <p>Threshold skips: {diag.skipped_threshold ?? 0}</p>
+                    <p>Regime skips: {diag.skipped_regime ?? 0}</p>
+                    <p>Location skips: {diag.skipped_location ?? 0}</p>
+                    <p>Trigger skips: {diag.skipped_trigger ?? 0}</p>
+                    <p>Overextension skips: {diag.skipped_overextension ?? 0}</p>
+                    <p>Blowoff skips: {diag.skipped_blowoff ?? 0}</p>
+                    <p>Setup skips: {diag.skipped_setup ?? 0}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
           </Panel>
           <TradesTable trades={result.trades_table} />
           <Panel>

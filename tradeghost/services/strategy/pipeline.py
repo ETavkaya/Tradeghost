@@ -95,6 +95,10 @@ def run_analysis_pipeline(
             "volume_ratio_20": entry_gate.volume_ratio_20,
             "extension_state": location.extension_state,
             "momentum_continuation_entry_allowed": entry_gate.momentum_continuation_entry_allowed,
+            "setup_type": setup_interpretation.setup_type,
+            "prior_breakout_failed": setup_interpretation.prior_breakout_failed,
+            "reclaim_attempt_count": setup_interpretation.reclaim_attempt_count,
+            "second_attempt_breakout_candidate": setup_interpretation.second_attempt_breakout_candidate,
             "reasoning_tags": setup_interpretation.reasoning_tags,
         },
     )

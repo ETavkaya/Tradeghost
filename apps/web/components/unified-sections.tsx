@@ -119,7 +119,8 @@ export function SwingPulseSectionCard({ analysis }: { analysis: CombinedAnalysis
         <Panel className="bg-panelSoft">
           <p className="text-xs text-slate-400">Setup Status</p>
           <p className="mt-1 text-sm font-semibold capitalize text-cyan">{setup.setup_status}</p>
-          <p className="mt-1 text-xs text-slate-300">Trend {setup.trend_state} | Pullback {setup.pullback_state}</p>
+          <p className="mt-1 text-xs text-slate-300">Type {setup.setup_type.replaceAll("_", " ")} | Trend {setup.trend_state}</p>
+          <p className="mt-1 text-xs text-slate-300">Pullback {setup.pullback_state} | 2nd attempt {setup.second_attempt_breakout_candidate ? "yes" : "no"}</p>
         </Panel>
         <Panel className="bg-panelSoft">
           <p className="text-xs text-slate-400">Location Detail</p>
@@ -163,6 +164,7 @@ export function ChartMapSectionCard({ analysis }: { analysis: CombinedAnalysisRe
         <Panel className="bg-panelSoft">
           <p className="text-xs text-slate-400">Nearest Fib Zone</p>
           <p className="mt-1 font-semibold">{map.nearest_fib_zone ?? "N/A"}</p>
+          <p className="mt-1 text-xs text-slate-300">Dist {map.distance_to_nearest_fib_pct?.toFixed(2) ?? "n/a"}% | Confluence {map.fib_ema_confluence_score?.toFixed(1) ?? "n/a"}</p>
         </Panel>
         <Panel className="bg-panelSoft">
           <p className="text-xs text-slate-400">State</p>
@@ -171,6 +173,18 @@ export function ChartMapSectionCard({ analysis }: { analysis: CombinedAnalysisRe
         <Panel className="bg-panelSoft">
           <p className="text-xs text-slate-400">Candle Confirmation</p>
           <p className="mt-1 text-sm text-slate-200">{map.candle_confirmation_summary}</p>
+        </Panel>
+      </div>
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <Panel className="bg-panelSoft">
+          <p className="text-xs text-slate-400">Opportunity</p>
+          <p className="mt-1 text-sm text-slate-200">{map.opportunity_type?.replaceAll("_", " ") ?? "n/a"}</p>
+          <p className="mt-1 text-xs text-slate-300">{map.opportunity_interest_reason ?? "n/a"}</p>
+        </Panel>
+        <Panel className="bg-panelSoft">
+          <p className="text-xs text-slate-400">Risk</p>
+          <p className="mt-1 text-xs text-slate-300">{map.opportunity_risk_reason ?? "n/a"}</p>
+          <p className="mt-1 text-xs text-slate-300">Next fib target: {map.next_fib_target ?? "n/a"} | Target room: {map.fib_target_room_pct?.toFixed(2) ?? "n/a"}%</p>
         </Panel>
       </div>
       <div className="mt-3 overflow-x-auto rounded-xl border border-stroke">

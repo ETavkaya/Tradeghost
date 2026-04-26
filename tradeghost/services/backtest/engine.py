@@ -64,6 +64,7 @@ class _SimulationResult:
     trades: list[BacktestTrade]
     entries_considered: int
     entries_triggered: int
+    max_hold_days_used: int
     skipped_due_to_threshold: int
     skipped_due_to_setup: int
     skipped_regime: int
@@ -82,6 +83,11 @@ class _SimulationResult:
     early_transition_skip_share_pct: float
     momentum_continuation_entries: int
     controlled_extension_entries: int
+    exit_stop_loss_count: int
+    exit_take_profit_count: int
+    exit_timeout_count: int
+    exit_structure_break_count: int
+    exit_trailing_ema_count: int
     decision_log: list[SkippedEntrySignal]
     warmup_bars_used: int
     evaluated_bars: int
@@ -223,6 +229,11 @@ class BacktestEngine:
         early_trend_transition_wins = 0
         momentum_continuation_entries = 0
         controlled_extension_entries = 0
+        exit_stop_loss_count = 0
+        exit_take_profit_count = 0
+        exit_timeout_count = 0
+        exit_structure_break_count = 0
+        exit_trailing_ema_count = 0
         decision_log: list[SkippedEntrySignal] = []
         evaluated_bars = 0
         next_trade_id = 1
@@ -412,20 +423,24 @@ class BacktestEngine:
                 exit_price = position.stop_loss
                 result = "stop_exit"
                 exit_reason = "Price hit stop-loss level."
+                exit_stop_loss_count += 1
             elif high >= position.take_profit:
                 exit_price = position.take_profit
                 result = "target_exit"
                 exit_reason = "Price reached take-profit target."
+                exit_take_profit_count += 1
             elif final_score < (position.threshold_used * 0.7):
                 exit_price = close
                 result = "score_exit"
                 exit_reason = (
                     f"Score deterioration: {final_score:.2f} dropped below maintenance level {(position.threshold_used * 0.7):.2f}."
                 )
+                exit_structure_break_count += 1
             elif hold_days >= max_hold_days:
                 exit_price = close
                 result = "timeout_exit"
                 exit_reason = f"Max hold of {max_hold_days} bars reached."
+                exit_timeout_count += 1
 
             if exit_price is None:
                 continue
@@ -526,6 +541,7 @@ class BacktestEngine:
             trades=trades,
             entries_considered=entries_considered,
             entries_triggered=entries_triggered,
+            max_hold_days_used=max_hold_days,
             skipped_due_to_threshold=skipped_due_to_threshold,
             skipped_due_to_setup=skipped_due_to_setup,
             skipped_regime=skipped_regime,
@@ -544,6 +560,11 @@ class BacktestEngine:
             early_transition_skip_share_pct=round(early_transition_skip_share_pct, 2),
             momentum_continuation_entries=momentum_continuation_entries,
             controlled_extension_entries=controlled_extension_entries,
+            exit_stop_loss_count=exit_stop_loss_count,
+            exit_take_profit_count=exit_take_profit_count,
+            exit_timeout_count=exit_timeout_count,
+            exit_structure_break_count=exit_structure_break_count,
+            exit_trailing_ema_count=exit_trailing_ema_count,
             decision_log=decision_log,
             warmup_bars_used=warmup,
             evaluated_bars=evaluated_bars,
@@ -763,6 +784,7 @@ class BacktestEngine:
             visible_end=visible_end,
             entries_considered=sim.entries_considered,
             entries_triggered=sim.entries_triggered,
+            max_hold_days_used=sim.max_hold_days_used,
             skipped_due_to_threshold=sim.skipped_due_to_threshold,
             skipped_due_to_setup=sim.skipped_due_to_setup,
             skipped_regime=sim.skipped_regime,
@@ -781,6 +803,11 @@ class BacktestEngine:
             early_transition_skip_share_pct=sim.early_transition_skip_share_pct,
             momentum_continuation_entries=sim.momentum_continuation_entries,
             controlled_extension_entries=sim.controlled_extension_entries,
+            exit_stop_loss_count=sim.exit_stop_loss_count,
+            exit_take_profit_count=sim.exit_take_profit_count,
+            exit_timeout_count=sim.exit_timeout_count,
+            exit_structure_break_count=sim.exit_structure_break_count,
+            exit_trailing_ema_count=sim.exit_trailing_ema_count,
             trades_table=sim.trades,
             skipped_signals_sample=decision_log_sample,
             decision_log_sample=decision_log_sample,

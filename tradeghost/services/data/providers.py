@@ -12,6 +12,8 @@ class MarketMetadata:
     market_cap: float | None
     sector: str | None
     industry: str | None
+    price_to_book: float | None = None
+    price_to_earnings: float | None = None
 
 
 class MarketDataProvider(ABC):
@@ -98,4 +100,6 @@ class YFinanceMarketDataProvider(MarketDataProvider):
             market_cap=info.get("marketCap"),
             sector=info.get("sector"),
             industry=info.get("industry"),
+            price_to_book=info.get("priceToBook"),
+            price_to_earnings=info.get("trailingPE"),
         )

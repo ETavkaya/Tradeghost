@@ -22,6 +22,7 @@ const recommendedDurationByCategory: Record<ScannerCategory, ScannerDuration> = 
   trend_mode: "2y",
   build_up: "2y",
   momentum_mode: "1y",
+  value_rebuild: "2y",
   overextended: "1y",
 };
 
@@ -29,6 +30,7 @@ const rationaleByCategory: Record<ScannerCategory, string> = {
   trend_mode: "2Y is recommended to evaluate continuation quality with enough context.",
   build_up: "2Y is recommended to evaluate EMA200 reclaim/rebuild behavior before breakout.",
   momentum_mode: "1Y is recommended to prioritize recent expansion dynamics while preserving enough trend context.",
+  value_rebuild: "2Y is recommended so rebuild and valuation-recovery structure can be observed with enough context.",
   overextended: "1Y is recommended to focus on recent stretched moves and caution zones.",
 };
 
@@ -47,6 +49,11 @@ const categoryDefinition: Record<ScannerCategory, { title: string; desc: string;
     title: "Momentum Mode",
     desc: "Stocks already breaking out or expanding with strong structure and improving score dynamics.",
     bias: "expansion / continuation bias",
+  },
+  value_rebuild: {
+    title: "Value Rebuild / Cheap Reversal",
+    desc: "Potentially cheap, washed-out names rebuilding above EMA100/EMA200 with improving structure and confluence.",
+    bias: "rebuild / reversal bias",
   },
   overextended: {
     title: "Overextended",
@@ -348,6 +355,7 @@ export default function ScannerPage() {
               <option value="trend_mode">Trend Mode</option>
               <option value="build_up">Build-up</option>
               <option value="momentum_mode">Momentum Mode</option>
+              <option value="value_rebuild">Value Rebuild</option>
               <option value="overextended">Overextended</option>
             </select>
           </label>
@@ -514,6 +522,11 @@ export default function ScannerPage() {
                     <th className="px-2 py-2">Momentum Fit</th>
                     <th className="px-2 py-2">Ext State</th>
                     <th className="px-2 py-2">Mom Candidate</th>
+                    <th className="px-2 py-2">Opportunity</th>
+                    <th className="px-2 py-2">Fib Confluence</th>
+                    <th className="px-2 py-2">Fib Room%</th>
+                    <th className="px-2 py-2">P/B</th>
+                    <th className="px-2 py-2">P/E</th>
                     <th className="px-2 py-2">Priority</th>
                     <th className="px-2 py-2">Category</th>
                     <th className="px-2 py-2">Reason</th>
@@ -529,7 +542,7 @@ export default function ScannerPage() {
                   {sortedResults.length === 0 ? (
                     <tr>
                       <td className="sticky left-0 z-10 bg-panel px-2 py-3 text-slate-400 shadow-[8px_0_12px_-12px_rgba(0,0,0,0.6)]">No candidates found for selected scope.</td>
-                      <td className="px-2 py-3 text-slate-400" colSpan={21}></td>
+                      <td className="px-2 py-3 text-slate-400" colSpan={26}></td>
                     </tr>
                   ) : (
                     sortedResults.map((row) => (
@@ -552,6 +565,11 @@ export default function ScannerPage() {
                         <td className="px-2 py-2">{row.momentum_fit_score.toFixed(2)}</td>
                         <td className="px-2 py-2">{row.extension_state.replaceAll("_", " ")}</td>
                         <td className="px-2 py-2">{row.momentum_continuation_candidate ? "yes" : "no"}</td>
+                        <td className="px-2 py-2">{row.opportunity_type.replaceAll("_", " ")}</td>
+                        <td className="px-2 py-2">{row.fib_ema_confluence_score?.toFixed(1) ?? "n/a"}</td>
+                        <td className="px-2 py-2">{row.fib_target_room_pct?.toFixed(2) ?? "n/a"}</td>
+                        <td className="px-2 py-2">{row.price_to_book?.toFixed(2) ?? "n/a"}</td>
+                        <td className="px-2 py-2">{row.price_to_earnings?.toFixed(2) ?? "n/a"}</td>
                         <td className="px-2 py-2 capitalize">{row.priority}</td>
                         <td className="px-2 py-2">{row.category_tag.replaceAll("_", " ")}</td>
                         <td className="max-w-[260px] px-2 py-2 text-xs text-slate-300">{row.short_reason}</td>

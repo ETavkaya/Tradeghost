@@ -179,6 +179,10 @@ class SetupInterpretation(BaseModel):
     resistance_test_state: str
     trigger_state: str
     trigger_type: str
+    setup_type: str = "pullback"
+    prior_breakout_failed: bool = False
+    reclaim_attempt_count: int = 0
+    second_attempt_breakout_candidate: bool = False
     setup_status: str
     reasoning_tags: list[str] = Field(default_factory=list)
 
@@ -222,8 +226,17 @@ class ChartMapSection(BaseModel):
     nearest_support: float | None
     nearest_resistance: float | None
     nearest_fib_zone: str | None
+    nearest_fib_level: float | None = None
+    distance_to_nearest_fib_pct: float | None = None
+    fib_ema_confluence_score: float | None = None
+    fib_support_confluence: bool = False
+    next_fib_target: str | None = None
+    fib_target_room_pct: float | None = None
     market_state: str
     candle_confirmation_summary: str
+    opportunity_type: str | None = None
+    opportunity_interest_reason: str | None = None
+    opportunity_risk_reason: str | None = None
     detected_levels: list[DetectedLevel]
 
 
@@ -441,6 +454,7 @@ class BacktestFromAnalysisResponse(BaseModel):
     visible_end: date
     entries_considered: int
     entries_triggered: int
+    max_hold_days_used: int
     skipped_due_to_threshold: int
     skipped_due_to_setup: int
     skipped_regime: int
@@ -459,6 +473,11 @@ class BacktestFromAnalysisResponse(BaseModel):
     early_transition_skip_share_pct: float
     momentum_continuation_entries: int
     controlled_extension_entries: int
+    exit_stop_loss_count: int = 0
+    exit_take_profit_count: int = 0
+    exit_timeout_count: int = 0
+    exit_structure_break_count: int = 0
+    exit_trailing_ema_count: int = 0
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     trades_table: list[BacktestTrade]
     skipped_signals_sample: list[SkippedEntrySignal]
@@ -471,6 +490,7 @@ class ScannerCategory(str, Enum):
     TREND_MODE = "trend_mode"
     BUILD_UP = "build_up"
     MOMENTUM_MODE = "momentum_mode"
+    VALUE_REBUILD = "value_rebuild"
     OVEREXTENDED = "overextended"
 
 
@@ -547,11 +567,23 @@ class ScannerResult(BaseModel):
     score_delta_short: float
     score_delta_medium: float
     score_dynamics_state: str
+    opportunity_type: str
     momentum_fit_score: float
     momentum_continuation_candidate: bool
+    second_attempt_breakout_candidate: bool = False
     trend_state: str
     setup_status: str
     extension_state: str
+    nearest_fib_level: str | None = None
+    distance_to_nearest_fib_pct: float | None = None
+    fib_ema_confluence_score: float | None = None
+    fib_support_confluence: bool = False
+    next_fib_target: str | None = None
+    fib_target_room_pct: float | None = None
+    price_to_book: float | None = None
+    price_to_earnings: float | None = None
+    market_cap: float | None = None
+    sector: str | None = None
     price_vs_ema200_pct: float
     ema200_slope_state: str
     ema_stack_alignment: str

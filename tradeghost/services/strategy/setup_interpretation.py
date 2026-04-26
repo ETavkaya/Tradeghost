@@ -25,6 +25,9 @@ def classify_setup(
     ema200 = float(snapshot["ema_200"])
 
     transition_codes = {"ema200_reclaim_transition", "early_trend_rebuild", "post_regime_reclaim_watchlist"}
+    prior_breakout_failed = bool(snapshot.get("prior_breakout_failed", False))
+    reclaim_attempt_count = int(snapshot.get("reclaim_attempt_count", 0))
+    second_attempt_breakout = bool(snapshot.get("second_attempt_breakout_candidate", False))
 
     if regime.regime_reason_code == "ema200_reclaim_transition":
         trend_state = "early_trend_transition"
@@ -95,6 +98,20 @@ def classify_setup(
         tags.append("breakout_not_confirmed")
     if regime.regime_reason_code in transition_codes:
         tags.append("ema200_reclaim_transition")
+    if second_attempt_breakout:
+        tags.append("second_attempt_breakout")
+    if prior_breakout_failed:
+        tags.append("prior_breakout_failed")
+
+    setup_type = "pullback"
+    if second_attempt_breakout:
+        setup_type = "second_attempt_breakout"
+    elif trend_state in {"bullish_trend", "weakening_trend"} and location.extension_state in {"controlled_extension", "normal"} and trigger.trigger_state in {"pending", "confirmed"}:
+        setup_type = "momentum_continuation"
+    elif trend_state in {"early_trend_rebuild", "early_trend_transition"} and pullback_state in {"at_ema100", "at_ema50"}:
+        setup_type = "value_rebuild"
+    elif setup_status in {"watchlist", "early_trend_transition"}:
+        setup_type = "build_up"
 
     return SetupInterpretation(
         trend_state=trend_state,
@@ -103,6 +120,10 @@ def classify_setup(
         resistance_test_state=resistance_test_state,
         trigger_state=trigger.trigger_state,
         trigger_type=trigger.trigger_type,
+        setup_type=setup_type,
+        prior_breakout_failed=prior_breakout_failed,
+        reclaim_attempt_count=reclaim_attempt_count,
+        second_attempt_breakout_candidate=second_attempt_breakout,
         setup_status=setup_status,
         reasoning_tags=tags,
     )

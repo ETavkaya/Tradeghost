@@ -423,6 +423,7 @@ export default function BacktestPage() {
             <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <StatCard label="Warmup Bars" value={`${result.warmup_bars_used}`} />
               <StatCard label="Evaluated Bars" value={`${result.evaluated_bars}`} />
+              <StatCard label="Max Hold Days Used" value={`${result.max_hold_days_used}`} />
               <StatCard label="Decision Rows (sample)" value={`${result.decision_log_sample.length}`} />
               <StatCard label="Rendered Decision Markers" value={`${renderedDecisionMarkerCount}`} />
             </div>
@@ -518,6 +519,13 @@ export default function BacktestPage() {
               <StatCard label="Early Transition Entries" value={`${result.early_trend_transition_entries}`} />
               <StatCard label="Momentum Entries" value={`${result.momentum_continuation_entries}`} />
               <StatCard label="Controlled Ext Entries" value={`${result.controlled_extension_entries}`} />
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              <StatCard label="Exit: Stop Loss" value={`${result.exit_stop_loss_count}`} />
+              <StatCard label="Exit: Take Profit" value={`${result.exit_take_profit_count}`} />
+              <StatCard label="Exit: Timeout" value={`${result.exit_timeout_count}`} />
+              <StatCard label="Exit: Structure Break" value={`${result.exit_structure_break_count}`} />
+              <StatCard label="Exit: Trailing EMA" value={`${result.exit_trailing_ema_count}`} />
             </div>
             <p className="mt-3 text-xs text-slate-300">
               Insight: {result.early_transition_skip_share_pct.toFixed(2)}% of skipped setups were EMA200 transition related.

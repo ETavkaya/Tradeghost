@@ -232,6 +232,8 @@ def compute_indicator_snapshot(
         "bb_lower": float(bb["lower"].iloc[-1]),
         "bb_bandwidth": float(bb["bandwidth"].iloc[-1]),
         "fibonacci": fib,
+        "major_swing_high": float(high.tail(90).max()),
+        "major_swing_low": float(low.tail(90).min()),
         "range_pos_52w": range_position_52w(close),
         "volume": vol,
         "support_resistance": sr,
@@ -240,4 +242,30 @@ def compute_indicator_snapshot(
         "market_cap": float(market_cap) if market_cap else None,
         "weekly_trend_aligned": bool(weekly_ema_20.iloc[-1] > weekly_ema_50.iloc[-1]),
     }
+
+    # Deterministic breakout/reclaim attempt diagnostics for setup interpretation.
+    lookback = min(120, len(close))
+    local_close = close.tail(lookback).reset_index(drop=True)
+    local_high = high.tail(lookback).reset_index(drop=True)
+    if len(local_close) >= 30:
+        attempt_indices: list[int] = []
+        failed_count = 0
+        for i in range(20, len(local_close)):
+            prior_high = float(local_high.iloc[max(0, i - 20):i].max())
+            if local_close.iloc[i] > prior_high:
+                attempt_indices.append(i)
+                future_end = min(len(local_close), i + 8)
+                # Failed breakout if price falls back below prior breakout level quickly.
+                if future_end > i + 1 and float(local_close.iloc[i + 1:future_end].min()) < prior_high:
+                    failed_count += 1
+        prior_failed = failed_count > 0
+        reclaim_attempt_count = len(attempt_indices)
+        second_attempt_breakout = prior_failed and reclaim_attempt_count >= 2 and bool(local_close.iloc[-1] >= local_close.iloc[-2])
+        snapshot["prior_breakout_failed"] = bool(prior_failed)
+        snapshot["reclaim_attempt_count"] = int(reclaim_attempt_count)
+        snapshot["second_attempt_breakout_candidate"] = bool(second_attempt_breakout)
+    else:
+        snapshot["prior_breakout_failed"] = False
+        snapshot["reclaim_attempt_count"] = 0
+        snapshot["second_attempt_breakout_candidate"] = False
     return snapshot

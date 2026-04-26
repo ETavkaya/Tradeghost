@@ -60,6 +60,20 @@ class AnalysisEngine:
             return "Mixed setup. Wait for stronger trend and momentum alignment."
         return "Weak setup. Risk dominates the reward profile under current rules."
 
+    @staticmethod
+    def _score_dynamics_state(snapshot: dict[str, Any]) -> str:
+        rsi14 = float(snapshot.get("rsi", 50.0))
+        macd_hist = float(snapshot.get("macd_hist", 0.0))
+        if macd_hist >= 0.2 and rsi14 >= 60:
+            return "accelerating"
+        if macd_hist >= 0.05 and rsi14 >= 52:
+            return "improving"
+        if macd_hist <= -0.2 and rsi14 <= 42:
+            return "deteriorating"
+        if macd_hist <= -0.05 or rsi14 <= 48:
+            return "weakening"
+        return "stable"
+
     def analyze_combined(
         self,
         ticker: str,
@@ -103,6 +117,13 @@ class AnalysisEngine:
             config=analysis_config,
         )
         snapshot = pipeline.snapshot
+        snapshot["fundamentals"] = {
+            "market_cap": bundle.metadata.market_cap,
+            "sector": bundle.metadata.sector,
+            "industry": bundle.metadata.industry,
+            "price_to_book": bundle.metadata.price_to_book,
+            "price_to_earnings": bundle.metadata.price_to_earnings,
+        }
         interpreted = pipeline.interpreted
         category_scores = pipeline.category_scores
         final_score = pipeline.final_score
@@ -141,8 +162,27 @@ class AnalysisEngine:
 
         fib = snapshot.get("fibonacci", {})
         nearest_fib = None
+        nearest_fib_level = None
+        distance_to_nearest_fib_pct = None
+        next_fib_target = None
+        fib_target_room_pct = None
         if fib:
             nearest_fib = min(fib.keys(), key=lambda key: abs(self._safe_float(fib[key]) - close))
+            nearest_fib_level = self._safe_float(fib.get(nearest_fib))
+            distance_to_nearest_fib_pct = abs((close - nearest_fib_level) / max(close, 0.01)) * 100
+            above = sorted([(name, self._safe_float(val)) for name, val in fib.items() if self._safe_float(val) > close], key=lambda x: x[1])
+            if above:
+                next_fib_target = above[0][0]
+                fib_target_room_pct = ((above[0][1] - close) / max(close, 0.01)) * 100
+
+        fib_ema_confluence_score = 0.0
+        fib_support_confluence = False
+        if nearest_fib_level is not None:
+            dist_ema100 = abs((ema100 - nearest_fib_level) / max(nearest_fib_level, 0.01)) * 100
+            dist_ema200 = abs((ema200 - nearest_fib_level) / max(nearest_fib_level, 0.01)) * 100
+            dist_support = abs((nearest_support - nearest_fib_level) / max(nearest_fib_level, 0.01)) * 100
+            fib_ema_confluence_score = max(0.0, 100.0 - (dist_ema100 * 18.0) - (dist_ema200 * 18.0) - (dist_support * 12.0))
+            fib_support_confluence = dist_support <= 1.5
 
         breakout = bool(snapshot.get("breakout_candidate", False))
         channel_pct = (nearest_resistance - nearest_support) / max(close, 0.01)
@@ -157,6 +197,20 @@ class AnalysisEngine:
         candle_summary = "No clean candle confirmation." if pattern == "none" else f"Pattern confirmation: {pattern}."
         stack_ok = ema20 > ema50 > ema100 > ema200
         above_200 = close > ema200
+        score_dynamics = self._score_dynamics_state(snapshot)
+
+        setup_type = setup_interpretation.setup_type
+        opportunity_type = setup_type
+        if setup_type == "pullback" and location.extension_state == "controlled_extension":
+            opportunity_type = "momentum_continuation"
+        interest_reason = (
+            f"{opportunity_type.replace('_', ' ')} with dynamics={score_dynamics}, "
+            f"confluence={fib_ema_confluence_score:.1f}, trigger={trigger.trigger_type}."
+        )
+        risk_reason = (
+            f"Risk from extension={location.extension_state}, resistance room={location.resistance_room_pct:.2f}%, "
+            f"regime={regime.regime_reason_code}."
+        )
         ema_summary = (
             f"Price is {((close - ema20) / max(ema20, 0.01)) * 100:.2f}% vs EMA20 and "
             f"{((close - ema50) / max(ema50, 0.01)) * 100:.2f}% vs EMA50, "
@@ -198,8 +252,17 @@ class AnalysisEngine:
                 nearest_support=nearest_support,
                 nearest_resistance=nearest_resistance,
                 nearest_fib_zone=nearest_fib,
+                nearest_fib_level=nearest_fib_level,
+                distance_to_nearest_fib_pct=round(distance_to_nearest_fib_pct, 2) if distance_to_nearest_fib_pct is not None else None,
+                fib_ema_confluence_score=round(fib_ema_confluence_score, 2),
+                fib_support_confluence=fib_support_confluence,
+                next_fib_target=next_fib_target,
+                fib_target_room_pct=round(fib_target_room_pct, 2) if fib_target_room_pct is not None else None,
                 market_state=market_state,
                 candle_confirmation_summary=candle_summary,
+                opportunity_type=opportunity_type,
+                opportunity_interest_reason=interest_reason,
+                opportunity_risk_reason=risk_reason,
                 detected_levels=[
                     DetectedLevel(level_name="Support", value=nearest_support, level_type="support"),
                     DetectedLevel(level_name="Resistance", value=nearest_resistance, level_type="resistance"),
@@ -219,8 +282,10 @@ class AnalysisEngine:
             interpreted_signals=interpreted["signals"],
             indicator_summary=self._sanitize(snapshot),
             trade_plan_summary=(
+                f"Opportunity {opportunity_type.replace('_', ' ')}. "
                 f"Bias {trade_plan.bias}. Entry {trade_plan.entry_zone[0]:.2f}-{trade_plan.entry_zone[1]:.2f}, "
-                f"SL {trade_plan.stop_loss:.2f}, TP1 {trade_plan.take_profit_1:.2f}, TP2 {trade_plan.take_profit_2:.2f}."
+                f"SL {trade_plan.stop_loss:.2f}, TP1 {trade_plan.take_profit_1:.2f}, TP2 {trade_plan.take_profit_2:.2f}. "
+                f"Confluence {fib_ema_confluence_score:.1f}, next fib target {next_fib_target or 'n/a'}."
             ),
         )
 

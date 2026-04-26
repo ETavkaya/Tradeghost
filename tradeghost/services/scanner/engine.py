@@ -59,6 +59,7 @@ CATEGORY_RECOMMENDED_DURATION: dict[ScannerCategory, ScannerDuration] = {
     ScannerCategory.TREND_MODE: ScannerDuration.TWO_YEAR,
     ScannerCategory.BUILD_UP: ScannerDuration.TWO_YEAR,
     ScannerCategory.MOMENTUM_MODE: ScannerDuration.ONE_YEAR,
+    ScannerCategory.VALUE_REBUILD: ScannerDuration.TWO_YEAR,
     ScannerCategory.OVEREXTENDED: ScannerDuration.ONE_YEAR,
 }
 
@@ -89,6 +90,16 @@ class _LevelTests:
 class _Eligibility:
     strict: bool
     relaxed: bool
+
+
+@dataclass
+class _Confluence:
+    nearest_fib_level: str | None
+    distance_to_nearest_fib_pct: float | None
+    fib_ema_confluence_score: float
+    fib_support_confluence: bool
+    next_fib_target: str | None
+    fib_target_room_pct: float | None
 
 
 class ScannerEngine:
@@ -165,7 +176,36 @@ class ScannerEngine:
             repeated_test_count=int(repeated_tests),
         )
 
-    def _category_eligibility(self, *, category: ScannerCategory, regime, location, setup, trigger, dynamics: _ScoreDynamics, snapshot: dict) -> _Eligibility:
+    @staticmethod
+    def _fib_confluence(snapshot: dict) -> _Confluence:
+        close = float(snapshot.get("close", 0.0))
+        fib = snapshot.get("fibonacci", {}) or {}
+        if not fib:
+            return _Confluence(None, None, 0.0, False, None, None)
+        nearest_name = min(fib.keys(), key=lambda key: abs(float(fib[key]) - close))
+        nearest_val = float(fib[nearest_name])
+        dist_pct = abs((close - nearest_val) / max(close, 0.01)) * 100
+        ema100 = float(snapshot.get("ema_100", close))
+        ema200 = float(snapshot.get("ema_200", close))
+        support = float(snapshot.get("support_resistance", {}).get("support", close))
+        dist_ema100 = abs((ema100 - nearest_val) / max(nearest_val, 0.01)) * 100
+        dist_ema200 = abs((ema200 - nearest_val) / max(nearest_val, 0.01)) * 100
+        dist_support = abs((support - nearest_val) / max(nearest_val, 0.01)) * 100
+        score = max(0.0, 100.0 - (dist_pct * 15.0) - (dist_ema100 * 20.0) - (dist_ema200 * 20.0) - (dist_support * 12.0))
+        fib_support_confluence = dist_support <= 1.5
+        above = sorted([(name, float(val)) for name, val in fib.items() if float(val) > close], key=lambda x: x[1])
+        target_name = above[0][0] if above else None
+        target_room = ((above[0][1] - close) / max(close, 0.01) * 100) if above else None
+        return _Confluence(
+            nearest_fib_level=str(nearest_name),
+            distance_to_nearest_fib_pct=round(dist_pct, 2),
+            fib_ema_confluence_score=round(score, 2),
+            fib_support_confluence=fib_support_confluence,
+            next_fib_target=target_name,
+            fib_target_room_pct=round(target_room, 2) if target_room is not None else None,
+        )
+
+    def _category_eligibility(self, *, category: ScannerCategory, regime, location, setup, trigger, dynamics: _ScoreDynamics, snapshot: dict, confluence: _Confluence) -> _Eligibility:
         breakout_candidate = bool(snapshot.get("breakout_candidate", False))
         compression = self._compression_state(location.support_distance_pct, location.resistance_room_pct)
         improving = dynamics.score_dynamics_state in {"improving", "accelerating"}
@@ -205,6 +245,21 @@ class ScannerEngine:
                 (regime.price_above_ema200 and setup.trend_state in {"bullish_trend", "weakening_trend", "early_trend_transition"})
                 or breakout_candidate
                 or improving
+            )
+            return _Eligibility(strict=strict, relaxed=relaxed)
+
+        if category == ScannerCategory.VALUE_REBUILD:
+            p2b = snapshot.get("fundamentals", {}).get("price_to_book")
+            cheap = p2b is not None and float(p2b) < 1.0
+            deep_value = p2b is not None and float(p2b) < 0.7
+            near_ema100_200 = abs(location.distance_to_ema100_pct) <= 4.0 or abs(location.distance_to_ema200_pct) <= 6.0
+            reclaiming = regime.bars_since_reclaim is not None and regime.bars_since_reclaim <= 25
+            strict = bool((cheap or deep_value) and (near_ema100_200 or reclaiming) and dynamics.score_dynamics_state in {"improving", "accelerating"})
+            relaxed = bool(
+                near_ema100_200
+                or reclaiming
+                or confluence.fib_ema_confluence_score >= 45.0
+                or dynamics.score_dynamics_state in {"improving", "accelerating"}
             )
             return _Eligibility(strict=strict, relaxed=relaxed)
 
@@ -303,7 +358,7 @@ class ScannerEngine:
             score_dynamics_state=self._classify_score_dynamics(short_delta, medium_delta),
         )
 
-    def _score_for_category(self, category: ScannerCategory, final_score: float, regime, location, setup, trigger, dynamics: _ScoreDynamics, snapshot: dict, volume_ratio_20: float) -> _Eval:
+    def _score_for_category(self, category: ScannerCategory, final_score: float, regime, location, setup, trigger, dynamics: _ScoreDynamics, snapshot: dict, volume_ratio_20: float, confluence: _Confluence) -> _Eval:
         dynamics_boost = max(0.0, (dynamics.score_delta_short * 1.5) + (dynamics.score_delta_medium * 0.8))
         dynamics_penalty = max(0.0, ((-dynamics.score_delta_short) * 1.5) + ((-dynamics.score_delta_medium) * 0.8))
         breakout_candidate = bool(snapshot.get("breakout_candidate", False))
@@ -316,6 +371,7 @@ class ScannerEngine:
                 + (10.0 if regime.ema_stack_alignment in {"partial_bullish", "stacked_bullish"} else 0.0)
                 + (6.0 if volume_ratio_20 >= 1.1 else 0.0)
                 + (0.35 * dynamics_boost)
+                + (0.20 * confluence.fib_ema_confluence_score)
                 - (10.0 if location.overextended_flag else 0.0)
                 - (0.4 * dynamics_penalty)
             )
@@ -336,6 +392,7 @@ class ScannerEngine:
                 + (8.0 if setup.setup_status in {"watchlist", "early_trend_transition"} else 0.0)
                 + (5.0 if volume_ratio_20 >= 1.05 else 0.0)
                 + (0.55 * dynamics_boost)
+                + (0.35 * confluence.fib_ema_confluence_score)
                 - max(0.0, abs(regime.price_vs_ema200_pct) - 5.0) * 2.2
                 - max(0.0, location.support_distance_pct - 6.0) * 2.4
             )
@@ -357,6 +414,7 @@ class ScannerEngine:
                 + (8.0 if breakout_candidate or trigger.trigger_type in {"breakout_confirmation", "pullback_continuation"} else 0.0)
                 + (8.0 if volume_ratio_20 >= 1.15 else 0.0)
                 + (0.8 * dynamics_boost)
+                + (0.20 * confluence.fib_ema_confluence_score)
                 - extension_penalty
                 - blowoff_penalty
                 - (0.25 * dynamics_penalty)
@@ -368,6 +426,41 @@ class ScannerEngine:
                 score=max(0.0, min(100.0, score)),
                 tag="momentum_mode",
                 reason=f"Expansion candidate with bullish structure and {dynamics.score_dynamics_state} dynamics. {momentum_note}.",
+            )
+
+        if category == ScannerCategory.VALUE_REBUILD:
+            fundamentals = snapshot.get("fundamentals", {})
+            p2b = fundamentals.get("price_to_book")
+            pe = fundamentals.get("price_to_earnings")
+            value_bonus = 0.0
+            if p2b is not None:
+                p2b_val = float(p2b)
+                if p2b_val < 0.5:
+                    value_bonus += 25.0
+                elif p2b_val < 0.7:
+                    value_bonus += 18.0
+                elif p2b_val < 1.0:
+                    value_bonus += 12.0
+            if pe is not None:
+                pe_val = float(pe)
+                if 0 < pe_val <= 12:
+                    value_bonus += 8.0
+                elif 12 < pe_val <= 18:
+                    value_bonus += 4.0
+            score = (
+                (0.35 * final_score)
+                + value_bonus
+                + (20.0 if abs(location.distance_to_ema200_pct) <= 6.0 or abs(location.distance_to_ema100_pct) <= 4.0 else 0.0)
+                + (10.0 if regime.bars_since_reclaim is not None and regime.bars_since_reclaim <= 25 else 0.0)
+                + (0.75 * dynamics_boost)
+                + (0.65 * confluence.fib_ema_confluence_score)
+                + (10.0 if confluence.fib_target_room_pct is not None and confluence.fib_target_room_pct >= 4.0 else 0.0)
+                - (0.4 * dynamics_penalty)
+            )
+            return _Eval(
+                score=max(0.0, min(100.0, score)),
+                tag="value_rebuild",
+                reason="Cheap/rebuild candidate with improving structure and fib/EMA confluence.",
             )
 
         score = (
@@ -426,7 +519,15 @@ class ScannerEngine:
                 setup = state.setup_interpretation
                 trigger = state.trigger
                 snapshot = state.snapshot
+                snapshot["fundamentals"] = {
+                    "market_cap": bundle.metadata.market_cap,
+                    "sector": bundle.metadata.sector,
+                    "price_to_book": bundle.metadata.price_to_book,
+                    "price_to_earnings": bundle.metadata.price_to_earnings,
+                }
+                fundamentals = snapshot.get("fundamentals", {})
                 volume_ratio_20 = float(snapshot.get("volume", {}).get("volume_ratio", 0.0))
+                confluence = self._fib_confluence(snapshot)
                 counts = self._level_test_counts(bundle.daily, snapshot)
                 dynamics = self._compute_score_dynamics(
                     daily=bundle.daily,
@@ -435,7 +536,7 @@ class ScannerEngine:
                     config=per_symbol_config,
                     current_score=float(state.final_score),
                 )
-                scored = self._score_for_category(req.category, state.final_score, regime, location, setup, trigger, dynamics, snapshot, volume_ratio_20)
+                scored = self._score_for_category(req.category, state.final_score, regime, location, setup, trigger, dynamics, snapshot, volume_ratio_20, confluence)
                 eligibility = self._category_eligibility(
                     category=req.category,
                     regime=regime,
@@ -444,6 +545,7 @@ class ScannerEngine:
                     trigger=trigger,
                     dynamics=dynamics,
                     snapshot=snapshot,
+                    confluence=confluence,
                 )
 
                 if req.use_custom_rules and req.custom_rules:
@@ -484,13 +586,25 @@ class ScannerEngine:
                     score_delta_short=dynamics.score_delta_short,
                     score_delta_medium=dynamics.score_delta_medium,
                     score_dynamics_state=dynamics.score_dynamics_state,
+                    opportunity_type=setup.setup_type,
                     momentum_fit_score=round(scored.score if req.category == ScannerCategory.MOMENTUM_MODE else 0.0, 2),
                     momentum_continuation_candidate=bool(
                         req.category == ScannerCategory.MOMENTUM_MODE and state.entry_gate.final_entry_decision
                     ),
+                    second_attempt_breakout_candidate=setup.second_attempt_breakout_candidate,
                     trend_state=setup.trend_state,
                     setup_status=setup.setup_status,
                     extension_state=location.extension_state,
+                    nearest_fib_level=confluence.nearest_fib_level,
+                    distance_to_nearest_fib_pct=confluence.distance_to_nearest_fib_pct,
+                    fib_ema_confluence_score=confluence.fib_ema_confluence_score,
+                    fib_support_confluence=confluence.fib_support_confluence,
+                    next_fib_target=confluence.next_fib_target,
+                    fib_target_room_pct=confluence.fib_target_room_pct,
+                    price_to_book=float(fundamentals.get("price_to_book")) if fundamentals.get("price_to_book") is not None else None,
+                    price_to_earnings=float(fundamentals.get("price_to_earnings")) if fundamentals.get("price_to_earnings") is not None else None,
+                    market_cap=float(fundamentals.get("market_cap")) if fundamentals.get("market_cap") is not None else None,
+                    sector=str(fundamentals.get("sector")) if fundamentals.get("sector") else None,
                     price_vs_ema200_pct=regime.price_vs_ema200_pct,
                     ema200_slope_state=regime.ema200_slope_state,
                     ema_stack_alignment=regime.ema_stack_alignment,

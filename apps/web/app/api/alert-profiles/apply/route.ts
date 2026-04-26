@@ -1,6 +1,6 @@
+import { NextRequest } from "next/server";
 import { proxyPost } from "@/app/api/_lib/proxy";
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   return proxyPost(request, "/alert-profiles/apply");
 }
-

@@ -1,7 +1,7 @@
 export type AnalysisWindow = "5d" | "1m" | "3m" | "6m" | "1y" | "2y" | "3y" | "4y" | "5y" | "10y";
 export type BacktestHistoryWindow = "1y" | "2y" | "3y" | "4y" | "5y";
 export type MarketCode = "us" | "bist";
-export type StrategyMode = "aggressive" | "balanced" | "conservative" | "custom";
+export type StrategyMode = "aggressive" | "balanced" | "conservative" | "momentum_continuation" | "custom";
 export type ScannerCategory = "trend_mode" | "build_up" | "momentum_mode" | "overextended";
 export type ScannerDuration = "1y" | "2y" | "3y" | "5y";
 export type ScannerUniverseScope = "full_universe" | "watchlist" | "capped_universe";
@@ -35,6 +35,22 @@ export type TriggerFilterSettings = {
   min_trigger_score: number;
 };
 
+export type ExtensionCapSettings = {
+  ema20_pct: number;
+  ema50_pct: number;
+  ema100_pct: number;
+  ema200_pct: number;
+};
+
+export type MomentumContinuationSettings = {
+  momentum_min_score: number;
+  momentum_min_volume_ratio: number;
+  controlled_extension_caps: ExtensionCapSettings;
+  blowoff_extension_caps: ExtensionCapSettings;
+  allowed_trigger_types: string[];
+  required_dynamics_state: string[];
+};
+
 export type AnalysisConfig = {
   ticker: string;
   market: MarketCode;
@@ -45,6 +61,7 @@ export type AnalysisConfig = {
   regime_filter: RegimeFilterSettings;
   location_filter: LocationFilterSettings;
   trigger_filter: TriggerFilterSettings;
+  momentum_continuation: MomentumContinuationSettings;
 };
 
 export type CategoryScores = {
@@ -146,6 +163,8 @@ export type LocationDiagnostics = {
   support_quality_score: number;
   pullback_depth: string;
   extension_state: string;
+  controlled_extension_flag: boolean;
+  blowoff_extension_flag: boolean;
   location_reason: string;
 };
 
@@ -176,6 +195,10 @@ export type EntryGateDiagnostics = {
   location_valid: boolean;
   trigger_valid: boolean;
   entry_quality_score: number;
+  transition_entry_allowed: boolean;
+  momentum_continuation_entry_allowed: boolean;
+  score_dynamics_state: string | null;
+  volume_ratio_20: number | null;
   final_entry_decision: boolean;
   skip_reason: string | null;
 };
@@ -291,6 +314,8 @@ export type BacktestTrade = {
   trend_state: string | null;
   setup_status: string | null;
   trigger_state: string | null;
+  setup_type: string | null;
+  extension_state: string | null;
   is_early_trend_transition: boolean;
   reasoning_tags: string[];
 };
@@ -320,6 +345,8 @@ export type SkippedEntrySignal = {
   trigger_state: string | null;
   trigger_score: number | null;
   trend_state: string | null;
+  setup_type: string | null;
+  extension_state: string | null;
   support_distance_pct: number | null;
   resistance_room_pct: number | null;
   price_vs_ema200_pct: number | null;
@@ -397,6 +424,8 @@ export type BacktestFromAnalysisResponse = {
   skipped_location: number;
   skipped_trigger: number;
   skipped_overextended: number;
+  skipped_blowoff_extension: number;
+  skipped_momentum_dynamics: number;
   skipped_resistance_room: number;
   skipped_ema200_transition: number;
   actionable_setups: number;
@@ -405,6 +434,8 @@ export type BacktestFromAnalysisResponse = {
   early_trend_transition_entries: number;
   early_trend_transition_wins: number;
   early_transition_skip_share_pct: number;
+  momentum_continuation_entries: number;
+  controlled_extension_entries: number;
   generated_at: string;
   trades_table: BacktestTrade[];
   skipped_signals_sample: SkippedEntrySignal[];
@@ -511,8 +542,11 @@ export type ScannerResult = {
   score_delta_short: number;
   score_delta_medium: number;
   score_dynamics_state: string;
+  momentum_fit_score: number;
+  momentum_continuation_candidate: boolean;
   trend_state: string;
   setup_status: string;
+  extension_state: string;
   price_vs_ema200_pct: number;
   ema200_slope_state: string;
   ema_stack_alignment: string;

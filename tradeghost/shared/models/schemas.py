@@ -12,6 +12,7 @@ class StrategyMode(str, Enum):
     AGGRESSIVE = "aggressive"
     BALANCED = "balanced"
     CONSERVATIVE = "conservative"
+    MOMENTUM_CONTINUATION = "momentum_continuation"
     CUSTOM = "custom"
 
 
@@ -32,6 +33,22 @@ class TriggerFilterSettings(BaseModel):
     min_trigger_score: float
 
 
+class ExtensionCapSettings(BaseModel):
+    ema20_pct: float
+    ema50_pct: float
+    ema100_pct: float
+    ema200_pct: float
+
+
+class MomentumContinuationSettings(BaseModel):
+    momentum_min_score: float
+    momentum_min_volume_ratio: float
+    controlled_extension_caps: ExtensionCapSettings
+    blowoff_extension_caps: ExtensionCapSettings
+    allowed_trigger_types: list[str] = Field(default_factory=list)
+    required_dynamics_state: list[str] = Field(default_factory=list)
+
+
 class AnalysisConfig(BaseModel):
     ticker: str
     market: MarketCode
@@ -42,6 +59,32 @@ class AnalysisConfig(BaseModel):
     regime_filter: RegimeFilterSettings
     location_filter: LocationFilterSettings
     trigger_filter: TriggerFilterSettings
+    momentum_continuation: MomentumContinuationSettings = Field(
+        default_factory=lambda: MomentumContinuationSettings(
+            momentum_min_score=70.0,
+            momentum_min_volume_ratio=1.15,
+            controlled_extension_caps=ExtensionCapSettings(
+                ema20_pct=10.0,
+                ema50_pct=14.0,
+                ema100_pct=20.0,
+                ema200_pct=26.0,
+            ),
+            blowoff_extension_caps=ExtensionCapSettings(
+                ema20_pct=15.0,
+                ema50_pct=22.0,
+                ema100_pct=30.0,
+                ema200_pct=38.0,
+            ),
+            allowed_trigger_types=[
+                "breakout_confirmation",
+                "pullback_continuation",
+                "reclaim_after_shakeout",
+                "strong_momentum_continuation",
+                "bullish_engulfing",
+            ],
+            required_dynamics_state=["improving", "accelerating"],
+        )
+    )
 
 
 class CategoryScores(BaseModel):
@@ -116,6 +159,8 @@ class LocationDiagnostics(BaseModel):
     support_quality_score: float
     pullback_depth: str
     extension_state: str
+    controlled_extension_flag: bool = False
+    blowoff_extension_flag: bool = False
     location_reason: str
 
 
@@ -147,6 +192,9 @@ class EntryGateDiagnostics(BaseModel):
     trigger_valid: bool
     entry_quality_score: float
     transition_entry_allowed: bool = False
+    momentum_continuation_entry_allowed: bool = False
+    score_dynamics_state: str | None = None
+    volume_ratio_20: float | None = None
     final_entry_decision: bool
     skip_reason: str | None = None
 
@@ -298,6 +346,8 @@ class BacktestTrade(BaseModel):
     trend_state: str | None = None
     setup_status: str | None = None
     trigger_state: str | None = None
+    setup_type: str | None = None
+    extension_state: str | None = None
     is_early_trend_transition: bool = False
     reasoning_tags: list[str] = Field(default_factory=list)
 
@@ -318,6 +368,8 @@ class SkippedEntrySignal(BaseModel):
     trigger_state: str | None = None
     trigger_score: float | None = None
     trend_state: str | None = None
+    setup_type: str | None = None
+    extension_state: str | None = None
     support_distance_pct: float | None = None
     resistance_room_pct: float | None = None
     price_vs_ema200_pct: float | None = None
@@ -395,6 +447,8 @@ class BacktestFromAnalysisResponse(BaseModel):
     skipped_location: int
     skipped_trigger: int
     skipped_overextended: int
+    skipped_blowoff_extension: int
+    skipped_momentum_dynamics: int
     skipped_resistance_room: int
     skipped_ema200_transition: int
     actionable_setups: int
@@ -403,6 +457,8 @@ class BacktestFromAnalysisResponse(BaseModel):
     early_trend_transition_entries: int
     early_trend_transition_wins: int
     early_transition_skip_share_pct: float
+    momentum_continuation_entries: int
+    controlled_extension_entries: int
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     trades_table: list[BacktestTrade]
     skipped_signals_sample: list[SkippedEntrySignal]
@@ -491,8 +547,11 @@ class ScannerResult(BaseModel):
     score_delta_short: float
     score_delta_medium: float
     score_dynamics_state: str
+    momentum_fit_score: float
+    momentum_continuation_candidate: bool
     trend_state: str
     setup_status: str
+    extension_state: str
     price_vs_ema200_pct: float
     ema200_slope_state: str
     ema_stack_alignment: str

@@ -53,6 +53,8 @@ class _Position:
     trend_state: str
     setup_status: str
     trigger_state: str
+    setup_type: str
+    extension_state: str
     is_early_trend_transition: bool
     reasoning_tags: list[str]
 
@@ -68,6 +70,8 @@ class _SimulationResult:
     skipped_location: int
     skipped_trigger: int
     skipped_overextended: int
+    skipped_blowoff_extension: int
+    skipped_momentum_dynamics: int
     skipped_resistance_room: int
     skipped_ema200_transition: int
     actionable_setups: int
@@ -76,6 +80,8 @@ class _SimulationResult:
     early_trend_transition_entries: int
     early_trend_transition_wins: int
     early_transition_skip_share_pct: float
+    momentum_continuation_entries: int
+    controlled_extension_entries: int
     decision_log: list[SkippedEntrySignal]
     warmup_bars_used: int
     evaluated_bars: int
@@ -111,6 +117,7 @@ class BacktestEngine:
             f"Support distance: {location.support_distance_pct:.2f}%",
             f"Resistance room: {location.resistance_distance_pct:.2f}%",
             f"Overextended: {'yes' if location.overextended_flag else 'no'}",
+            f"Extension state: {location.extension_state}",
         ]
 
     @staticmethod
@@ -142,6 +149,23 @@ class BacktestEngine:
                 f"EMA100 {location.overextension_ema100_pct:.2f}% / "
                 f"EMA200 {location.overextension_ema200_pct:.2f}% above caps"
             )
+        if reason == "blowoff_extension_filter":
+            return (
+                f"rejected as blowoff extension: EMA20 {location.overextension_ema20_pct:.2f}% / "
+                f"EMA50 {location.overextension_ema50_pct:.2f}% / "
+                f"EMA100 {location.overextension_ema100_pct:.2f}% / "
+                f"EMA200 {location.overextension_ema200_pct:.2f}%"
+            )
+        if reason == "momentum_dynamics_filter":
+            return "rejected because score dynamics are not improving/accelerating"
+        if reason == "momentum_score_threshold":
+            return f"momentum score threshold not met: {final_score:.2f} < {threshold:.2f}"
+        if reason == "momentum_volume_filter":
+            return "rejected because volume confirmation was below momentum minimum"
+        if reason == "momentum_trigger_type_filter":
+            return f"rejected because trigger type {trigger.trigger_type} is not allowed for momentum continuation"
+        if reason == "momentum_structure_filter":
+            return "rejected because bullish momentum continuation structure was not fully aligned"
         if reason == "resistance_room_filter":
             return (
                 f"resistance room {location.resistance_room_pct:.2f}% < "
@@ -188,6 +212,8 @@ class BacktestEngine:
         skipped_location = 0
         skipped_trigger = 0
         skipped_overextended = 0
+        skipped_blowoff_extension = 0
+        skipped_momentum_dynamics = 0
         skipped_resistance_room = 0
         skipped_ema200_transition = 0
         actionable_setups = 0
@@ -195,6 +221,8 @@ class BacktestEngine:
         avoid_setups = 0
         early_trend_transition_entries = 0
         early_trend_transition_wins = 0
+        momentum_continuation_entries = 0
+        controlled_extension_entries = 0
         decision_log: list[SkippedEntrySignal] = []
         evaluated_bars = 0
         next_trade_id = 1
@@ -262,6 +290,12 @@ class BacktestEngine:
                             skipped_overextended += 1
                         if reason == "resistance_room_filter":
                             skipped_resistance_room += 1
+                    elif reason == "blowoff_extension_filter":
+                        skipped_location += 1
+                        skipped_blowoff_extension += 1
+                    elif reason == "momentum_dynamics_filter":
+                        skipped_trigger += 1
+                        skipped_momentum_dynamics += 1
                     elif reason == "trigger_filter":
                         skipped_trigger += 1
                     else:
@@ -271,14 +305,14 @@ class BacktestEngine:
                         SkippedEntrySignal(
                             date=current_date.date(),
                             final_score=round(final_score, 2),
-                            threshold_used=round(config.score_threshold, 2),
+                            threshold_used=round(entry_gate.score_threshold_used, 2),
                             setup_status=setup.setup_status,
                             first_failed_gate=reason,
                             reason=reason,
                             reason_detail=self._build_reason_detail(
                                 reason=reason,
                                 final_score=final_score,
-                                threshold=config.score_threshold,
+                                threshold=entry_gate.score_threshold_used,
                                 regime=regime,
                                 location=location,
                                 trigger=trigger,
@@ -293,6 +327,8 @@ class BacktestEngine:
                             trigger_state=trigger.trigger_state,
                             trigger_score=trigger.trigger_score,
                             trend_state=setup.trend_state,
+                            setup_type="momentum_continuation" if config.strategy_mode == StrategyMode.MOMENTUM_CONTINUATION else "pullback_continuation",
+                            extension_state=location.extension_state,
                             support_distance_pct=location.distance_to_support_pct,
                             resistance_room_pct=location.resistance_room_pct,
                             price_vs_ema200_pct=regime.price_vs_ema200_pct,
@@ -306,10 +342,16 @@ class BacktestEngine:
                 entry_price = float(current_row["close"])
                 major_conditions = self._format_major_conditions(final_score, entry_gate, regime, location, trigger)
                 is_early_transition = setup.setup_status == "early_trend_transition"
+                setup_type = "momentum_continuation" if config.strategy_mode == StrategyMode.MOMENTUM_CONTINUATION else "pullback_continuation"
                 entry_reason = (
-                    f"Entry gate passed ({config.strategy_mode.value}). Score {final_score:.2f}/{config.score_threshold:.2f}; "
+                    f"Entry gate passed ({config.strategy_mode.value}). Score {final_score:.2f}/{entry_gate.score_threshold_used:.2f}; "
                     f"regime={regime.ema_stack_quality}, location={location.location_score:.1f}, trigger={trigger.trigger_type}."
                 )
+                if config.strategy_mode == StrategyMode.MOMENTUM_CONTINUATION and location.extension_state == "controlled_extension":
+                    entry_reason = (
+                        f"Overextended but accepted due to momentum continuation. "
+                        f"Score {final_score:.2f}, dynamics={entry_gate.score_dynamics_state}, trigger={trigger.trigger_type}, volume={entry_gate.volume_ratio_20:.2f}."
+                    )
                 if is_early_transition:
                     entry_reason = (
                         f"Early trend transition entry ({config.strategy_mode.value}). "
@@ -324,7 +366,7 @@ class BacktestEngine:
                     stop_loss=plan.stop_loss,
                     take_profit=plan.take_profit_1,
                     entry_reason=entry_reason,
-                    threshold_used=config.score_threshold,
+                    threshold_used=entry_gate.score_threshold_used,
                     score_at_entry=final_score,
                     major_conditions_met=major_conditions,
                     strategy_mode_used=config.strategy_mode,
@@ -342,11 +384,17 @@ class BacktestEngine:
                     trend_state=setup.trend_state,
                     setup_status=setup.setup_status,
                     trigger_state=trigger.trigger_state,
+                    setup_type=setup_type,
+                    extension_state=location.extension_state,
                     is_early_trend_transition=is_early_transition,
                     reasoning_tags=setup.reasoning_tags,
                 )
                 if is_early_transition:
                     early_trend_transition_entries += 1
+                if setup_type == "momentum_continuation":
+                    momentum_continuation_entries += 1
+                if location.extension_state == "controlled_extension":
+                    controlled_extension_entries += 1
                 entries_triggered += 1
                 next_trade_id += 1
                 continue
@@ -417,6 +465,8 @@ class BacktestEngine:
                     trend_state=position.trend_state,
                     setup_status=position.setup_status,
                     trigger_state=position.trigger_state,
+                    setup_type=position.setup_type,
+                    extension_state=position.extension_state,
                     is_early_trend_transition=position.is_early_trend_transition,
                     reasoning_tags=position.reasoning_tags,
                 )
@@ -462,6 +512,8 @@ class BacktestEngine:
                     trend_state=position.trend_state,
                     setup_status=position.setup_status,
                     trigger_state=position.trigger_state,
+                    setup_type=position.setup_type,
+                    extension_state=position.extension_state,
                     is_early_trend_transition=position.is_early_trend_transition,
                     reasoning_tags=position.reasoning_tags,
                 )
@@ -480,6 +532,8 @@ class BacktestEngine:
             skipped_location=skipped_location,
             skipped_trigger=skipped_trigger,
             skipped_overextended=skipped_overextended,
+            skipped_blowoff_extension=skipped_blowoff_extension,
+            skipped_momentum_dynamics=skipped_momentum_dynamics,
             skipped_resistance_room=skipped_resistance_room,
             skipped_ema200_transition=skipped_ema200_transition,
             actionable_setups=actionable_setups,
@@ -488,6 +542,8 @@ class BacktestEngine:
             early_trend_transition_entries=early_trend_transition_entries,
             early_trend_transition_wins=early_trend_transition_wins,
             early_transition_skip_share_pct=round(early_transition_skip_share_pct, 2),
+            momentum_continuation_entries=momentum_continuation_entries,
+            controlled_extension_entries=controlled_extension_entries,
             decision_log=decision_log,
             warmup_bars_used=warmup,
             evaluated_bars=evaluated_bars,
@@ -713,6 +769,8 @@ class BacktestEngine:
             skipped_location=sim.skipped_location,
             skipped_trigger=sim.skipped_trigger,
             skipped_overextended=sim.skipped_overextended,
+            skipped_blowoff_extension=sim.skipped_blowoff_extension,
+            skipped_momentum_dynamics=sim.skipped_momentum_dynamics,
             skipped_resistance_room=sim.skipped_resistance_room,
             skipped_ema200_transition=sim.skipped_ema200_transition,
             actionable_setups=sim.actionable_setups,
@@ -721,6 +779,8 @@ class BacktestEngine:
             early_trend_transition_entries=sim.early_trend_transition_entries,
             early_trend_transition_wins=sim.early_trend_transition_wins,
             early_transition_skip_share_pct=sim.early_transition_skip_share_pct,
+            momentum_continuation_entries=sim.momentum_continuation_entries,
+            controlled_extension_entries=sim.controlled_extension_entries,
             trades_table=sim.trades,
             skipped_signals_sample=decision_log_sample,
             decision_log_sample=decision_log_sample,

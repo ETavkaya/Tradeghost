@@ -87,8 +87,8 @@ def classify_setup(
         tags.append("near_support")
     if not location.resistance_room_ok:
         tags.append("limited_resistance_room")
-    if location.extension_state in {"stretched", "overextended"}:
-        tags.append(f"{location.extension_state}_from_ema20")
+    if location.extension_state in {"stretched", "overextended", "controlled_extension", "blowoff_extension"}:
+        tags.append(f"{location.extension_state}_state")
     if trigger.trigger_type != "none":
         tags.append(trigger.trigger_type)
     if trigger.trigger_state != "confirmed":

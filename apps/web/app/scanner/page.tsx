@@ -511,6 +511,9 @@ export default function ScannerPage() {
                       </th>
                     ))}
                     <th className="px-2 py-2">Dynamics</th>
+                    <th className="px-2 py-2">Momentum Fit</th>
+                    <th className="px-2 py-2">Ext State</th>
+                    <th className="px-2 py-2">Mom Candidate</th>
                     <th className="px-2 py-2">Priority</th>
                     <th className="px-2 py-2">Category</th>
                     <th className="px-2 py-2">Reason</th>
@@ -526,7 +529,7 @@ export default function ScannerPage() {
                   {sortedResults.length === 0 ? (
                     <tr>
                       <td className="sticky left-0 z-10 bg-panel px-2 py-3 text-slate-400 shadow-[8px_0_12px_-12px_rgba(0,0,0,0.6)]">No candidates found for selected scope.</td>
-                      <td className="px-2 py-3 text-slate-400" colSpan={18}></td>
+                      <td className="px-2 py-3 text-slate-400" colSpan={21}></td>
                     </tr>
                   ) : (
                     sortedResults.map((row) => (
@@ -546,6 +549,9 @@ export default function ScannerPage() {
                         <td className="px-2 py-2">{row.resistance_test_count}</td>
                         <td className="px-2 py-2">{row.ema200_test_count}</td>
                         <td className="px-2 py-2">{row.score_dynamics_state}</td>
+                        <td className="px-2 py-2">{row.momentum_fit_score.toFixed(2)}</td>
+                        <td className="px-2 py-2">{row.extension_state.replaceAll("_", " ")}</td>
+                        <td className="px-2 py-2">{row.momentum_continuation_candidate ? "yes" : "no"}</td>
                         <td className="px-2 py-2 capitalize">{row.priority}</td>
                         <td className="px-2 py-2">{row.category_tag.replaceAll("_", " ")}</td>
                         <td className="max-w-[260px] px-2 py-2 text-xs text-slate-300">{row.short_reason}</td>
@@ -560,7 +566,7 @@ export default function ScannerPage() {
                             type="button"
                             onClick={() =>
                               router.push(
-                                `/analysis?ticker=${encodeURIComponent(row.symbol)}&market=${encodeURIComponent(result.scope.market)}&window=${encodeURIComponent(result.scope.duration)}&scanner_category=${encodeURIComponent(result.scope.category)}&scanner_score=${encodeURIComponent(row.scanner_score.toFixed(2))}&scanner_current_score=${encodeURIComponent(row.current_score.toFixed(2))}&scanner_delta_short=${encodeURIComponent(row.score_delta_short.toFixed(2))}&scanner_delta_medium=${encodeURIComponent(row.score_delta_medium.toFixed(2))}&scanner_dynamics_state=${encodeURIComponent(row.score_dynamics_state)}&scanner_reason=${encodeURIComponent(row.short_reason)}`
+                                `/analysis?ticker=${encodeURIComponent(row.symbol)}&market=${encodeURIComponent(result.scope.market)}&window=${encodeURIComponent(result.scope.duration)}&scanner_category=${encodeURIComponent(result.scope.category)}&scanner_score=${encodeURIComponent(row.scanner_score.toFixed(2))}&scanner_current_score=${encodeURIComponent(row.current_score.toFixed(2))}&scanner_delta_short=${encodeURIComponent(row.score_delta_short.toFixed(2))}&scanner_delta_medium=${encodeURIComponent(row.score_delta_medium.toFixed(2))}&scanner_dynamics_state=${encodeURIComponent(row.score_dynamics_state)}&scanner_reason=${encodeURIComponent(row.short_reason)}&scanner_momentum_fit=${encodeURIComponent(row.momentum_fit_score.toFixed(2))}&scanner_extension_state=${encodeURIComponent(row.extension_state)}&scanner_momentum_candidate=${encodeURIComponent(String(row.momentum_continuation_candidate))}`
                               )
                             }
                             className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan"

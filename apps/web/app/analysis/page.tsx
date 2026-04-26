@@ -18,6 +18,9 @@ type ScannerContext = {
   deltaShort: string;
   deltaMedium: string;
   dynamicsState: string;
+  momentumFit: string;
+  extensionState: string;
+  momentumCandidate: string;
   reason: string;
 } | null;
 
@@ -70,6 +73,18 @@ const MODE_PRESETS: Record<Exclude<StrategyMode, "custom">, ModePreset> = {
     max_overextension_ema50_pct: 5,
     max_overextension_ema100_pct: 8,
     max_overextension_ema200_pct: 12,
+  },
+  momentum_continuation: {
+    score_threshold: 66,
+    warmup_bars: 80,
+    regime_mode: "medium",
+    max_support_distance_pct: 8.5,
+    min_resistance_room_pct: 1.0,
+    min_trigger_score: 70,
+    max_overextension_ema20_pct: 6.5,
+    max_overextension_ema50_pct: 10.5,
+    max_overextension_ema100_pct: 15,
+    max_overextension_ema200_pct: 20,
   },
 };
 
@@ -147,6 +162,9 @@ function AnalysisPageInner() {
     const scannerDeltaShort = searchParams.get("scanner_delta_short");
     const scannerDeltaMedium = searchParams.get("scanner_delta_medium");
     const scannerDynamicsState = searchParams.get("scanner_dynamics_state");
+    const scannerMomentumFit = searchParams.get("scanner_momentum_fit");
+    const scannerExtensionState = searchParams.get("scanner_extension_state");
+    const scannerMomentumCandidate = searchParams.get("scanner_momentum_candidate");
     const scannerReason = searchParams.get("scanner_reason");
     if (nextTicker) setTicker(nextTicker.toUpperCase());
     if (nextMarket === "us" || nextMarket === "bist") {
@@ -163,6 +181,9 @@ function AnalysisPageInner() {
         deltaShort: scannerDeltaShort ?? "n/a",
         deltaMedium: scannerDeltaMedium ?? "n/a",
         dynamicsState: scannerDynamicsState ?? "n/a",
+        momentumFit: scannerMomentumFit ?? "n/a",
+        extensionState: scannerExtensionState ?? "n/a",
+        momentumCandidate: scannerMomentumCandidate ?? "n/a",
         reason: scannerReason ?? "n/a",
       });
     }
@@ -233,11 +254,12 @@ function AnalysisPageInner() {
         <SectionTitle title="Mode & Thresholds" subtitle="Preset modes are read-only. Switch to custom to edit filters." />
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           <label className="space-y-1 text-sm">
-            <InfoHint label="Strategy Mode" text="Aggressive, balanced, and conservative use fixed preset logic. Custom unlocks editable deterministic thresholds." />
+            <InfoHint label="Strategy Mode" text="Balanced/aggressive/conservative are pullback-oriented. Momentum continuation allows controlled extension when trend+dynamics+trigger are strong. Custom unlocks editable deterministic thresholds." />
             <select value={strategyMode} onChange={(event) => onModeChange(event.target.value as StrategyMode)} className="h-10 w-full rounded-lg border border-stroke bg-bg px-3 text-sm">
               <option value="aggressive">Aggressive</option>
               <option value="balanced">Balanced</option>
               <option value="conservative">Conservative</option>
+              <option value="momentum_continuation">Momentum Continuation</option>
               <option value="custom">Custom</option>
             </select>
           </label>
@@ -324,13 +346,16 @@ function AnalysisPageInner() {
           {scannerContext ? (
             <Panel>
               <SectionTitle title="Scanner Context" subtitle="How this symbol was surfaced by scanner" />
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-9">
                 <StatCard label="Surfaced By" value={scannerContext.category} />
                 <StatCard label="Scanner Score" value={scannerContext.scannerScore} />
                 <StatCard label="Current Score" value={scannerContext.currentScore} />
                 <StatCard label="Delta Short (5)" value={scannerContext.deltaShort} />
                 <StatCard label="Delta Medium (20)" value={scannerContext.deltaMedium} />
                 <StatCard label="Dynamics" value={scannerContext.dynamicsState} />
+                <StatCard label="Momentum Fit" value={scannerContext.momentumFit} />
+                <StatCard label="Ext State" value={scannerContext.extensionState.replaceAll("_", " ")} />
+                <StatCard label="Momentum Candidate" value={scannerContext.momentumCandidate} />
               </div>
               <p className="mt-2 text-xs text-slate-300">Scanner reason: {scannerContext.reason}</p>
             </Panel>
@@ -386,6 +411,19 @@ function AnalysisPageInner() {
               {" "}{analysis.analysis_config.location_filter.max_overextension_ema100_pct.toFixed(2)}% /
               {" "}{analysis.analysis_config.location_filter.max_overextension_ema200_pct.toFixed(2)}%.
               Trigger minimum score: {analysis.analysis_config.trigger_filter.min_trigger_score.toFixed(1)}.
+            </div>
+            <div className="mt-3 rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
+              Momentum continuation config: min score {analysis.analysis_config.momentum_continuation.momentum_min_score.toFixed(1)}, min volume ratio {analysis.analysis_config.momentum_continuation.momentum_min_volume_ratio.toFixed(2)}.
+              Controlled extension caps EMA20/50/100/200:
+              {" "}{analysis.analysis_config.momentum_continuation.controlled_extension_caps.ema20_pct.toFixed(1)}% /
+              {" "}{analysis.analysis_config.momentum_continuation.controlled_extension_caps.ema50_pct.toFixed(1)}% /
+              {" "}{analysis.analysis_config.momentum_continuation.controlled_extension_caps.ema100_pct.toFixed(1)}% /
+              {" "}{analysis.analysis_config.momentum_continuation.controlled_extension_caps.ema200_pct.toFixed(1)}%.
+              Blowoff caps:
+              {" "}{analysis.analysis_config.momentum_continuation.blowoff_extension_caps.ema20_pct.toFixed(1)}% /
+              {" "}{analysis.analysis_config.momentum_continuation.blowoff_extension_caps.ema50_pct.toFixed(1)}% /
+              {" "}{analysis.analysis_config.momentum_continuation.blowoff_extension_caps.ema100_pct.toFixed(1)}% /
+              {" "}{analysis.analysis_config.momentum_continuation.blowoff_extension_caps.ema200_pct.toFixed(1)}%.
             </div>
           </Panel>
 

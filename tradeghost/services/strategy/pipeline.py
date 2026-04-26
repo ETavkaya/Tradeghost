@@ -62,6 +62,7 @@ def run_analysis_pipeline(
     # Step 8: final decision
     entry_gate = evaluate_entry_gate(
         final_score=final_score,
+        snapshot=snapshot,
         config=config,
         regime=regime,
         location=location,
@@ -90,6 +91,10 @@ def run_analysis_pipeline(
             "regime_reason": regime.regime_reason,
             "location_reason": location.location_reason,
             "trigger_reason": trigger.trigger_reason,
+            "score_dynamics_state": entry_gate.score_dynamics_state,
+            "volume_ratio_20": entry_gate.volume_ratio_20,
+            "extension_state": location.extension_state,
+            "momentum_continuation_entry_allowed": entry_gate.momentum_continuation_entry_allowed,
             "reasoning_tags": setup_interpretation.reasoning_tags,
         },
     )

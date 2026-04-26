@@ -7,7 +7,9 @@ from tradeghost.shared.config.settings import get_settings
 from tradeghost.shared.market import normalize_market
 from tradeghost.shared.models.schemas import (
     AnalysisConfig,
+    ExtensionCapSettings,
     LocationFilterSettings,
+    MomentumContinuationSettings,
     RegimeFilterSettings,
     StrategyMode,
     TriggerFilterSettings,
@@ -35,6 +37,18 @@ MODE_PRESETS: dict[StrategyMode, dict[str, Any]] = {
         "max_overextension_ema100_pct": 14.0,
         "max_overextension_ema200_pct": 18.0,
         "min_trigger_score": 55.0,
+        "momentum_min_score": 70.0,
+        "momentum_min_volume_ratio": 1.15,
+        "controlled_extension_caps": {"ema20_pct": 10.0, "ema50_pct": 14.0, "ema100_pct": 20.0, "ema200_pct": 26.0},
+        "blowoff_extension_caps": {"ema20_pct": 15.0, "ema50_pct": 22.0, "ema100_pct": 30.0, "ema200_pct": 38.0},
+        "allowed_trigger_types": [
+            "breakout_confirmation",
+            "pullback_continuation",
+            "reclaim_after_shakeout",
+            "strong_momentum_continuation",
+            "bullish_engulfing",
+        ],
+        "required_dynamics_state": ["improving", "accelerating"],
     },
     StrategyMode.BALANCED: {
         "score_threshold": 60.0,
@@ -46,6 +60,18 @@ MODE_PRESETS: dict[StrategyMode, dict[str, Any]] = {
         "max_overextension_ema100_pct": 11.0,
         "max_overextension_ema200_pct": 15.0,
         "min_trigger_score": 65.0,
+        "momentum_min_score": 70.0,
+        "momentum_min_volume_ratio": 1.15,
+        "controlled_extension_caps": {"ema20_pct": 10.0, "ema50_pct": 14.0, "ema100_pct": 20.0, "ema200_pct": 26.0},
+        "blowoff_extension_caps": {"ema20_pct": 15.0, "ema50_pct": 22.0, "ema100_pct": 30.0, "ema200_pct": 38.0},
+        "allowed_trigger_types": [
+            "breakout_confirmation",
+            "pullback_continuation",
+            "reclaim_after_shakeout",
+            "strong_momentum_continuation",
+            "bullish_engulfing",
+        ],
+        "required_dynamics_state": ["improving", "accelerating"],
     },
     StrategyMode.CONSERVATIVE: {
         "score_threshold": 72.0,
@@ -57,6 +83,18 @@ MODE_PRESETS: dict[StrategyMode, dict[str, Any]] = {
         "max_overextension_ema100_pct": 8.0,
         "max_overextension_ema200_pct": 12.0,
         "min_trigger_score": 75.0,
+        "momentum_min_score": 70.0,
+        "momentum_min_volume_ratio": 1.15,
+        "controlled_extension_caps": {"ema20_pct": 10.0, "ema50_pct": 14.0, "ema100_pct": 20.0, "ema200_pct": 26.0},
+        "blowoff_extension_caps": {"ema20_pct": 15.0, "ema50_pct": 22.0, "ema100_pct": 30.0, "ema200_pct": 38.0},
+        "allowed_trigger_types": [
+            "breakout_confirmation",
+            "pullback_continuation",
+            "reclaim_after_shakeout",
+            "strong_momentum_continuation",
+            "bullish_engulfing",
+        ],
+        "required_dynamics_state": ["improving", "accelerating"],
     },
     StrategyMode.CUSTOM: {
         # Custom inherits balanced defaults unless user overrides threshold/warmup.
@@ -69,6 +107,41 @@ MODE_PRESETS: dict[StrategyMode, dict[str, Any]] = {
         "max_overextension_ema100_pct": 11.0,
         "max_overextension_ema200_pct": 15.0,
         "min_trigger_score": 65.0,
+        "momentum_min_score": 72.0,
+        "momentum_min_volume_ratio": 1.2,
+        "controlled_extension_caps": {"ema20_pct": 10.0, "ema50_pct": 14.0, "ema100_pct": 20.0, "ema200_pct": 26.0},
+        "blowoff_extension_caps": {"ema20_pct": 15.0, "ema50_pct": 22.0, "ema100_pct": 30.0, "ema200_pct": 38.0},
+        "allowed_trigger_types": [
+            "breakout_confirmation",
+            "pullback_continuation",
+            "reclaim_after_shakeout",
+            "strong_momentum_continuation",
+            "bullish_engulfing",
+        ],
+        "required_dynamics_state": ["improving", "accelerating"],
+    },
+    StrategyMode.MOMENTUM_CONTINUATION: {
+        "score_threshold": 66.0,
+        "regime_mode": "medium",
+        "max_support_distance_pct": 8.5,
+        "min_resistance_room_pct": 1.0,
+        "max_overextension_ema20_pct": 6.5,
+        "max_overextension_ema50_pct": 10.5,
+        "max_overextension_ema100_pct": 15.0,
+        "max_overextension_ema200_pct": 20.0,
+        "min_trigger_score": 70.0,
+        "momentum_min_score": 70.0,
+        "momentum_min_volume_ratio": 1.15,
+        "controlled_extension_caps": {"ema20_pct": 10.0, "ema50_pct": 14.0, "ema100_pct": 20.0, "ema200_pct": 26.0},
+        "blowoff_extension_caps": {"ema20_pct": 15.0, "ema50_pct": 22.0, "ema100_pct": 30.0, "ema200_pct": 38.0},
+        "allowed_trigger_types": [
+            "breakout_confirmation",
+            "pullback_continuation",
+            "reclaim_after_shakeout",
+            "strong_momentum_continuation",
+            "bullish_engulfing",
+        ],
+        "required_dynamics_state": ["improving", "accelerating"],
     },
 }
 
@@ -81,6 +154,8 @@ def normalize_strategy_mode(mode: StrategyMode | str | None) -> StrategyMode:
         return StrategyMode.AGGRESSIVE
     if raw == StrategyMode.CONSERVATIVE.value:
         return StrategyMode.CONSERVATIVE
+    if raw == StrategyMode.MOMENTUM_CONTINUATION.value:
+        return StrategyMode.MOMENTUM_CONTINUATION
     if raw == StrategyMode.CUSTOM.value:
         return StrategyMode.CUSTOM
     return StrategyMode.BALANCED
@@ -142,5 +217,13 @@ def build_analysis_config(
         regime_filter=RegimeFilterSettings(regime_mode=str(regime_mode if regime_mode is not None else preset["regime_mode"])),
         trigger_filter=TriggerFilterSettings(
             min_trigger_score=float(min_trigger_score if min_trigger_score is not None else preset["min_trigger_score"])
+        ),
+        momentum_continuation=MomentumContinuationSettings(
+            momentum_min_score=float(preset["momentum_min_score"]),
+            momentum_min_volume_ratio=float(preset["momentum_min_volume_ratio"]),
+            controlled_extension_caps=ExtensionCapSettings(**preset["controlled_extension_caps"]),
+            blowoff_extension_caps=ExtensionCapSettings(**preset["blowoff_extension_caps"]),
+            allowed_trigger_types=list(preset["allowed_trigger_types"]),
+            required_dynamics_state=list(preset["required_dynamics_state"]),
         ),
     )

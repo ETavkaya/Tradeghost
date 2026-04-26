@@ -19,7 +19,8 @@ export default function LogicPage() {
           <p>Decision map workflow: sampled skip decisions are evenly distributed across evaluated bars, then filtered by visible chart dates and selected gate filter.</p>
           <p>EMA200 regime diagnostics: reason code, price vs EMA200, EMA200 slope state, stack alignment, and bars since reclaim are emitted deterministically.</p>
           <p>Early trend transition rule: recent EMA200 reclaim setups can be tradeable when transition conditions pass stricter trigger checks; otherwise they are logged as transition-related skips.</p>
-          <p>Mode logic: aggressive/balanced/conservative presets plus custom. Custom fields are explicit threshold/filter values, no hidden LLM rules.</p>
+          <p>Mode logic: aggressive/balanced/conservative pullback presets, plus momentum_continuation and custom. Custom fields are explicit threshold/filter values, no hidden LLM rules.</p>
+          <p>Momentum continuation path: controlled extension can be accepted when trend, dynamics, trigger, and volume checks pass; blowoff extension is rejected deterministically.</p>
           <p>Backtest review log workflow: each saved snapshot stores config, metrics, skip summary, and comment thread under logs/backtest_reviews for reproducible audits.</p>
         </div>
       </Panel>
@@ -34,7 +35,8 @@ export default function LogicPage() {
             <p>Minimum resistance room: {analysis.analysis_config.location_filter.min_resistance_room_pct.toFixed(2)}%</p>
             <p>Trigger minimum score: {analysis.analysis_config.trigger_filter.min_trigger_score.toFixed(1)}</p>
             <p>Overextension caps EMA20/50/100/200: {analysis.analysis_config.location_filter.max_overextension_ema20_pct.toFixed(2)}% / {analysis.analysis_config.location_filter.max_overextension_ema50_pct.toFixed(2)}% / {analysis.analysis_config.location_filter.max_overextension_ema100_pct.toFixed(2)}% / {analysis.analysis_config.location_filter.max_overextension_ema200_pct.toFixed(2)}%</p>
-            <p>Mode presets: aggressive (50 / relaxed / support 7.5 / resistance 1.5 / trigger 55), balanced (60 / medium / 5.0 / 2.5 / 65), conservative (72 / strict / 3.5 / 3.5 / 75), custom (editable shared config).</p>
+            <p>Momentum config: min score {analysis.analysis_config.momentum_continuation.momentum_min_score.toFixed(1)} | min volume ratio {analysis.analysis_config.momentum_continuation.momentum_min_volume_ratio.toFixed(2)} | required dynamics {analysis.analysis_config.momentum_continuation.required_dynamics_state.join(", ")}.</p>
+            <p>Mode presets: aggressive (50 / relaxed / support 7.5 / resistance 1.5 / trigger 55), balanced (60 / medium / 5.0 / 2.5 / 65), conservative (72 / strict / 3.5 / 3.5 / 75), momentum_continuation (66 / medium / support 8.5 / resistance 1.0 / trigger 70), custom (editable shared config).</p>
           </div>
         </Panel>
       ) : (

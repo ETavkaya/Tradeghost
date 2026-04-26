@@ -361,10 +361,13 @@ class ScannerEngine:
                 - blowoff_penalty
                 - (0.25 * dynamics_penalty)
             )
+            momentum_note = "Controlled extension accepted" if location.extension_state == "controlled_extension" else "Momentum structure intact"
+            if location.extension_state == "blowoff_extension":
+                momentum_note = "Blowoff extension risk"
             return _Eval(
                 score=max(0.0, min(100.0, score)),
                 tag="momentum_mode",
-                reason="Expansion candidate with bullish structure and improving score dynamics.",
+                reason=f"Expansion candidate with bullish structure and {dynamics.score_dynamics_state} dynamics. {momentum_note}.",
             )
 
         score = (
@@ -396,7 +399,7 @@ class ScannerEngine:
             ticker="DUMMY",
             market=req.market,
             lookback_window=req.duration.value,
-            strategy_mode="balanced",
+            strategy_mode="momentum_continuation" if req.category == ScannerCategory.MOMENTUM_MODE else "balanced",
         )
         period = WINDOW_TO_PERIOD[req.duration.value]
 
@@ -481,8 +484,13 @@ class ScannerEngine:
                     score_delta_short=dynamics.score_delta_short,
                     score_delta_medium=dynamics.score_delta_medium,
                     score_dynamics_state=dynamics.score_dynamics_state,
+                    momentum_fit_score=round(scored.score if req.category == ScannerCategory.MOMENTUM_MODE else 0.0, 2),
+                    momentum_continuation_candidate=bool(
+                        req.category == ScannerCategory.MOMENTUM_MODE and state.entry_gate.final_entry_decision
+                    ),
                     trend_state=setup.trend_state,
                     setup_status=setup.setup_status,
+                    extension_state=location.extension_state,
                     price_vs_ema200_pct=regime.price_vs_ema200_pct,
                     ema200_slope_state=regime.ema200_slope_state,
                     ema_stack_alignment=regime.ema_stack_alignment,

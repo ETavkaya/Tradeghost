@@ -2,7 +2,31 @@ from __future__ import annotations
 
 from typing import Any
 
-from tradeghost.shared.models.schemas import AnalysisConfig, EntryGateDiagnostics, LocationDiagnostics, RegimeDiagnostics, TriggerDiagnostics
+from tradeghost.shared.models.schemas import (
+    AnalysisConfig,
+    EntryGateDiagnostics,
+    LocationDiagnostics,
+    RegimeDiagnostics,
+    StrategyMode,
+    TriggerDiagnostics,
+)
+
+
+def _classify_score_dynamics_state(snapshot: dict[str, Any]) -> str:
+    rsi14 = float(snapshot.get("rsi", 50.0))
+    macd_hist = float(snapshot.get("macd_hist", 0.0))
+    adx = float(snapshot.get("adx", 20.0))
+    volume_ratio = float(snapshot.get("volume", {}).get("volume_ratio", 1.0))
+
+    if macd_hist >= 0.2 and rsi14 >= 60.0 and adx >= 20.0 and volume_ratio >= 1.05:
+        return "accelerating"
+    if macd_hist >= 0.05 and rsi14 >= 52.0 and volume_ratio >= 0.95:
+        return "improving"
+    if macd_hist <= -0.2 and rsi14 <= 42.0:
+        return "deteriorating"
+    if macd_hist <= -0.05 or rsi14 <= 48.0:
+        return "weakening"
+    return "stable"
 
 
 def evaluate_regime(snapshot: dict[str, Any], config: AnalysisConfig) -> RegimeDiagnostics:
@@ -131,13 +155,37 @@ def evaluate_location(snapshot: dict[str, Any], config: AnalysisConfig) -> Locat
         or ext100 > settings.max_overextension_ema100_pct
         or ext200 > settings.max_overextension_ema200_pct
     )
-    location_valid = support_ok and resistance_ok and not overextended
+    momentum_caps = config.momentum_continuation
+    controlled_extension = (
+        ext20 <= momentum_caps.controlled_extension_caps.ema20_pct
+        and ext50 <= momentum_caps.controlled_extension_caps.ema50_pct
+        and ext100 <= momentum_caps.controlled_extension_caps.ema100_pct
+        and ext200 <= momentum_caps.controlled_extension_caps.ema200_pct
+    )
+    blowoff_extension = (
+        ext20 > momentum_caps.blowoff_extension_caps.ema20_pct
+        or ext50 > momentum_caps.blowoff_extension_caps.ema50_pct
+        or ext100 > momentum_caps.blowoff_extension_caps.ema100_pct
+        or ext200 > momentum_caps.blowoff_extension_caps.ema200_pct
+    )
 
-    extension_state = "normal"
-    if overextended:
-        extension_state = "overextended"
-    elif ext20 > (settings.max_overextension_ema20_pct * 0.7):
-        extension_state = "stretched"
+    if config.strategy_mode == StrategyMode.MOMENTUM_CONTINUATION:
+        location_valid = resistance_ok and not blowoff_extension
+        if blowoff_extension:
+            extension_state = "blowoff_extension"
+        elif overextended and controlled_extension:
+            extension_state = "controlled_extension"
+        elif overextended:
+            extension_state = "controlled_extension"
+        else:
+            extension_state = "normal"
+    else:
+        location_valid = support_ok and resistance_ok and not overextended
+        extension_state = "normal"
+        if overextended:
+            extension_state = "overextended"
+        elif ext20 > (settings.max_overextension_ema20_pct * 0.7):
+            extension_state = "stretched"
 
     if abs(ext20) <= 1.5:
         pullback_depth = "at_ema20"
@@ -155,15 +203,26 @@ def evaluate_location(snapshot: dict[str, Any], config: AnalysisConfig) -> Locat
     support_quality_score = max(0.0, min(100.0, 100.0 - (support_distance_pct * 12.0)))
 
     score = 100.0
-    score -= max(0.0, support_distance_pct - settings.max_support_distance_pct) * 8.0
-    score -= max(0.0, settings.min_resistance_room_pct - resistance_distance_pct) * 12.0
-    score -= 20.0 if overextended else 0.0
+    if config.strategy_mode == StrategyMode.MOMENTUM_CONTINUATION:
+        score -= max(0.0, support_distance_pct - settings.max_support_distance_pct) * 3.0
+        score -= max(0.0, settings.min_resistance_room_pct - resistance_distance_pct) * 10.0
+        score -= 35.0 if blowoff_extension else 0.0
+        score -= 6.0 if overextended and not blowoff_extension else 0.0
+    else:
+        score -= max(0.0, support_distance_pct - settings.max_support_distance_pct) * 8.0
+        score -= max(0.0, settings.min_resistance_room_pct - resistance_distance_pct) * 12.0
+        score -= 20.0 if overextended else 0.0
     score = max(0.0, min(100.0, score))
 
     reasons: list[str] = []
-    reasons.append("Support proximity ok" if support_ok else "Too far from support")
+    reasons.append("Support proximity ok" if support_ok else "Far from support (warning for momentum continuation)")
     reasons.append("Resistance room ok" if resistance_ok else "Upside room too small")
-    reasons.append("Not overextended" if not overextended else "Price overextended above key EMAs")
+    if extension_state == "blowoff_extension":
+        reasons.append("Blowoff extension detected above momentum caps")
+    elif extension_state == "controlled_extension":
+        reasons.append("Overextended but within controlled momentum extension caps")
+    else:
+        reasons.append("Not overextended" if not overextended else "Price overextended above key EMAs")
 
     return LocationDiagnostics(
         location_valid=location_valid,
@@ -186,6 +245,8 @@ def evaluate_location(snapshot: dict[str, Any], config: AnalysisConfig) -> Locat
         support_quality_score=round(support_quality_score, 2),
         pullback_depth=pullback_depth,
         extension_state=extension_state,
+        controlled_extension_flag=extension_state == "controlled_extension",
+        blowoff_extension_flag=extension_state == "blowoff_extension",
         location_reason="; ".join(reasons),
     )
 
@@ -223,6 +284,11 @@ def evaluate_trigger(snapshot: dict[str, Any], config: AnalysisConfig, location:
         trigger_score = 62.0
         trigger_state = "pending"
         reason = "Reclaim above EMA20 after shakeout-like candle."
+    elif close > ema20 > ema50 and volume_ratio >= 1.35:
+        trigger_type = "strong_momentum_continuation"
+        trigger_score = 82.0
+        trigger_state = "confirmed"
+        reason = "Strong continuation profile with bullish EMA alignment and elevated volume."
 
     trigger_valid = trigger_score >= config.trigger_filter.min_trigger_score
     if not trigger_valid:
@@ -241,12 +307,18 @@ def evaluate_trigger(snapshot: dict[str, Any], config: AnalysisConfig, location:
 def evaluate_entry_gate(
     *,
     final_score: float,
+    snapshot: dict[str, Any],
     config: AnalysisConfig,
     regime: RegimeDiagnostics,
     location: LocationDiagnostics,
     trigger: TriggerDiagnostics,
 ) -> EntryGateDiagnostics:
-    score_passed = final_score >= config.score_threshold
+    effective_threshold = (
+        config.momentum_continuation.momentum_min_score
+        if config.strategy_mode == StrategyMode.MOMENTUM_CONTINUATION
+        else config.score_threshold
+    )
+    score_passed = final_score >= effective_threshold
     transition_tradeable = bool(
         regime.regime_reason_code in {"ema200_reclaim_transition", "early_trend_rebuild", "post_regime_reclaim_watchlist"}
         and regime.price_above_ema200
@@ -256,48 +328,112 @@ def evaluate_entry_gate(
         and trigger.trigger_score >= (config.trigger_filter.min_trigger_score + 10.0)
         and score_passed
     )
+    score_dynamics_state = _classify_score_dynamics_state(snapshot)
+    volume_ratio_20 = float(snapshot.get("volume", {}).get("volume_ratio", 0.0))
     entry_quality_score = (
         (0.35 * final_score)
         + (0.2 * (100.0 if regime.regime_valid else 0.0))
         + (0.25 * location.location_score)
         + (0.2 * trigger.trigger_score)
     )
-    final_decision = bool(
-        score_passed
-        and location.location_valid
-        and (trigger.trigger_valid or transition_tradeable)
-        and (regime.regime_valid or transition_tradeable)
-    )
+    momentum_entry_allowed = False
+    if config.strategy_mode == StrategyMode.MOMENTUM_CONTINUATION:
+        momentum_cfg = config.momentum_continuation
+        close = float(snapshot.get("close", 0.0))
+        ema20 = float(snapshot.get("ema_20", 0.0))
+        ema50 = float(snapshot.get("ema_50", 0.0))
+        ema100 = float(snapshot.get("ema_100", 0.0))
+        ema200 = float(snapshot.get("ema_200", 0.0))
+        trend_ok = close > ema20 > ema50 > ema100 > ema200 and regime.price_above_ema200 and regime.ema_stack_alignment in {
+            "partial_bullish",
+            "stacked_bullish",
+        }
+        dynamics_ok = score_dynamics_state in set(momentum_cfg.required_dynamics_state)
+        trigger_type_ok = trigger.trigger_type in set(momentum_cfg.allowed_trigger_types)
+        min_score_ok = final_score >= momentum_cfg.momentum_min_score
+        volume_ok = volume_ratio_20 >= momentum_cfg.momentum_min_volume_ratio
+        extension_ok = location.extension_state in {"normal", "controlled_extension"}
+        momentum_entry_allowed = bool(
+            trend_ok
+            and min_score_ok
+            and dynamics_ok
+            and trigger.trigger_valid
+            and trigger_type_ok
+            and volume_ok
+            and extension_ok
+            and location.resistance_room_ok
+        )
+        final_decision = momentum_entry_allowed
+    else:
+        final_decision = bool(
+            score_passed
+            and location.location_valid
+            and (trigger.trigger_valid or transition_tradeable)
+            and (regime.regime_valid or transition_tradeable)
+        )
 
     skip_reason = None
     if not final_decision:
-        if not score_passed:
-            skip_reason = "score_threshold"
-        elif not regime.regime_valid:
-            skip_reason = "regime_filter"
-        elif not location.location_valid:
-            if location.overextended_flag:
-                skip_reason = "overextended_filter"
+        if config.strategy_mode == StrategyMode.MOMENTUM_CONTINUATION:
+            momentum_cfg = config.momentum_continuation
+            close = float(snapshot.get("close", 0.0))
+            ema20 = float(snapshot.get("ema_20", 0.0))
+            ema50 = float(snapshot.get("ema_50", 0.0))
+            ema100 = float(snapshot.get("ema_100", 0.0))
+            ema200 = float(snapshot.get("ema_200", 0.0))
+            trend_ok = close > ema20 > ema50 > ema100 > ema200 and regime.price_above_ema200 and regime.ema_stack_alignment in {
+                "partial_bullish",
+                "stacked_bullish",
+            }
+            if location.extension_state == "blowoff_extension":
+                skip_reason = "blowoff_extension_filter"
+            elif final_score < momentum_cfg.momentum_min_score:
+                skip_reason = "momentum_score_threshold"
+            elif score_dynamics_state not in set(momentum_cfg.required_dynamics_state):
+                skip_reason = "momentum_dynamics_filter"
+            elif volume_ratio_20 < momentum_cfg.momentum_min_volume_ratio:
+                skip_reason = "momentum_volume_filter"
+            elif not trend_ok:
+                skip_reason = "momentum_structure_filter"
+            elif trigger.trigger_type not in set(momentum_cfg.allowed_trigger_types):
+                skip_reason = "momentum_trigger_type_filter"
+            elif not trigger.trigger_valid:
+                skip_reason = "trigger_filter"
             elif not location.resistance_room_ok:
                 skip_reason = "resistance_room_filter"
             else:
-                skip_reason = "location_filter"
-        elif not trigger.trigger_valid:
-            skip_reason = "trigger_filter"
+                skip_reason = "setup_filter"
         else:
-            skip_reason = "setup_filter"
+            if not score_passed:
+                skip_reason = "score_threshold"
+            elif not regime.regime_valid:
+                skip_reason = "regime_filter"
+            elif not location.location_valid:
+                if location.overextended_flag:
+                    skip_reason = "overextended_filter"
+                elif not location.resistance_room_ok:
+                    skip_reason = "resistance_room_filter"
+                else:
+                    skip_reason = "location_filter"
+            elif not trigger.trigger_valid:
+                skip_reason = "trigger_filter"
+            else:
+                skip_reason = "setup_filter"
     elif transition_tradeable and not regime.regime_valid:
         skip_reason = None
 
     return EntryGateDiagnostics(
         final_score=round(final_score, 2),
-        score_threshold_used=round(config.score_threshold, 2),
+        score_threshold_used=round(effective_threshold, 2),
         score_threshold_passed=score_passed,
         regime_valid=regime.regime_valid,
         location_valid=location.location_valid,
         trigger_valid=trigger.trigger_valid,
         entry_quality_score=round(entry_quality_score, 2),
         transition_entry_allowed=transition_tradeable,
+        momentum_continuation_entry_allowed=momentum_entry_allowed,
+        score_dynamics_state=score_dynamics_state,
+        volume_ratio_20=round(volume_ratio_20, 2),
         final_entry_decision=final_decision,
         skip_reason=skip_reason,
     )

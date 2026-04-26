@@ -505,6 +505,8 @@ export default function BacktestPage() {
               <StatCard label="Skipped: Location" value={`${result.skipped_location}`} />
               <StatCard label="Skipped: Trigger" value={`${result.skipped_trigger}`} />
               <StatCard label="Skipped: Overextended" value={`${result.skipped_overextended}`} />
+              <StatCard label="Skipped: Blowoff Ext" value={`${result.skipped_blowoff_extension}`} />
+              <StatCard label="Skipped: Mom Dynamics" value={`${result.skipped_momentum_dynamics}`} />
               <StatCard label="Skipped: Resist. Room" value={`${result.skipped_resistance_room}`} />
               <StatCard label="Skipped: EMA200 Transition" value={`${result.skipped_ema200_transition}`} />
               <StatCard label="Transition Skip Share" value={`${result.early_transition_skip_share_pct.toFixed(2)}%`} />
@@ -514,6 +516,8 @@ export default function BacktestPage() {
               <StatCard label="Watchlist Setups" value={`${result.watchlist_setups}`} />
               <StatCard label="Avoid Setups" value={`${result.avoid_setups}`} />
               <StatCard label="Early Transition Entries" value={`${result.early_trend_transition_entries}`} />
+              <StatCard label="Momentum Entries" value={`${result.momentum_continuation_entries}`} />
+              <StatCard label="Controlled Ext Entries" value={`${result.controlled_extension_entries}`} />
             </div>
             <p className="mt-3 text-xs text-slate-300">
               Insight: {result.early_transition_skip_share_pct.toFixed(2)}% of skipped setups were EMA200 transition related.
@@ -533,6 +537,8 @@ export default function BacktestPage() {
                     <th className="px-2 py-2">Setup</th>
                     <th className="px-2 py-2">Failed Gate</th>
                     <th className="px-2 py-2">Reason</th>
+                    <th className="px-2 py-2">Setup Type</th>
+                    <th className="px-2 py-2">Extension</th>
                     <th className="px-2 py-2">Support%</th>
                     <th className="px-2 py-2">Room%</th>
                     <th className="px-2 py-2">Trigger</th>
@@ -542,7 +548,7 @@ export default function BacktestPage() {
                 <tbody>
                   {filteredDecisionRows.length === 0 ? (
                     <tr>
-                      <td className="px-2 py-3 text-slate-400" colSpan={11}>No skipped setups sampled.</td>
+                      <td className="px-2 py-3 text-slate-400" colSpan={13}>No skipped setups sampled.</td>
                     </tr>
                   ) : (
                     filteredDecisionRows.map((row, idx) => (
@@ -554,6 +560,8 @@ export default function BacktestPage() {
                         <td className="px-2 py-2 capitalize">{row.setup_status.replaceAll("_", " ")}</td>
                         <td className="px-2 py-2">{row.first_failed_gate ?? "n/a"}</td>
                         <td className="max-w-[360px] px-2 py-2 text-xs text-slate-300">{row.reason_detail ?? row.reason}</td>
+                        <td className="px-2 py-2">{row.setup_type ?? "n/a"}</td>
+                        <td className="px-2 py-2">{(row.extension_state ?? "n/a").replaceAll("_", " ")}</td>
                         <td className="px-2 py-2">{row.support_distance_pct?.toFixed(2) ?? "n/a"}</td>
                         <td className="px-2 py-2">{row.resistance_room_pct?.toFixed(2) ?? "n/a"}</td>
                         <td className="px-2 py-2">{row.trigger_state ?? "n/a"} ({row.trigger_score?.toFixed(1) ?? "n/a"})</td>

@@ -473,6 +473,12 @@ class BacktestFromAnalysisResponse(BaseModel):
     early_transition_skip_share_pct: float
     momentum_continuation_entries: int
     controlled_extension_entries: int
+    fib_mode: str = "visual_only"
+    fib_anchor_method: str = "latest_snapshot_lookback_90"
+    nearest_fib_level: float | None = None
+    fib_target_room_pct: float | None = None
+    fib_used_in_entry: bool = False
+    fib_used_in_exit: bool = False
     exit_stop_loss_count: int = 0
     exit_take_profit_count: int = 0
     exit_timeout_count: int = 0
@@ -702,6 +708,9 @@ class AlertRuleType(str, Enum):
     VOLUME_RATIO_20_GTE = "volume_ratio_20_gte"
     RSI14_LTE = "rsi14_lte"
     RSI14_GTE = "rsi14_gte"
+    NEW_BREAKOUT_HIGH = "new_breakout_high"
+    BLOWOFF_EXTENSION_WARNING = "blowoff_extension_warning"
+    FIB_EMA_CONFLUENCE_REACHED = "fib_ema_confluence_reached"
 
 
 class AlertRule(BaseModel):
@@ -722,6 +731,14 @@ class AlertRule(BaseModel):
     preferred_regime_mode: str | None = None
     notification_email_enabled: bool = False
     notification_webhook_enabled: bool = False
+    notification_enabled: bool = False
+    notify_email: str | None = None
+    notification_status: str = "pending_notification"
+    scanner_category: ScannerCategory | None = None
+    watchlist_id: str | None = None
+    shortlisted_by: str | None = None
+    created_by: str | None = None
+    cooldown_minutes: int = Field(default=60, ge=0, le=24 * 60)
     last_checked: datetime | None = None
     last_matched: datetime | None = None
 
@@ -738,6 +755,13 @@ class AlertRuleCreateRequest(BaseModel):
     severity: AlertSeverity = AlertSeverity.WATCH
     color: str = "yellow"
     is_enabled: bool = True
+    notification_enabled: bool = False
+    notify_email: str | None = None
+    scanner_category: ScannerCategory | None = None
+    watchlist_id: str | None = None
+    shortlisted_by: str | None = None
+    created_by: str | None = None
+    cooldown_minutes: int = Field(default=60, ge=0, le=24 * 60)
 
 
 class AlertRuleUpdateRequest(BaseModel):
@@ -747,6 +771,13 @@ class AlertRuleUpdateRequest(BaseModel):
     color: str | None = None
     is_enabled: bool | None = None
     timeframe: str | None = None
+    notification_enabled: bool | None = None
+    notify_email: str | None = None
+    scanner_category: ScannerCategory | None = None
+    watchlist_id: str | None = None
+    shortlisted_by: str | None = None
+    created_by: str | None = None
+    cooldown_minutes: int | None = Field(default=None, ge=0, le=24 * 60)
 
 
 class MonitoringSchedule(BaseModel):
@@ -812,8 +843,63 @@ class AlertEvent(BaseModel):
     severity: AlertSeverity
     status: AlertEventStatus = AlertEventStatus.NEW
     message: str
+    watchlist_id: str | None = None
+    scanner_category: ScannerCategory | None = None
+    shortlisted_by: str | None = None
+    notification_status: str = "pending_notification"
+    notified_to: str | None = None
+    notified_at: datetime | None = None
     scanner_context: dict[str, Any] = Field(default_factory=dict)
     analysis_context: dict[str, Any] = Field(default_factory=dict)
+
+
+class AlertProfileSuggestionRule(BaseModel):
+    temp_id: str
+    name: str
+    rule_type: AlertRuleType
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    timeframe: str = "daily"
+    severity: AlertSeverity = AlertSeverity.WATCH
+    color: str = "yellow"
+    is_enabled: bool = True
+    selected: bool = True
+    rationale: str
+    cooldown_minutes: int = Field(default=60, ge=0, le=24 * 60)
+
+
+class AlertProfileSuggestRequest(BaseModel):
+    symbol: str
+    market: MarketCode
+    scanner_category: ScannerCategory
+    watchlist_id: str | None = None
+    shortlisted_by: str | None = None
+    created_by: str | None = None
+    notification_enabled: bool = False
+    notify_email: str | None = None
+
+
+class AlertProfileSuggestionResponse(BaseModel):
+    symbol: str
+    market: MarketCode
+    scanner_category: ScannerCategory
+    watchlist_id: str | None = None
+    shortlisted_by: str | None = None
+    created_by: str | None = None
+    rules: list[AlertProfileSuggestionRule] = Field(default_factory=list)
+
+
+class AlertProfileApplyRequest(BaseModel):
+    scope_type: AlertScopeType = AlertScopeType.SYMBOL
+    scope_ref: str
+    symbol: str
+    market: MarketCode
+    scanner_category: ScannerCategory
+    watchlist_id: str | None = None
+    shortlisted_by: str | None = None
+    created_by: str | None = None
+    notification_enabled: bool = False
+    notify_email: str | None = None
+    rules: list[AlertProfileSuggestionRule] = Field(default_factory=list)
 
 
 class AlertEventStatusUpdateRequest(BaseModel):

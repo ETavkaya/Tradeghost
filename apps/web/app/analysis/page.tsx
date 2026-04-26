@@ -247,6 +247,21 @@ function AnalysisPageInner() {
   };
 
   const readOnly = strategyMode !== "custom";
+  const strategyExplanation = analysis
+    ? {
+        setupType:
+          analysis.setup_interpretation.setup_type ||
+          (analysis.strategy_mode_used === "momentum_continuation" ? "momentum_continuation" : "pullback_continuation"),
+        entryCandidate: analysis.analysis_pipeline.final_entry_decision,
+        gateSummary: [
+          `threshold=${analysis.analysis_pipeline.threshold_passed ? "pass" : "fail"}`,
+          `regime=${analysis.analysis_pipeline.regime_valid ? "pass" : "fail"}`,
+          `location=${analysis.analysis_pipeline.location_valid ? "pass" : "fail"}`,
+          `trigger=${analysis.analysis_pipeline.trigger_valid ? "pass" : "fail"}`,
+          `overextension=${analysis.location.overextended_flag ? "flagged" : "clear"}`,
+        ].join(" | "),
+      }
+    : null;
 
   return (
     <main className="space-y-4">
@@ -424,6 +439,22 @@ function AnalysisPageInner() {
               {" "}{analysis.analysis_config.momentum_continuation.blowoff_extension_caps.ema50_pct.toFixed(1)}% /
               {" "}{analysis.analysis_config.momentum_continuation.blowoff_extension_caps.ema100_pct.toFixed(1)}% /
               {" "}{analysis.analysis_config.momentum_continuation.blowoff_extension_caps.ema200_pct.toFixed(1)}%.
+            </div>
+          </Panel>
+
+          <Panel>
+            <SectionTitle title="Strategy Explanation" subtitle="What this analysis means before running backtest" />
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <StatCard label="Selected Mode" value={analysis.strategy_mode_used} />
+              <StatCard label="Detected Setup" value={strategyExplanation?.setupType?.replaceAll("_", " ") ?? "n/a"} />
+              <StatCard label="Candidate Type" value={strategyExplanation?.entryCandidate ? "entry_candidate" : "watchlist_candidate"} />
+              <StatCard label="Fib/EMA Confluence" value={`${analysis.chartmap.fib_ema_confluence_score?.toFixed(1) ?? "n/a"} (${analysis.chartmap.fib_support_confluence ? "support confluence" : "no support confluence"})`} />
+            </div>
+            <div className="mt-3 rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
+              Active gates: {strategyExplanation?.gateSummary}. Trigger type: {analysis.setup_interpretation.trigger_type}. Trend: {analysis.setup_interpretation.trend_state}. Extension: {analysis.setup_interpretation.extension_state}.
+            </div>
+            <div className="mt-2 rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
+              Fib usage note: fib levels shown here are derived from current analysis snapshot for explainability. Backtest fib usage mode is shown explicitly in Backtest Strategy Snapshot to prevent look-ahead confusion.
             </div>
           </Panel>
 

@@ -17,6 +17,9 @@ from tradeghost.shared.models.schemas import (
     AlertRule,
     AlertRuleCreateRequest,
     AlertRuleUpdateRequest,
+    AlertProfileApplyRequest,
+    AlertProfileSuggestRequest,
+    AlertProfileSuggestionResponse,
     AnalysisResponse,
     BacktestFromAnalysisRequest,
     BacktestFromAnalysisResponse,
@@ -358,6 +361,22 @@ def list_alert_rules(
 def create_alert_rule(payload: AlertRuleCreateRequest) -> AlertRule:
     try:
         return monitoring_service.create_alert_rule(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/alert-profiles/suggest", response_model=AlertProfileSuggestionResponse)
+def suggest_alert_profile(payload: AlertProfileSuggestRequest) -> AlertProfileSuggestionResponse:
+    try:
+        return monitoring_service.suggest_alert_profile(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/alert-profiles/apply", response_model=list[AlertRule])
+def apply_alert_profile(payload: AlertProfileApplyRequest) -> list[AlertRule]:
+    try:
+        return monitoring_service.apply_alert_profile(payload)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Panel, SectionTitle, StatCard } from "@/components/ui";
 import { api } from "@/lib/api";
 import {
+  AlertProfileSuggestionRule,
   MarketCode,
   ScannerCustomRule,
   ScannerCategory,
@@ -108,22 +109,6 @@ const ruleDefaultByField: Record<ScannerRuleField, ScannerCustomRule> = {
   trend_state: { field: "trend_state", operator: "eq", value_text: "bullish_trend" },
 };
 
-const alertPresetDefaults: Record<string, { label: string; rule_type: string; valueKey: string | null; defaultValue: string | number }> = {
-  near_ema20: { label: "Price near EMA20", rule_type: "near_ema20", valueKey: "threshold_pct", defaultValue: 3 },
-  near_ema50: { label: "Price near EMA50", rule_type: "near_ema50", valueKey: "threshold_pct", defaultValue: 3 },
-  near_ema100: { label: "Price near EMA100", rule_type: "near_ema100", valueKey: "threshold_pct", defaultValue: 5 },
-  near_ema200: { label: "Price near EMA200", rule_type: "near_ema200", valueKey: "threshold_pct", defaultValue: 5 },
-  cross_above_ema100: { label: "Cross above EMA100", rule_type: "cross_above_ema100", valueKey: null, defaultValue: "" },
-  cross_above_ema200: { label: "Cross above EMA200", rule_type: "cross_above_ema200", valueKey: null, defaultValue: "" },
-  cross_below_ema100: { label: "Cross below EMA100", rule_type: "cross_below_ema100", valueKey: null, defaultValue: "" },
-  cross_below_ema200: { label: "Cross below EMA200", rule_type: "cross_below_ema200", valueKey: null, defaultValue: "" },
-  dynamics_state_is: { label: "Dynamics accelerating", rule_type: "dynamics_state_is", valueKey: "state", defaultValue: "accelerating" },
-  rsi14_lte: { label: "RSI14 below", rule_type: "rsi14_lte", valueKey: "value", defaultValue: 30 },
-  rsi14_gte: { label: "RSI14 above", rule_type: "rsi14_gte", valueKey: "value", defaultValue: 70 },
-  volume_ratio_20_gte: { label: "Volume ratio 20 above", rule_type: "volume_ratio_20_gte", valueKey: "value", defaultValue: 1.5 },
-  resistance_test_count_gte: { label: "Resistance tests >=", rule_type: "resistance_test_count_gte", valueKey: "count", defaultValue: 3 },
-};
-
 export default function ScannerPage() {
   const router = useRouter();
   const [market, setMarket] = useState<MarketCode>("us");
@@ -146,6 +131,12 @@ export default function ScannerPage() {
   const [customRules, setCustomRules] = useState<ScannerCustomRule[]>([]);
   const [rangeStart, setRangeStart] = useState("");
   const [rangeEnd, setRangeEnd] = useState("");
+  const [alertPlanRow, setAlertPlanRow] = useState<ScannerResult | null>(null);
+  const [alertPlanRules, setAlertPlanRules] = useState<AlertProfileSuggestionRule[]>([]);
+  const [alertPlanLoading, setAlertPlanLoading] = useState(false);
+  const [alertPlanNotificationEnabled, setAlertPlanNotificationEnabled] = useState(false);
+  const [alertPlanNotifyEmail, setAlertPlanNotifyEmail] = useState("");
+  const [userLabel, setUserLabel] = useState("local-user");
 
   const recommended = recommendedDurationByCategory[category];
 
@@ -286,43 +277,53 @@ export default function ScannerPage() {
     }
   };
 
-  const createBasicAlertFromRow = async (row: ScannerResult) => {
-    const presetKey = window.prompt(
-      "Preset key (near_ema20, near_ema50, near_ema100, near_ema200, cross_above_ema100, cross_above_ema200, cross_below_ema100, cross_below_ema200, dynamics_state_is, rsi14_lte, rsi14_gte, volume_ratio_20_gte, resistance_test_count_gte)",
-      "near_ema50",
-    );
-    if (!presetKey) return;
-    const preset = alertPresetDefaults[presetKey.trim()];
-    if (!preset) {
-      setNotice("Unknown alert preset key.");
-      return;
-    }
-    const parameters: Record<string, unknown> = {};
-    if (preset.valueKey) {
-      const raw = window.prompt(`Value for ${preset.valueKey}`, String(preset.defaultValue));
-      if (raw === null) return;
-      parameters[preset.valueKey] = raw.trim() === "" ? preset.defaultValue : (Number.isNaN(Number(raw)) ? raw : Number(raw));
-      if (preset.rule_type === "dynamics_state_is") {
-        parameters.category = "momentum_mode";
-      }
-    }
+  const openAlertPlan = async (row: ScannerResult) => {
     try {
-      await api.createAlertRule({
-        scope_type: "symbol",
-        scope_ref: row.symbol,
-        market,
+      setAlertPlanLoading(true);
+      const response = await api.suggestAlertProfile({
         symbol: row.symbol,
-        name: `${row.symbol} ${preset.label}`,
-        rule_type: preset.rule_type,
-        parameters,
-        timeframe: "daily",
-        severity: "watch",
-        color: "yellow",
-        is_enabled: true,
+        market,
+        scanner_category: result?.scope.category ?? category,
+        watchlist_id: selectedWatchlistId || null,
+        shortlisted_by: userLabel || "local-user",
+        created_by: userLabel || "local-user",
+        notification_enabled: alertPlanNotificationEnabled,
+        notify_email: alertPlanNotifyEmail || null,
       });
-      setNotice(`Alert created for ${row.symbol}.`);
+      setAlertPlanRow(row);
+      setAlertPlanRules(response.rules);
     } catch (err) {
-      setNotice(err instanceof Error ? err.message : "Failed to create alert.");
+      setNotice(err instanceof Error ? err.message : "Failed to load alert profile suggestions.");
+    } finally {
+      setAlertPlanLoading(false);
+    }
+  };
+
+  const updateAlertPlanRule = (index: number, patch: Partial<AlertProfileSuggestionRule>) => {
+    setAlertPlanRules((prev) => prev.map((rule, i) => (i === index ? { ...rule, ...patch } : rule)));
+  };
+
+  const applyAlertPlan = async () => {
+    if (!alertPlanRow) return;
+    try {
+      const created = await api.applyAlertProfile({
+        scope_type: "symbol",
+        scope_ref: alertPlanRow.symbol,
+        symbol: alertPlanRow.symbol,
+        market,
+        scanner_category: result?.scope.category ?? category,
+        watchlist_id: selectedWatchlistId || null,
+        shortlisted_by: userLabel || "local-user",
+        created_by: userLabel || "local-user",
+        notification_enabled: alertPlanNotificationEnabled,
+        notify_email: alertPlanNotifyEmail || null,
+        rules: alertPlanRules,
+      });
+      setNotice(`Created ${created.length} alert rules for ${alertPlanRow.symbol}.`);
+      setAlertPlanRow(null);
+      setAlertPlanRules([]);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Failed to apply alert profile.");
     }
   };
 
@@ -336,6 +337,60 @@ export default function ScannerPage() {
       {notice ? (
         <Panel className="border-cyan/30 bg-cyan/10">
           <p className="text-sm text-cyan">{notice}</p>
+        </Panel>
+      ) : null}
+
+      {alertPlanRow ? (
+        <Panel>
+          <SectionTitle title={`Alert Plan: ${alertPlanRow.symbol}`} subtitle="Category-aware suggested rules. Select, edit, and apply." />
+          <div className="grid gap-2 md:grid-cols-3">
+            <label className="space-y-1 text-xs text-slate-300">
+              <span>User Label</span>
+              <input value={userLabel} onChange={(event) => setUserLabel(event.target.value)} className="h-9 w-full rounded-lg border border-stroke bg-bg px-2" />
+            </label>
+            <label className="space-y-1 text-xs text-slate-300">
+              <span>Notify Email (optional)</span>
+              <input value={alertPlanNotifyEmail} onChange={(event) => setAlertPlanNotifyEmail(event.target.value)} placeholder="name@example.com" className="h-9 w-full rounded-lg border border-stroke bg-bg px-2" />
+            </label>
+            <label className="mt-6 inline-flex items-center gap-2 text-xs text-slate-300">
+              <input type="checkbox" checked={alertPlanNotificationEnabled} onChange={(event) => setAlertPlanNotificationEnabled(event.target.checked)} />
+              Enable notification-ready status
+            </label>
+          </div>
+          <div className="mt-3 space-y-2">
+            {alertPlanRules.map((rule, index) => (
+              <div key={rule.temp_id} className="grid gap-2 rounded-lg border border-stroke/70 bg-panelSoft p-2 md:grid-cols-[auto_1fr_220px_120px_120px]">
+                <label className="inline-flex items-center gap-2 text-xs">
+                  <input type="checkbox" checked={rule.selected} onChange={(event) => updateAlertPlanRule(index, { selected: event.target.checked })} />
+                  use
+                </label>
+                <div>
+                  <p className="text-sm text-slate-100">{rule.name}</p>
+                  <p className="text-xs text-slate-400">{rule.rationale}</p>
+                </div>
+                <input value={rule.parameters ? JSON.stringify(rule.parameters) : "{}"} onChange={(event) => {
+                  try {
+                    const parsed = JSON.parse(event.target.value);
+                    updateAlertPlanRule(index, { parameters: parsed });
+                  } catch {
+                    // keep existing value until valid json
+                  }
+                }} className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs" />
+                <select value={rule.severity} onChange={(event) => updateAlertPlanRule(index, { severity: event.target.value as AlertProfileSuggestionRule["severity"] })} className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs">
+                  <option value="info">info</option>
+                  <option value="watch">watch</option>
+                  <option value="important">important</option>
+                  <option value="critical">critical</option>
+                </select>
+                <input type="number" min={0} max={1440} value={rule.cooldown_minutes} onChange={(event) => updateAlertPlanRule(index, { cooldown_minutes: Number(event.target.value) })} className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs" />
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 flex gap-2">
+            <button type="button" onClick={() => setAlertPlanRules((prev) => prev.map((row) => ({ ...row, selected: true })))} className="rounded-lg border border-stroke px-3 py-2 text-xs hover:text-cyan">Select All</button>
+            <button type="button" onClick={applyAlertPlan} className="rounded-lg border border-stroke px-3 py-2 text-xs hover:text-cyan">Apply Selected</button>
+            <button type="button" onClick={() => { setAlertPlanRow(null); setAlertPlanRules([]); }} className="rounded-lg border border-stroke px-3 py-2 text-xs">Close</button>
+          </div>
         </Panel>
       ) : null}
 
@@ -595,7 +650,7 @@ export default function ScannerPage() {
                         <td className="px-2 py-2 whitespace-nowrap">
                           <div className="flex gap-1">
                             <button type="button" onClick={() => addToWatchlist(row.symbol)} className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan">Add WL</button>
-                            <button type="button" onClick={() => createBasicAlertFromRow(row)} className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan">Alert</button>
+                            <button type="button" onClick={() => openAlertPlan(row)} disabled={alertPlanLoading} className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan disabled:opacity-60">{alertPlanLoading ? "Loading..." : "Alert Plan"}</button>
                           </div>
                         </td>
                       </tr>

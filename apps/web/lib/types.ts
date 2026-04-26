@@ -450,6 +450,12 @@ export type BacktestFromAnalysisResponse = {
   early_transition_skip_share_pct: number;
   momentum_continuation_entries: number;
   controlled_extension_entries: number;
+  fib_mode: string;
+  fib_anchor_method: string;
+  nearest_fib_level: number | null;
+  fib_target_room_pct: number | null;
+  fib_used_in_entry: boolean;
+  fib_used_in_exit: boolean;
   exit_stop_loss_count: number;
   exit_take_profit_count: number;
   exit_timeout_count: number;
@@ -651,7 +657,10 @@ export type AlertRuleType =
   | "resistance_test_count_gte"
   | "volume_ratio_20_gte"
   | "rsi14_lte"
-  | "rsi14_gte";
+  | "rsi14_gte"
+  | "new_breakout_high"
+  | "blowoff_extension_warning"
+  | "fib_ema_confluence_reached";
 
 export type AlertRule = {
   id: string;
@@ -671,6 +680,14 @@ export type AlertRule = {
   preferred_regime_mode: string | null;
   notification_email_enabled: boolean;
   notification_webhook_enabled: boolean;
+  notification_enabled: boolean;
+  notify_email: string | null;
+  notification_status: string;
+  scanner_category: ScannerCategory | null;
+  watchlist_id: string | null;
+  shortlisted_by: string | null;
+  created_by: string | null;
+  cooldown_minutes: number;
   last_checked: string | null;
   last_matched: string | null;
 };
@@ -688,8 +705,38 @@ export type AlertEvent = {
   severity: AlertSeverity;
   status: AlertEventStatus;
   message: string;
+  watchlist_id: string | null;
+  scanner_category: ScannerCategory | null;
+  shortlisted_by: string | null;
+  notification_status: string;
+  notified_to: string | null;
+  notified_at: string | null;
   scanner_context: Record<string, unknown>;
   analysis_context: Record<string, unknown>;
+};
+
+export type AlertProfileSuggestionRule = {
+  temp_id: string;
+  name: string;
+  rule_type: AlertRuleType;
+  parameters: Record<string, unknown>;
+  timeframe: string;
+  severity: AlertSeverity;
+  color: string;
+  is_enabled: boolean;
+  selected: boolean;
+  rationale: string;
+  cooldown_minutes: number;
+};
+
+export type AlertProfileSuggestionResponse = {
+  symbol: string;
+  market: MarketCode;
+  scanner_category: ScannerCategory;
+  watchlist_id: string | null;
+  shortlisted_by: string | null;
+  created_by: string | null;
+  rules: AlertProfileSuggestionRule[];
 };
 
 export type MonitoringSchedule = {

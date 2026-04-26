@@ -753,6 +753,14 @@ class BacktestEngine:
         )
         metrics = self._compute_metrics(sim.trades)
         chart, markers, visible_start, visible_end = self._build_chart(bundle.daily, visible_chart_window, context.trade_plan, sim.trades)
+        fib_values = sorted(float(v) for v in chart.fibonacci_levels.values()) if chart.fibonacci_levels else []
+        nearest_fib_level = None
+        fib_target_room_pct = None
+        if fib_values:
+            nearest_fib_level = min(fib_values, key=lambda level: abs(level - chart.current_price))
+            above = [level for level in fib_values if level > chart.current_price]
+            if above:
+                fib_target_room_pct = ((above[0] - chart.current_price) / max(chart.current_price, 0.01)) * 100.0
         decision_log_sample = self._sample_evenly(sim.decision_log, max_rows=280)
         return BacktestFromAnalysisResponse(
             ticker=bundle.ticker,
@@ -803,6 +811,12 @@ class BacktestEngine:
             early_transition_skip_share_pct=sim.early_transition_skip_share_pct,
             momentum_continuation_entries=sim.momentum_continuation_entries,
             controlled_extension_entries=sim.controlled_extension_entries,
+            fib_mode="visual_only",
+            fib_anchor_method="latest_snapshot_lookback_90",
+            nearest_fib_level=round(nearest_fib_level, 4) if nearest_fib_level is not None else None,
+            fib_target_room_pct=round(fib_target_room_pct, 2) if fib_target_room_pct is not None else None,
+            fib_used_in_entry=False,
+            fib_used_in_exit=False,
             exit_stop_loss_count=sim.exit_stop_loss_count,
             exit_take_profit_count=sim.exit_take_profit_count,
             exit_timeout_count=sim.exit_timeout_count,

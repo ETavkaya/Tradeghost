@@ -10,6 +10,7 @@ import {
   Watchlist,
   AlertRule,
   AlertEvent,
+  AlertProfileSuggestionResponse,
   MonitoringSchedule,
   MonitoringRunSummary,
   ScannerCategory,
@@ -138,6 +139,18 @@ export const api = {
   },
   createAlertRule: (payload: Record<string, unknown>) =>
     fetchJson<AlertRule>("/api/alert-rules", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
+  suggestAlertProfile: (payload: Record<string, unknown>) =>
+    fetchJson<AlertProfileSuggestionResponse>("/api/alert-profiles/suggest", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
+  applyAlertProfile: (payload: Record<string, unknown>) =>
+    fetchJson<AlertRule[]>("/api/alert-profiles/apply", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)

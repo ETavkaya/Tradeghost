@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { useState } from "react";
 import type { Data, Layout, Shape } from "plotly.js";
-import { AnalysisChart, BacktestMarker } from "@/lib/types";
+import { AnalysisChart, BacktestMarker, BacktestTrade } from "@/lib/types";
 import { premiumDarkPlotlyTemplate } from "@/lib/plotly-theme";
 
 const Plot = dynamic(() => import("react-plotly.js"), { ssr: false });
@@ -13,6 +13,7 @@ type Props = {
   title: string;
   markers?: BacktestMarker[];
   markerMode?: "trades" | "decision";
+  tradeLines?: BacktestTrade[];
 };
 
 const markerStyle: Record<string, { color: string; symbol: string; name: string }> = {
@@ -82,7 +83,7 @@ function buildLegendTrace(name: string, color: string, dash: "solid" | "dot" | "
   };
 }
 
-export function UnifiedAnalysisChart({ chart, title, markers = [], markerMode = "trades" }: Props) {
+export function UnifiedAnalysisChart({ chart, title, markers = [], markerMode = "trades", tradeLines = [] }: Props) {
   const [expanded, setExpanded] = useState(false);
 
   const x = chart.candles.map((c) => c.date);
@@ -161,7 +162,7 @@ export function UnifiedAnalysisChart({ chart, title, markers = [], markerMode = 
 
   const renderPlot = (height: number) => (
     <Plot
-      data={[candlestick, ema20, ema50, ema100, ema200, currentPoint, ...legendOverlayTraces, ...markerTraces]}
+      data={[candlestick, ema20, ema50, ema100, ema200, currentPoint, ...legendOverlayTraces, ...tradeLineTraces, ...markerTraces]}
       layout={{ ...baseLayout, height }}
       config={{ displaylogo: false, responsive: true, modeBarButtonsToRemove: ["lasso2d", "select2d"] }}
       style={{ width: "100%", height: "100%" }}
@@ -195,3 +196,29 @@ export function UnifiedAnalysisChart({ chart, title, markers = [], markerMode = 
     </>
   );
 }
+  const tradeLineTraces: Data[] =
+    markerMode === "trades"
+      ? tradeLines.map((trade) => {
+          const isWin = trade.return_pct >= 0;
+          let color = isWin ? "#23D18B" : "#F2545B";
+          if ((trade.exit_reason ?? "").toLowerCase().includes("timeout")) color = "#B9C4D7";
+          if ((trade.exit_reason ?? "").toLowerCase().includes("target")) color = "#19D3F3";
+          if ((trade.exit_reason ?? "").toLowerCase().includes("stop")) color = "#F2545B";
+          return {
+            type: "scatter",
+            mode: "lines",
+            x: [trade.entry_date, trade.exit_date],
+            y: [trade.entry_price, trade.exit_price],
+            line: { color, width: 2.2, dash: isWin ? "solid" : "dot" },
+            hovertemplate:
+              `Trade #${trade.trade_id}<br>` +
+              `Entry: ${trade.entry_date} @ $${trade.entry_price.toFixed(2)}<br>` +
+              `Exit: ${trade.exit_date} @ $${trade.exit_price.toFixed(2)}<br>` +
+              `Return: ${trade.return_pct.toFixed(2)}%<br>` +
+              `Exit reason: ${trade.exit_reason ?? "n/a"}<extra></extra>`,
+            name: `Trade ${trade.trade_id}`,
+            showlegend: false,
+            legendgroup: "trade_paths",
+          } as Data;
+        })
+      : [];

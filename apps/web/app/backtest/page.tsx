@@ -81,6 +81,7 @@ export default function BacktestPage() {
   const [chartTab, setChartTab] = useState<ChartTab>("trades");
   const [decisionFilter, setDecisionFilter] = useState<DecisionFilter>("all");
   const [historyWindow, setHistoryWindow] = useState<BacktestHistoryWindow>("2y");
+  const [visibleWindow, setVisibleWindow] = useState<BacktestHistoryWindow>("2y");
 
   const [threshold, setThreshold] = useState(60);
   const [regimeMode, setRegimeMode] = useState("medium");
@@ -138,6 +139,12 @@ export default function BacktestPage() {
     setOver200(analysis.analysis_config.location_filter.max_overextension_ema200_pct);
   }, [analysis]);
 
+  useEffect(() => {
+    if (!result) return;
+    setHistoryWindow(result.evaluation_history_window);
+    setVisibleWindow(result.visible_chart_window as BacktestHistoryWindow);
+  }, [result]);
+
   const buildTunedConfig = (): AnalysisConfig | null => {
     if (!analysis) return null;
     return {
@@ -186,7 +193,7 @@ export default function BacktestPage() {
         backtest_score_threshold: tunedConfig.score_threshold,
         strategy_mode: tunedConfig.strategy_mode,
         backtest_history_window: historyWindow,
-        visible_chart_window: historyWindow as AnalysisWindow,
+        visible_chart_window: visibleWindow as AnalysisWindow,
         trade_plan:
           analysis.chart.trade_plan_overlay ?? {
             bias: "neutral",
@@ -299,6 +306,15 @@ export default function BacktestPage() {
     }
     return ids.size;
   }, [result]);
+  const hiddenTradeCount = useMemo(() => {
+    if (!result) return 0;
+    return Math.max(0, result.trades - visibleTradeCount);
+  }, [result, visibleTradeCount]);
+  const setupTypeInRun = useMemo(() => {
+    if (!result) return "n/a";
+    const found = result.trades_table.find((trade) => trade.setup_type)?.setup_type;
+    return found ?? (result.strategy_mode_used === "momentum_continuation" ? "momentum_continuation" : "pullback_continuation");
+  }, [result]);
 
   const tunedConfig = useMemo(() => buildTunedConfig(), [
     analysis,
@@ -333,7 +349,11 @@ export default function BacktestPage() {
             <InfoHint label="Evaluation History" text="How much history is evaluated by the strategy engine (1Y to 5Y)." />
             <select
               value={historyWindow}
-              onChange={(event) => setHistoryWindow(event.target.value as BacktestHistoryWindow)}
+              onChange={(event) => {
+                const next = event.target.value as BacktestHistoryWindow;
+                setHistoryWindow(next);
+                setVisibleWindow(next);
+              }}
               className="h-10 w-full rounded-lg border border-stroke bg-bg px-3"
             >
               <option value="1y">1Y</option>
@@ -343,7 +363,20 @@ export default function BacktestPage() {
               <option value="5y">5Y</option>
             </select>
           </label>
-          <StatCard label="Visible Chart Window" value={historyWindow.toUpperCase()} />
+          <label className="space-y-1 text-sm">
+            <InfoHint label="Visible Chart Window" text="Chart display range. Defaults to evaluation history so all evaluated trades are visible." />
+            <select
+              value={visibleWindow}
+              onChange={(event) => setVisibleWindow(event.target.value as BacktestHistoryWindow)}
+              className="h-10 w-full rounded-lg border border-stroke bg-bg px-3"
+            >
+              <option value="1y">1Y</option>
+              <option value="2y">2Y</option>
+              <option value="3y">3Y</option>
+              <option value="4y">4Y</option>
+              <option value="5y">5Y</option>
+            </select>
+          </label>
           <StatCard label="Mode" value={analysis?.analysis_config.strategy_mode ?? "n/a"} />
           <StatCard label="Threshold (pending)" value={`${threshold.toFixed(1)}`} />
         </div>
@@ -401,6 +434,17 @@ export default function BacktestPage() {
           {loading ? "Running Backtest..." : "Run Backtest From Analysis"}
         </button>
         {!analysis ? <p className="mt-3 text-xs text-slate-400">Run Analysis first to enable this action.</p> : null}
+        <button
+          type="button"
+          onClick={() => {
+            setVisibleWindow(historyWindow);
+            void runBacktest();
+          }}
+          disabled={loading || visibleWindow === historyWindow}
+          className="ml-2 mt-4 h-11 rounded-lg border border-stroke px-4 text-sm text-slate-300 hover:text-cyan disabled:opacity-50"
+        >
+          Show Full Evaluation Window
+        </button>
       </Panel>
 
       {error ? (
@@ -448,6 +492,29 @@ export default function BacktestPage() {
               <p className="text-xs text-slate-300">Total trades (evaluation history): {result.trades}</p>
               <p className="text-xs text-slate-300">Visible in chart window: {visibleTradeCount}</p>
             </div>
+            {hiddenTradeCount > 0 ? (
+              <p className="mt-2 text-xs text-amber-300">
+                {result.trades} trades in evaluation, {visibleTradeCount} visible in current chart window. {hiddenTradeCount} hidden. Expand visible window to see all.
+              </p>
+            ) : null}
+          </Panel>
+
+          <Panel>
+            <SectionTitle title="Backtest Strategy Snapshot" subtitle="Shared AnalysisConfig + active deterministic gates used by this run" />
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <StatCard label="Strategy Mode" value={result.analysis_config.strategy_mode} />
+              <StatCard label="Setup Type Focus" value={setupTypeInRun.replaceAll("_", " ")} />
+              <StatCard label="Active Gates" value="threshold / regime / location / trigger / overextension" />
+              <StatCard label="Entry Scope" value="deterministic shared analysis->backtest config" />
+            </div>
+            <div className="mt-3 rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
+              Threshold {result.analysis_config.score_threshold.toFixed(1)} | Regime {result.analysis_config.regime_filter.regime_mode} | Support max {result.analysis_config.location_filter.max_support_distance_pct.toFixed(2)}% | Resistance min {result.analysis_config.location_filter.min_resistance_room_pct.toFixed(2)}% | Trigger min {result.analysis_config.trigger_filter.min_trigger_score.toFixed(1)}.
+            </div>
+            <div className="mt-2 rounded-xl border border-stroke/70 bg-panelSoft p-3 text-xs text-slate-300">
+              Fib mode: {result.fib_mode}. Anchor method: {result.fib_anchor_method}. Nearest fib: {result.nearest_fib_level?.toFixed(2) ?? "n/a"} | Fib target room: {result.fib_target_room_pct?.toFixed(2) ?? "n/a"}%.
+              Fib used in entry: {result.fib_used_in_entry ? "yes" : "no"} | Fib used in exit: {result.fib_used_in_exit ? "yes" : "no"}.
+              {result.fib_mode === "visual_only" ? " Fib levels are visual/current analysis only and are not used as historical backtest entry/exit rules." : ""}
+            </div>
           </Panel>
 
           <Panel>
@@ -478,6 +545,7 @@ export default function BacktestPage() {
               markers={activeMarkers}
               title={`${result.ticker} ${chartTab === "trades" ? "Trades" : "Decision Map"}`}
               markerMode={chartTab}
+              tradeLines={chartTab === "trades" ? result.trades_table : []}
             />
             {chartTab === "decision" ? (
               <div className="mt-2 grid gap-2 sm:grid-cols-3">

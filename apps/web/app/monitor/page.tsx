@@ -17,7 +17,7 @@ import {
   Watchlist,
 } from "@/lib/types";
 
-type MonitorView = "watchlists" | "rules" | "events";
+type MonitorView = "watchlists" | "rules" | "logs";
 type PollMode = "auto" | "manual";
 type PollInterval = "1m" | "5m" | "hourly" | "daily";
 
@@ -54,6 +54,9 @@ const presetDefaults: Record<AlertRuleType, { label: string; valueKey: string | 
   volume_ratio_20_gte: { label: "Volume ratio 20 >= X", valueKey: "value", defaultValue: "1.5", severity: "watch" },
   rsi14_lte: { label: "RSI14 <= X", valueKey: "value", defaultValue: "30", severity: "watch" },
   rsi14_gte: { label: "RSI14 >= X", valueKey: "value", defaultValue: "70", severity: "watch" },
+  new_breakout_high: { label: "New breakout high", valueKey: "lookback_bars", defaultValue: "55", severity: "important" },
+  blowoff_extension_warning: { label: "Blowoff extension warning", valueKey: null, defaultValue: "", severity: "critical" },
+  fib_ema_confluence_reached: { label: "Fib/EMA confluence reached", valueKey: "max_distance_pct", defaultValue: "1.5", severity: "important" },
 };
 
 function tvLink(symbol: string, market: MarketCode): string {
@@ -86,6 +89,9 @@ function ruleCondition(rule: AlertRule): string {
   if (rule.rule_type === "rsi14_gte") return `RSI14 >= ${p.value ?? "-"}`;
   if (rule.rule_type === "volume_ratio_20_gte") return `Volume ratio >= ${p.value ?? "-"}`;
   if (rule.rule_type === "resistance_test_count_gte") return `Resistance tests >= ${p.count ?? p.value ?? "-"}`;
+  if (rule.rule_type === "new_breakout_high") return `New breakout high (${p.lookback_bars ?? "-"} bars)`;
+  if (rule.rule_type === "blowoff_extension_warning") return "Blowoff extension warning";
+  if (rule.rule_type === "fib_ema_confluence_reached") return `Fib/EMA confluence <= ${p.max_distance_pct ?? "-"}%`;
   return rule.rule_type;
 }
 export default function MonitorPage() {
@@ -102,6 +108,9 @@ export default function MonitorPage() {
 
   const [eventSeverityFilter, setEventSeverityFilter] = useState("");
   const [eventStatusFilter, setEventStatusFilter] = useState("");
+  const [eventWatchlistFilter, setEventWatchlistFilter] = useState("");
+  const [eventSymbolFilter, setEventSymbolFilter] = useState("");
+  const [eventDateFilter, setEventDateFilter] = useState("");
   const [ruleSymbolFilter, setRuleSymbolFilter] = useState("");
   const [ruleWatchlistFilter, setRuleWatchlistFilter] = useState("");
   const [ruleSeverityFilter, setRuleSeverityFilter] = useState("");
@@ -114,6 +123,25 @@ export default function MonitorPage() {
 
   const selectedWatchlist = useMemo(() => watchlists.find((w) => w.id === selectedWatchlistId) ?? null, [watchlists, selectedWatchlistId]);
   const enabledRules = useMemo(() => alertRules.filter((r) => r.is_enabled), [alertRules]);
+  const filteredAlerts = useMemo(() => {
+    return alerts.filter((event) => {
+      if (eventWatchlistFilter && event.watchlist_id !== eventWatchlistFilter) return false;
+      if (eventSymbolFilter && event.symbol.toUpperCase() !== eventSymbolFilter.toUpperCase()) return false;
+      if (eventDateFilter && !event.timestamp.startsWith(eventDateFilter)) return false;
+      return true;
+    });
+  }, [alerts, eventWatchlistFilter, eventSymbolFilter, eventDateFilter]);
+  const latestAlertBySymbol = useMemo(() => {
+    const map = new Map<string, AlertEvent>();
+    for (const event of alerts) {
+      const key = `${event.symbol}|${event.market}`;
+      const current = map.get(key);
+      if (!current || +new Date(event.timestamp) > +new Date(current.timestamp)) {
+        map.set(key, event);
+      }
+    }
+    return map;
+  }, [alerts]);
 
   const latestScheduleRun = useMemo(() => {
     const times = schedules.map((s) => s.last_run_at).filter(Boolean) as string[];
@@ -265,6 +293,13 @@ export default function MonitorPage() {
       severity: preset.severity,
       color: preset.severity === "critical" ? "red" : preset.severity === "important" ? "orange" : "yellow",
       is_enabled: true,
+      notification_enabled: false,
+      notify_email: null,
+      scanner_category: null,
+      watchlist_id: selectedWatchlistId || null,
+      shortlisted_by: "local-user",
+      created_by: "local-user",
+      cooldown_minutes: 60,
     });
     setAlertDraft(null);
     setNotice("Alert rule created.");
@@ -287,7 +322,7 @@ export default function MonitorPage() {
   return (
     <main className="space-y-4">
       <Panel>
-        <SectionTitle title="Monitor Workspace" subtitle="Watchlists = tracked symbols and performance | Alert Rules = conditions being watched | Alert Events = things that triggered" />
+        <SectionTitle title="Monitor Workspace" subtitle="Watchlists = tracked symbols and performance | Alert Rules = conditions being watched | Alert Logs = things that triggered" />
       </Panel>
       {notice ? <Panel className="border-cyan/30 bg-cyan/10"><p className="text-sm text-cyan">{notice}</p></Panel> : null}
 
@@ -331,7 +366,7 @@ export default function MonitorPage() {
           <div className="grid gap-2">
             <button type="button" onClick={() => setView("watchlists")} className={`rounded-md border px-3 py-2 text-left text-xs ${view === "watchlists" ? "border-cyan text-cyan" : "border-stroke text-slate-300"}`}>Watchlists ({watchlists.length})</button>
             <button type="button" onClick={() => setView("rules")} className={`rounded-md border px-3 py-2 text-left text-xs ${view === "rules" ? "border-cyan text-cyan" : "border-stroke text-slate-300"}`}>Alert Rules ({enabledRules.length} active)</button>
-            <button type="button" onClick={() => setView("events")} className={`rounded-md border px-3 py-2 text-left text-xs ${view === "events" ? "border-cyan text-cyan" : "border-stroke text-slate-300"}`}>Alert Events ({alerts.length})</button>
+            <button type="button" onClick={() => setView("logs")} className={`rounded-md border px-3 py-2 text-left text-xs ${view === "logs" ? "border-cyan text-cyan" : "border-stroke text-slate-300"}`}>Alert Logs ({alerts.length})</button>
           </div>
           <div className="mt-3 space-y-2 rounded-lg border border-stroke/70 p-2">
             {watchlists.map((wl) => <button key={wl.id} type="button" onClick={() => { setSelectedWatchlistId(wl.id); setView("watchlists"); }} className={`w-full rounded-md border px-2 py-2 text-left text-xs ${selectedWatchlistId === wl.id ? "border-cyan text-cyan" : "border-stroke text-slate-300"}`}>{wl.name} ({wl.items.length})</button>)}
@@ -354,11 +389,12 @@ export default function MonitorPage() {
 
               <div className="mt-3 overflow-x-auto rounded-lg border border-stroke/70">
                 <table className="min-w-full text-xs">
-                  <thead><tr className="border-b border-stroke text-left text-slate-400"><th className="px-2 py-2">Symbol</th><th className="px-2 py-2">Mkt</th><th className="px-2 py-2">Added</th><th className="px-2 py-2">Added Px</th><th className="px-2 py-2">Current</th><th className="px-2 py-2">P/L</th><th className="px-2 py-2">1M</th><th className="px-2 py-2">3M</th><th className="px-2 py-2">6M</th><th className="px-2 py-2">1Y</th><th className="px-2 py-2">Trend</th><th className="px-2 py-2">Score</th><th className="px-2 py-2">Dynamics</th><th className="px-2 py-2">vs EMA200</th><th className="px-2 py-2">Alerts</th><th className="px-2 py-2">Last Checked</th><th className="px-2 py-2">Actions</th></tr></thead>
+                  <thead><tr className="border-b border-stroke text-left text-slate-400"><th className="px-2 py-2">Symbol</th><th className="px-2 py-2">Mkt</th><th className="px-2 py-2">Added</th><th className="px-2 py-2">Added Px</th><th className="px-2 py-2">Current</th><th className="px-2 py-2">P/L</th><th className="px-2 py-2">1M</th><th className="px-2 py-2">3M</th><th className="px-2 py-2">6M</th><th className="px-2 py-2">1Y</th><th className="px-2 py-2">Trend</th><th className="px-2 py-2">Score</th><th className="px-2 py-2">Dynamics</th><th className="px-2 py-2">vs EMA200</th><th className="px-2 py-2">Alerts</th><th className="px-2 py-2">Latest Log</th><th className="px-2 py-2">Last Checked</th><th className="px-2 py-2">Actions</th></tr></thead>
                   <tbody>
                     {(selectedWatchlist?.items ?? []).map((item) => {
                       const alertCount = enabledRules.filter((r) => r.market === item.market && ((r.scope_type === "symbol" && r.symbol?.toUpperCase() === item.symbol.toUpperCase()) || (r.scope_type === "watchlist" && r.scope_ref === selectedWatchlistId))).length;
-                      return <tr key={`${item.symbol}|${item.market}`} className="border-b border-stroke/50"><td className="px-2 py-2 font-medium text-slate-100">{item.symbol}</td><td className="px-2 py-2">{item.market.toUpperCase()}</td><td className="px-2 py-2">{new Date(item.added_at).toLocaleDateString()}</td><td className="px-2 py-2">{num(item.added_price)}{item.added_price_estimated ? " (est)" : ""}</td><td className="px-2 py-2">{num(item.current_price)}</td><td className={`px-2 py-2 ${(item.pnl_since_added_pct ?? 0) >= 0 ? "text-green" : "text-red"}`}>{pct(item.pnl_since_added_pct)}</td><td className="px-2 py-2">{pct(item.return_1m_pct)}</td><td className="px-2 py-2">{pct(item.return_3m_pct)}</td><td className="px-2 py-2">{pct(item.return_6m_pct)}</td><td className="px-2 py-2">{pct(item.return_1y_pct)}</td><td className="px-2 py-2">{item.trend_state ?? "-"}</td><td className="px-2 py-2">{item.score !== null ? item.score.toFixed(1) : "-"}</td><td className="px-2 py-2">{item.score_dynamics_state ?? "-"}</td><td className="px-2 py-2">{pct(item.price_vs_ema200_pct)}</td><td className="px-2 py-2">{alertCount}</td><td className="px-2 py-2">{item.last_checked ? new Date(item.last_checked).toLocaleString() : "-"}</td><td className="px-2 py-2"><div className="flex gap-1"><button type="button" onClick={() => router.push(`/analysis?ticker=${encodeURIComponent(item.symbol)}&market=${encodeURIComponent(item.market)}&window=1y`)} className="rounded border border-stroke px-2 py-1">Analysis</button><a href={tvLink(item.symbol, item.market)} target="_blank" rel="noreferrer" className="rounded border border-stroke px-2 py-1">TV</a><button type="button" onClick={() => { setRuleSymbolFilter(item.symbol); setView("rules"); }} className="rounded border border-stroke px-2 py-1">Edit Alerts</button><button type="button" onClick={() => openPreset(item.symbol, item.market)} className="rounded border border-stroke px-2 py-1">Alert</button><button type="button" onClick={() => removeSymbol(item.symbol, item.market)} className="rounded border border-red/40 px-2 py-1 text-red">Remove</button></div></td></tr>;
+                      const latestLog = latestAlertBySymbol.get(`${item.symbol}|${item.market}`);
+                      return <tr key={`${item.symbol}|${item.market}`} className="border-b border-stroke/50"><td className="px-2 py-2 font-medium text-slate-100">{item.symbol}</td><td className="px-2 py-2">{item.market.toUpperCase()}</td><td className="px-2 py-2">{new Date(item.added_at).toLocaleDateString()}</td><td className="px-2 py-2">{num(item.added_price)}{item.added_price_estimated ? " (est)" : ""}</td><td className="px-2 py-2">{num(item.current_price)}</td><td className={`px-2 py-2 ${(item.pnl_since_added_pct ?? 0) >= 0 ? "text-green" : "text-red"}`}>{pct(item.pnl_since_added_pct)}</td><td className="px-2 py-2">{pct(item.return_1m_pct)}</td><td className="px-2 py-2">{pct(item.return_3m_pct)}</td><td className="px-2 py-2">{pct(item.return_6m_pct)}</td><td className="px-2 py-2">{pct(item.return_1y_pct)}</td><td className="px-2 py-2">{item.trend_state ?? "-"}</td><td className="px-2 py-2">{item.score !== null ? item.score.toFixed(1) : "-"}</td><td className="px-2 py-2">{item.score_dynamics_state ?? "-"}</td><td className="px-2 py-2">{pct(item.price_vs_ema200_pct)}</td><td className="px-2 py-2">{alertCount}</td><td className="px-2 py-2">{latestLog ? `${latestLog.message.slice(0, 42)}${latestLog.message.length > 42 ? "..." : ""}` : "-"}</td><td className="px-2 py-2">{item.last_checked ? new Date(item.last_checked).toLocaleString() : "-"}</td><td className="px-2 py-2"><div className="flex gap-1"><button type="button" onClick={() => router.push(`/analysis?ticker=${encodeURIComponent(item.symbol)}&market=${encodeURIComponent(item.market)}&window=1y`)} className="rounded border border-stroke px-2 py-1">Analysis</button><a href={tvLink(item.symbol, item.market)} target="_blank" rel="noreferrer" className="rounded border border-stroke px-2 py-1">TV</a><button type="button" onClick={() => { setRuleSymbolFilter(item.symbol); setView("rules"); }} className="rounded border border-stroke px-2 py-1">Edit Alerts</button><button type="button" onClick={() => openPreset(item.symbol, item.market)} className="rounded border border-stroke px-2 py-1">Alert</button><button type="button" onClick={() => removeSymbol(item.symbol, item.market)} className="rounded border border-red/40 px-2 py-1 text-red">Remove</button></div></td></tr>;
                     })}
                   </tbody>
                 </table>
@@ -374,11 +410,11 @@ export default function MonitorPage() {
             </>
           ) : null}
 
-          {view === "events" ? (
+          {view === "logs" ? (
             <>
-              <SectionTitle title="Alert Events" subtitle="Triggered events log" />
-              <div className="grid gap-2 md:grid-cols-3"><select value={eventSeverityFilter} onChange={(e) => setEventSeverityFilter(e.target.value)} className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs"><option value="">all severities</option><option value="info">info</option><option value="watch">watch</option><option value="important">important</option><option value="critical">critical</option></select><select value={eventStatusFilter} onChange={(e) => setEventStatusFilter(e.target.value)} className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs"><option value="">all status</option><option value="new">new</option><option value="seen">seen</option><option value="archived">archived</option></select><button type="button" onClick={runMonitoring} className="rounded-lg border border-stroke px-3 py-2 text-xs">Run Monitoring</button></div>
-              <div className="mt-3 space-y-2 rounded-lg border border-stroke/70 p-2 max-h-[520px] overflow-auto">{alerts.length === 0 ? <div className="text-xs text-slate-400">No rules matched yet. Last run: {lastRunAt ? new Date(lastRunAt).toLocaleString() : "-"}. Symbols checked: {lastRunSummary?.evaluated_symbols ?? 0}, rules checked: {lastRunSummary?.processed_rules ?? enabledRules.length}.</div> : alerts.map((ev) => <div key={ev.id} className="rounded-md border border-stroke/60 p-2 text-xs"><p className="text-slate-100">{ev.message}</p><p className="mt-1 text-slate-400">{new Date(ev.timestamp).toLocaleString()} | {ev.symbol} | {ev.severity} | {ev.status}</p><p className="mt-1 text-slate-500">Triggered value: {ev.triggered_value !== null ? String(ev.triggered_value) : "-"}</p><div className="mt-2 flex gap-1"><button type="button" onClick={() => setEventStatus(ev.id, "seen")} className="rounded border border-stroke px-2 py-1">Seen</button><button type="button" onClick={() => setEventStatus(ev.id, "archived")} className="rounded border border-stroke px-2 py-1">Archive</button><button type="button" onClick={() => router.push(`/analysis?ticker=${encodeURIComponent(ev.symbol)}&market=${encodeURIComponent(ev.market)}&window=1y`)} className="rounded border border-stroke px-2 py-1">Analysis</button></div></div>)}</div>
+              <SectionTitle title="Alert Logs" subtitle="Triggered events grouped and filterable" />
+              <div className="grid gap-2 md:grid-cols-6"><select value={eventSeverityFilter} onChange={(e) => setEventSeverityFilter(e.target.value)} className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs"><option value="">all severities</option><option value="info">info</option><option value="watch">watch</option><option value="important">important</option><option value="critical">critical</option></select><select value={eventStatusFilter} onChange={(e) => setEventStatusFilter(e.target.value)} className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs"><option value="">all status</option><option value="new">new</option><option value="seen">seen</option><option value="archived">archived</option></select><select value={eventWatchlistFilter} onChange={(e) => setEventWatchlistFilter(e.target.value)} className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs"><option value="">all watchlists</option>{watchlists.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}</select><input value={eventSymbolFilter} onChange={(e) => setEventSymbolFilter(e.target.value)} placeholder="symbol" className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs" /><input type="date" value={eventDateFilter} onChange={(e) => setEventDateFilter(e.target.value)} className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs" /><button type="button" onClick={runMonitoring} className="rounded-lg border border-stroke px-3 py-2 text-xs">Run Monitoring</button></div>
+              <div className="mt-3 space-y-2 rounded-lg border border-stroke/70 p-2 max-h-[520px] overflow-auto">{filteredAlerts.length === 0 ? <div className="text-xs text-slate-400">No rules matched yet. Last run: {lastRunAt ? new Date(lastRunAt).toLocaleString() : "-"}. Symbols checked: {lastRunSummary?.evaluated_symbols ?? 0}, rules checked: {lastRunSummary?.processed_rules ?? enabledRules.length}.</div> : filteredAlerts.map((ev) => <div key={ev.id} className={`rounded-md border p-2 text-xs ${ev.status === "new" ? "border-cyan/60 bg-cyan/5" : "border-stroke/60"}`}><p className="text-slate-100">{ev.message}</p><p className="mt-1 text-slate-400">{new Date(ev.timestamp).toLocaleString()} | {ev.symbol} | {ev.severity} | {ev.status}</p><p className="mt-1 text-slate-500">Triggered value: {ev.triggered_value !== null ? String(ev.triggered_value) : "-"} | watchlist: {ev.watchlist_id ?? "-"} | category: {ev.scanner_category ?? "-"}</p><p className="mt-1 text-slate-500">Notification: {ev.notification_status}{ev.notified_to ? ` -> ${ev.notified_to}` : ""}</p><div className="mt-2 flex gap-1"><button type="button" onClick={() => setEventStatus(ev.id, "seen")} className="rounded border border-stroke px-2 py-1">Seen</button><button type="button" onClick={() => setEventStatus(ev.id, "archived")} className="rounded border border-stroke px-2 py-1">Archive</button><button type="button" onClick={() => router.push(`/analysis?ticker=${encodeURIComponent(ev.symbol)}&market=${encodeURIComponent(ev.market)}&window=1y`)} className="rounded border border-stroke px-2 py-1">Analysis</button></div></div>)}</div>
             </>
           ) : null}
         </Panel>

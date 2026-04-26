@@ -12,6 +12,10 @@ from tradeghost.services.analysis_engine import AnalysisEngine
 from tradeghost.services.scanner.engine import ScannerEngine
 from tradeghost.shared.config.settings import get_settings
 from tradeghost.shared.models.schemas import (
+    AlertProfileApplyRequest,
+    AlertProfileSuggestRequest,
+    AlertProfileSuggestionResponse,
+    AlertProfileSuggestionRule,
     AlertEvent,
     AlertEventStatus,
     AlertEventStatusUpdateRequest,
@@ -25,6 +29,7 @@ from tradeghost.shared.models.schemas import (
     MonitoringScheduleCreateRequest,
     MonitoringScheduleUpdateRequest,
     ScannerRequest,
+    ScannerCategory,
     Watchlist,
     WatchlistCreateRequest,
     WatchlistItem,
@@ -288,6 +293,13 @@ class MonitoringService:
             severity=req.severity,
             color=req.color,
             is_enabled=req.is_enabled,
+            notification_enabled=req.notification_enabled,
+            notify_email=req.notify_email,
+            scanner_category=req.scanner_category,
+            watchlist_id=req.watchlist_id,
+            shortlisted_by=req.shortlisted_by,
+            created_by=req.created_by,
+            cooldown_minutes=req.cooldown_minutes,
             created_at=now,
             updated_at=now,
         )
@@ -313,6 +325,20 @@ class MonitoringService:
                 payload["is_enabled"] = req.is_enabled
             if req.timeframe is not None:
                 payload["timeframe"] = req.timeframe
+            if req.notification_enabled is not None:
+                payload["notification_enabled"] = req.notification_enabled
+            if req.notify_email is not None:
+                payload["notify_email"] = req.notify_email
+            if req.scanner_category is not None:
+                payload["scanner_category"] = req.scanner_category
+            if req.watchlist_id is not None:
+                payload["watchlist_id"] = req.watchlist_id
+            if req.shortlisted_by is not None:
+                payload["shortlisted_by"] = req.shortlisted_by
+            if req.created_by is not None:
+                payload["created_by"] = req.created_by
+            if req.cooldown_minutes is not None:
+                payload["cooldown_minutes"] = req.cooldown_minutes
             payload["updated_at"] = datetime.now(UTC)
             updated = AlertRule.model_validate(payload)
             rows[idx] = updated
@@ -432,6 +458,155 @@ class MonitoringService:
                 return [item.symbol.upper() for item in watchlist.items if item.market == rule.market]
         return []
 
+    @staticmethod
+    def _alert_color_for_severity(severity: str) -> str:
+        if severity == "critical":
+            return "red"
+        if severity == "important":
+            return "orange"
+        if severity == "info":
+            return "blue"
+        return "yellow"
+
+    def suggest_alert_profile(self, req: AlertProfileSuggestRequest) -> AlertProfileSuggestionResponse:
+        symbol = req.symbol.strip().upper()
+        category = req.scanner_category.value
+
+        def mk_rule(
+            temp_id: str,
+            name: str,
+            rule_type: AlertRuleType,
+            parameters: dict,
+            severity: str,
+            rationale: str,
+            cooldown_minutes: int = 60,
+        ) -> AlertProfileSuggestionRule:
+            return AlertProfileSuggestionRule(
+                temp_id=temp_id,
+                name=name,
+                rule_type=rule_type,
+                parameters=parameters,
+                severity=severity,
+                color=self._alert_color_for_severity(severity),
+                rationale=rationale,
+                cooldown_minutes=cooldown_minutes,
+            )
+
+        by_category: dict[str, list[AlertProfileSuggestionRule]] = {
+            "trend_mode": [
+                mk_rule("near_ema20", f"{symbol} near EMA20 pullback", AlertRuleType.NEAR_EMA20, {"threshold_pct": 3}, "watch", "Tracks continuation pullbacks to EMA20.", 30),
+                mk_rule("near_ema50", f"{symbol} near EMA50 pullback", AlertRuleType.NEAR_EMA50, {"threshold_pct": 5}, "watch", "Tracks deeper continuation pullbacks to EMA50.", 45),
+                mk_rule("dynamics_weakening", f"{symbol} dynamics weakening", AlertRuleType.DYNAMICS_STATE_IS, {"state": "weakening", "category": "momentum_mode"}, "important", "Signals momentum quality deterioration.", 30),
+                mk_rule("new_breakout_high", f"{symbol} new breakout high", AlertRuleType.NEW_BREAKOUT_HIGH, {"lookback_bars": 55}, "important", "Confirms fresh expansion highs.", 30),
+                mk_rule("blowoff_warning", f"{symbol} blowoff extension warning", AlertRuleType.BLOWOFF_EXTENSION_WARNING, {}, "critical", "Warns when extension reaches blowoff state.", 20),
+            ],
+            "momentum_mode": [
+                mk_rule("near_ema20", f"{symbol} near EMA20 pullback", AlertRuleType.NEAR_EMA20, {"threshold_pct": 3}, "watch", "Tracks continuation pullbacks to EMA20.", 30),
+                mk_rule("near_ema50", f"{symbol} near EMA50 pullback", AlertRuleType.NEAR_EMA50, {"threshold_pct": 5}, "watch", "Tracks deeper continuation pullbacks to EMA50.", 45),
+                mk_rule("dynamics_weakening", f"{symbol} dynamics weakening", AlertRuleType.DYNAMICS_STATE_IS, {"state": "weakening", "category": "momentum_mode"}, "important", "Signals momentum quality deterioration.", 30),
+                mk_rule("new_breakout_high", f"{symbol} new breakout high", AlertRuleType.NEW_BREAKOUT_HIGH, {"lookback_bars": 55}, "important", "Confirms fresh expansion highs.", 30),
+                mk_rule("blowoff_warning", f"{symbol} blowoff extension warning", AlertRuleType.BLOWOFF_EXTENSION_WARNING, {}, "critical", "Warns when extension reaches blowoff state.", 20),
+            ],
+            "build_up": [
+                mk_rule("reclaim_ema200", f"{symbol} reclaim EMA200", AlertRuleType.RECLAIM_EMA200, {"max_bars_since_reclaim": 5}, "important", "Detects early regime reclaim phase.", 30),
+                mk_rule("near_ema200", f"{symbol} near EMA200 zone", AlertRuleType.NEAR_EMA200, {"threshold_pct": 5}, "watch", "Tracks proximity to major rebuild anchor.", 45),
+                mk_rule("resistance_tests", f"{symbol} resistance tests >= 3", AlertRuleType.RESISTANCE_TEST_COUNT_GTE, {"count": 3}, "watch", "Detects repeated pressure under resistance.", 60),
+                mk_rule("volume_expand", f"{symbol} volume ratio 20 >= 1.5", AlertRuleType.VOLUME_RATIO_20_GTE, {"value": 1.5}, "important", "Tracks volume confirmation during build-up.", 30),
+                mk_rule("fib_confluence", f"{symbol} fib/EMA confluence reached", AlertRuleType.FIB_EMA_CONFLUENCE_REACHED, {"max_distance_pct": 1.5}, "important", "Signals confluence test zone is reached.", 45),
+            ],
+            "value_rebuild": [
+                mk_rule("near_ema200", f"{symbol} near EMA200 support", AlertRuleType.NEAR_EMA200, {"threshold_pct": 5}, "watch", "Tracks value rebuild around EMA200.", 45),
+                mk_rule("fib_confluence", f"{symbol} fib/EMA support confluence", AlertRuleType.FIB_EMA_CONFLUENCE_REACHED, {"max_distance_pct": 1.5}, "important", "Detects confluence support interaction.", 45),
+                mk_rule("dynamics_improving", f"{symbol} dynamics improving", AlertRuleType.DYNAMICS_STATE_IS, {"state": "improving", "category": "value_rebuild"}, "important", "Confirms rebuild momentum improvement.", 30),
+                mk_rule("new_breakout_high", f"{symbol} resistance reclaim breakout", AlertRuleType.NEW_BREAKOUT_HIGH, {"lookback_bars": 34}, "important", "Captures resistance reclaim breakout.", 30),
+                mk_rule("volume_expand", f"{symbol} volume ratio 20 >= 1.5", AlertRuleType.VOLUME_RATIO_20_GTE, {"value": 1.5}, "watch", "Tracks participation during rebuild.", 30),
+            ],
+            "overextended": [
+                mk_rule("near_ema20", f"{symbol} pullback to EMA20", AlertRuleType.NEAR_EMA20, {"threshold_pct": 3}, "watch", "Tracks first pullback from extended move.", 30),
+                mk_rule("near_ema50", f"{symbol} pullback to EMA50", AlertRuleType.NEAR_EMA50, {"threshold_pct": 5}, "important", "Tracks deeper mean-reversion pullback.", 45),
+                mk_rule("blowoff_warning", f"{symbol} blowoff extension warning", AlertRuleType.BLOWOFF_EXTENSION_WARNING, {}, "critical", "Warns when extension becomes unstable.", 20),
+                mk_rule("dynamics_weakening", f"{symbol} dynamics weakening", AlertRuleType.DYNAMICS_STATE_IS, {"state": "weakening", "category": "momentum_mode"}, "important", "Signals extension momentum deterioration.", 30),
+            ],
+        }
+
+        rules = by_category.get(category, by_category["trend_mode"])
+        return AlertProfileSuggestionResponse(
+            symbol=symbol,
+            market=req.market,
+            scanner_category=req.scanner_category,
+            watchlist_id=req.watchlist_id,
+            shortlisted_by=req.shortlisted_by,
+            created_by=req.created_by,
+            rules=rules,
+        )
+
+    def apply_alert_profile(self, req: AlertProfileApplyRequest) -> list[AlertRule]:
+        created: list[AlertRule] = []
+        for suggestion in req.rules:
+            if not suggestion.selected:
+                continue
+            payload = AlertRuleCreateRequest(
+                scope_type=req.scope_type,
+                scope_ref=req.scope_ref,
+                market=req.market,
+                symbol=req.symbol.upper(),
+                name=suggestion.name,
+                rule_type=suggestion.rule_type,
+                parameters=suggestion.parameters,
+                timeframe=suggestion.timeframe,
+                severity=suggestion.severity,
+                color=suggestion.color,
+                is_enabled=suggestion.is_enabled,
+                notification_enabled=req.notification_enabled,
+                notify_email=req.notify_email,
+                scanner_category=req.scanner_category,
+                watchlist_id=req.watchlist_id,
+                shortlisted_by=req.shortlisted_by,
+                created_by=req.created_by,
+                cooldown_minutes=suggestion.cooldown_minutes,
+            )
+            created.append(self.create_alert_rule(payload))
+        return created
+
+    @staticmethod
+    def _dedupe_event_key(event: AlertEvent) -> str:
+        if "state" in event.trigger_context:
+            return f"state:{event.trigger_context.get('state')}"
+        if "ema" in event.trigger_context:
+            return f"ema:{event.trigger_context.get('ema')}"
+        if event.triggered_value is None:
+            return "none"
+        return f"value:{event.triggered_value}"
+
+    def _event_allowed_by_cooldown(self, rule: AlertRule, event: AlertEvent, existing_events: list[AlertEvent]) -> bool:
+        cooldown_minutes = max(0, int(rule.cooldown_minutes))
+        if cooldown_minutes == 0:
+            return True
+        candidates = [row for row in existing_events if row.alert_rule_id == rule.id and row.symbol.upper() == event.symbol.upper()]
+        if not candidates:
+            return True
+        latest = max(candidates, key=lambda row: row.timestamp)
+        elapsed_seconds = (event.timestamp - latest.timestamp).total_seconds()
+        if elapsed_seconds >= cooldown_minutes * 60:
+            return True
+        # Allow state-change events through even inside cooldown.
+        return self._dedupe_event_key(event) != self._dedupe_event_key(latest)
+
+    def _append_event_if_allowed(
+        self,
+        *,
+        rule: AlertRule,
+        event: AlertEvent | None,
+        existing_events: list[AlertEvent],
+        created_events: list[AlertEvent],
+    ) -> bool:
+        if event is None:
+            return False
+        if not self._event_allowed_by_cooldown(rule, event, [*existing_events, *created_events]):
+            return False
+        created_events.append(event)
+        return True
+
     def _build_alert_event(
         self,
         *,
@@ -443,6 +618,7 @@ class MonitoringService:
         scanner_context: dict,
         analysis_context: dict,
     ) -> AlertEvent:
+        notification_status = "pending_notification" if rule.notification_enabled else "disabled"
         return AlertEvent(
             id=str(uuid4()),
             alert_rule_id=rule.id,
@@ -454,6 +630,12 @@ class MonitoringService:
             severity=rule.severity,
             status=AlertEventStatus.NEW,
             message=message,
+            watchlist_id=rule.watchlist_id if rule.watchlist_id else (rule.scope_ref if rule.scope_type.value == "watchlist" else None),
+            scanner_category=rule.scanner_category,
+            shortlisted_by=rule.shortlisted_by,
+            notification_status=notification_status,
+            notified_to=rule.notify_email if rule.notification_enabled else None,
+            notified_at=None,
             scanner_context=scanner_context,
             analysis_context=analysis_context,
         )
@@ -475,6 +657,7 @@ class MonitoringService:
         vol_ratio = float(snapshot.get("volume", {}).get("volume_ratio", 0.0))
         regime = combined.regime
         setup = combined.setup_interpretation
+        chartmap = combined.chartmap
 
         prev_close = close
         prev_ema100 = ema100
@@ -668,6 +851,47 @@ class MonitoringService:
                     scanner_context={},
                     analysis_context={"trend_state": setup.trend_state},
                 )
+        elif rule.rule_type == AlertRuleType.NEW_BREAKOUT_HIGH:
+            lookback_bars = int(params.get("lookback_bars", 55))
+            highs = [float(candle.high) for candle in combined.chart.candles]
+            if len(highs) >= 2:
+                prior_slice = highs[max(0, len(highs) - 1 - lookback_bars): len(highs) - 1]
+                prior_high = max(prior_slice) if prior_slice else highs[-2]
+                if close > prior_high:
+                    return self._build_alert_event(
+                        rule=rule,
+                        symbol=symbol,
+                        triggered_value=round(close, 2),
+                        message=f"{symbol} printed a new breakout high above {prior_high:.2f}",
+                        trigger_context={"close": round(close, 2), "prior_high": round(prior_high, 2), "lookback_bars": lookback_bars},
+                        scanner_context={},
+                        analysis_context={"trend_state": setup.trend_state},
+                    )
+        elif rule.rule_type == AlertRuleType.BLOWOFF_EXTENSION_WARNING:
+            if combined.location.extension_state == "blowoff_extension":
+                return self._build_alert_event(
+                    rule=rule,
+                    symbol=symbol,
+                    triggered_value=combined.location.extension_state,
+                    message=f"{symbol} entered blowoff extension state",
+                    trigger_context={"extension_state": combined.location.extension_state},
+                    scanner_context={},
+                    analysis_context={"trend_state": setup.trend_state},
+                )
+        elif rule.rule_type == AlertRuleType.FIB_EMA_CONFLUENCE_REACHED:
+            max_distance = float(params.get("max_distance_pct", 1.5))
+            distance = chartmap.distance_to_nearest_fib_pct
+            has_confluence = bool(chartmap.fib_support_confluence or (chartmap.fib_ema_confluence_score or 0.0) >= 60.0)
+            if has_confluence and distance is not None and distance <= max_distance:
+                return self._build_alert_event(
+                    rule=rule,
+                    symbol=symbol,
+                    triggered_value=round(distance, 2),
+                    message=f"{symbol} reached fib/EMA confluence zone ({distance:.2f}% from nearest fib)",
+                    trigger_context={"distance_to_nearest_fib_pct": round(distance, 2), "max_distance_pct": max_distance},
+                    scanner_context={"fib_ema_confluence_score": chartmap.fib_ema_confluence_score},
+                    analysis_context={"trend_state": setup.trend_state},
+                )
         return None
 
     def _evaluate_scanner_rule(self, rule: AlertRule, symbols: list[str]) -> list[AlertEvent]:
@@ -795,8 +1019,13 @@ class MonitoringService:
                 if rule.rule_type in {AlertRuleType.SCANNER_TOP_N, AlertRuleType.DYNAMICS_STATE_IS}:
                     if rule.rule_type == AlertRuleType.SCANNER_TOP_N:
                         scanner_events = self._evaluate_scanner_rule(rule, symbols)
-                        created.extend(scanner_events)
-                        matched_for_rule = len(scanner_events) > 0
+                        for event in scanner_events:
+                            matched_for_rule = self._append_event_if_allowed(
+                                rule=rule,
+                                event=event,
+                                existing_events=events,
+                                created_events=created,
+                            ) or matched_for_rule
                     else:
                         category = rule.parameters.get("category", "momentum_mode")
                         target_state = str(rule.parameters.get("state", "accelerating"))
@@ -818,8 +1047,9 @@ class MonitoringService:
                                 current_score=row.current_score,
                                 score_dynamics_state=row.score_dynamics_state,
                             )
-                            created.append(
-                                self._build_alert_event(
+                            matched_for_rule = self._append_event_if_allowed(
+                                rule=rule,
+                                event=self._build_alert_event(
                                     rule=rule,
                                     symbol=row.symbol,
                                     triggered_value=row.score_dynamics_state,
@@ -827,9 +1057,10 @@ class MonitoringService:
                                     trigger_context={"state": row.score_dynamics_state},
                                     scanner_context={"scanner_score": row.scanner_score},
                                     analysis_context={"trend_state": row.trend_state},
-                                )
-                            )
-                            matched_for_rule = True
+                                ),
+                                existing_events=events,
+                                created_events=created,
+                            ) or matched_for_rule
                     evaluated_symbols = max(evaluated_symbols, len(symbol_targets))
                     rule_payload = rules_index.get(rule.id).model_dump() if rules_index.get(rule.id) else rule.model_dump()
                     now_checked = datetime.now(UTC)
@@ -842,9 +1073,12 @@ class MonitoringService:
                 for symbol in symbols:
                     event = self._evaluate_symbol_rule(rule, symbol)
                     evaluated_symbols = max(evaluated_symbols, len(symbol_targets))
-                    if event is not None:
-                        created.append(event)
-                        matched_for_rule = True
+                    matched_for_rule = self._append_event_if_allowed(
+                        rule=rule,
+                        event=event,
+                        existing_events=events,
+                        created_events=created,
+                    ) or matched_for_rule
 
                 rule_payload = rules_index.get(rule.id).model_dump() if rules_index.get(rule.id) else rule.model_dump()
                 now_checked = datetime.now(UTC)

@@ -148,6 +148,33 @@ export function UnifiedAnalysisChart({ chart, title, markers = [], markerMode = 
     legendOverlayTraces.push(buildLegendTrace("Trade Plan Target", "#23D18B", "solid", x[0], x[x.length - 1], chart.current_price));
   }
 
+  const tradeLineTraces: Data[] =
+    markerMode === "trades"
+      ? tradeLines.map((trade) => {
+          const isWin = trade.return_pct >= 0;
+          let color = isWin ? "#23D18B" : "#F2545B";
+          if ((trade.exit_reason ?? "").toLowerCase().includes("timeout")) color = "#B9C4D7";
+          if ((trade.exit_reason ?? "").toLowerCase().includes("target")) color = "#19D3F3";
+          if ((trade.exit_reason ?? "").toLowerCase().includes("stop")) color = "#F2545B";
+          return {
+            type: "scatter",
+            mode: "lines",
+            x: [trade.entry_date, trade.exit_date],
+            y: [trade.entry_price, trade.exit_price],
+            line: { color, width: 2.2, dash: isWin ? "solid" : "dot" },
+            hovertemplate:
+              `Trade #${trade.trade_id}<br>` +
+              `Entry: ${trade.entry_date} @ $${trade.entry_price.toFixed(2)}<br>` +
+              `Exit: ${trade.exit_date} @ $${trade.exit_price.toFixed(2)}<br>` +
+              `Return: ${trade.return_pct.toFixed(2)}%<br>` +
+              `Exit reason: ${trade.exit_reason ?? "n/a"}<extra></extra>`,
+            name: `Trade ${trade.trade_id}`,
+            showlegend: false,
+            legendgroup: "trade_paths",
+          } as Data;
+        })
+      : [];
+
   const markerTraces = buildMarkerTraces(markers, candleCloseByDate, markerMode);
   const baseLayout: Partial<Layout> = {
     ...premiumDarkPlotlyTemplate,
@@ -196,29 +223,3 @@ export function UnifiedAnalysisChart({ chart, title, markers = [], markerMode = 
     </>
   );
 }
-  const tradeLineTraces: Data[] =
-    markerMode === "trades"
-      ? tradeLines.map((trade) => {
-          const isWin = trade.return_pct >= 0;
-          let color = isWin ? "#23D18B" : "#F2545B";
-          if ((trade.exit_reason ?? "").toLowerCase().includes("timeout")) color = "#B9C4D7";
-          if ((trade.exit_reason ?? "").toLowerCase().includes("target")) color = "#19D3F3";
-          if ((trade.exit_reason ?? "").toLowerCase().includes("stop")) color = "#F2545B";
-          return {
-            type: "scatter",
-            mode: "lines",
-            x: [trade.entry_date, trade.exit_date],
-            y: [trade.entry_price, trade.exit_price],
-            line: { color, width: 2.2, dash: isWin ? "solid" : "dot" },
-            hovertemplate:
-              `Trade #${trade.trade_id}<br>` +
-              `Entry: ${trade.entry_date} @ $${trade.entry_price.toFixed(2)}<br>` +
-              `Exit: ${trade.exit_date} @ $${trade.exit_price.toFixed(2)}<br>` +
-              `Return: ${trade.return_pct.toFixed(2)}%<br>` +
-              `Exit reason: ${trade.exit_reason ?? "n/a"}<extra></extra>`,
-            name: `Trade ${trade.trade_id}`,
-            showlegend: false,
-            legendgroup: "trade_paths",
-          } as Data;
-        })
-      : [];

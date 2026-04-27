@@ -25,6 +25,22 @@ export default function LogicPage() {
         </div>
       </Panel>
 
+      <Panel>
+        <SectionTitle title="Glossary" subtitle="Strategy modes, setups, indicators, scanner metrics, alerts, and ratios" />
+        <div className="space-y-3 text-sm text-slate-300">
+          <p><strong>Strategy modes:</strong> aggressive/balanced/conservative are pullback-biased. momentum_continuation allows controlled extension when trend + dynamics + trigger align. custom exposes deterministic overrides.</p>
+          <p><strong>Setup types:</strong> pullback continuation, momentum continuation, value rebuild, second breakout attempt, overextended monitor. Setup type is descriptive context, not an automatic trade command.</p>
+          <p><strong>Indicators:</strong> EMA20/50/100/200 are trend anchors. RSI14 tracks momentum stretch. Volume Ratio 20 compares current volume to its 20-bar baseline.</p>
+          <p><strong>Scanner metrics:</strong> Score = current structural quality. Dynamics = improving/accelerating/stable/weakening/deteriorating. vs EMA200 = price distance to long regime anchor.</p>
+          <p><strong>Location metrics:</strong> Support% = distance to nearest support. Room% = upside room to nearest resistance. Higher room generally means better upside space.</p>
+          <p><strong>Alert terms:</strong> Alert Rule = condition being watched. Alert Event = rule trigger instance. Triggered value = numeric/string value that caused the trigger.</p>
+          <p><strong>Alert meaning types:</strong> opportunity, risk warning, exit watch, momentum watch, info. Each event now includes plain-English meaning + suggested action.</p>
+          <p><strong>Watchlist terms:</strong> Watchlist stores symbols and monitoring metrics. last_checked shows most recent monitoring update for that symbol.</p>
+          <p><strong>Financial ratios:</strong> PD/DD (price/book), F/K (price/earnings). Lower valuation can support value-rebuild context, but never overrides structure checks by itself.</p>
+          <p><strong>P/L:</strong> watchlist profit/loss since added price. If original tick price is unavailable, nearest close is used and marked estimated.</p>
+        </div>
+      </Panel>
+
       {analysis ? (
         <Panel>
           <SectionTitle title="Active Config" subtitle="Current thresholds and filters from analysis context" />

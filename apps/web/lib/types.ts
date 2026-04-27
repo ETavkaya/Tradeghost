@@ -707,6 +707,7 @@ export type AlertRule = {
 };
 
 export type AlertEventStatus = "new" | "seen" | "archived";
+export type AlertSignalType = "opportunity" | "risk_warning" | "exit_watch" | "momentum_watch" | "info";
 
 export type AlertEvent = {
   id: string;
@@ -727,6 +728,10 @@ export type AlertEvent = {
   notified_at: string | null;
   scanner_context: Record<string, unknown>;
   analysis_context: Record<string, unknown>;
+  signal_type: AlertSignalType;
+  plain_english_meaning: string;
+  suggested_action: string;
+  last_triggered_at: string | null;
 };
 
 export type AlertProfileSuggestionRule = {

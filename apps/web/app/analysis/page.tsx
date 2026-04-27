@@ -132,7 +132,9 @@ function AnalysisPageInner() {
   const { analysis, setAnalysis } = useAnalysisContext();
   const [ticker, setTicker] = useState(analysis?.ticker ?? "TSLA");
   const [market, setMarket] = useState<MarketCode>(analysis?.market ?? "us");
-  const [window, setWindow] = useState<AnalysisWindow>(analysis?.window ?? "6m");
+  const normalizedInitialWindow: AnalysisWindow =
+    analysis?.window && ["1y", "2y", "3y"].includes(analysis.window) ? analysis.window : "1y";
+  const [window, setWindow] = useState<AnalysisWindow>(normalizedInitialWindow);
   const [strategyMode, setStrategyMode] = useState<StrategyMode>(analysis?.strategy_mode_used ?? "balanced");
 
   const seed = toPanelValues(analysis?.analysis_config ?? null);
@@ -170,7 +172,7 @@ function AnalysisPageInner() {
     if (nextMarket === "us" || nextMarket === "bist") {
       setMarket(nextMarket);
     }
-    if (nextWindow && ["5d", "1m", "3m", "6m", "1y", "2y", "3y", "4y", "5y", "10y"].includes(nextWindow)) {
+    if (nextWindow && ["1y", "2y", "3y"].includes(nextWindow)) {
       setWindow(nextWindow as AnalysisWindow);
     }
     if (scannerCategory || scannerScore || scannerReason) {

@@ -836,6 +836,14 @@ class AlertEventStatus(str, Enum):
     ARCHIVED = "archived"
 
 
+class AlertSignalType(str, Enum):
+    OPPORTUNITY = "opportunity"
+    RISK_WARNING = "risk_warning"
+    EXIT_WATCH = "exit_watch"
+    MOMENTUM_WATCH = "momentum_watch"
+    INFO = "info"
+
+
 class AlertEvent(BaseModel):
     id: str
     alert_rule_id: str
@@ -855,6 +863,10 @@ class AlertEvent(BaseModel):
     notified_at: datetime | None = None
     scanner_context: dict[str, Any] = Field(default_factory=dict)
     analysis_context: dict[str, Any] = Field(default_factory=dict)
+    signal_type: AlertSignalType = AlertSignalType.INFO
+    plain_english_meaning: str = "Monitoring update."
+    suggested_action: str = "Open Analysis. This is not an automatic buy signal."
+    last_triggered_at: datetime | None = None
 
 
 class AlertProfileSuggestionRule(BaseModel):

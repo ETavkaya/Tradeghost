@@ -17,6 +17,7 @@ from tradeghost.shared.models.schemas import (
     AlertProfileSuggestionResponse,
     AlertProfileSuggestionRule,
     AlertEvent,
+    AlertSignalType,
     AlertEventStatus,
     AlertEventStatusUpdateRequest,
     AlertRule,
@@ -574,9 +575,37 @@ class MonitoringService:
             return f"state:{event.trigger_context.get('state')}"
         if "ema" in event.trigger_context:
             return f"ema:{event.trigger_context.get('ema')}"
+        if event.signal_type:
+            return f"signal:{event.signal_type.value}"
         if event.triggered_value is None:
             return "none"
         return f"value:{event.triggered_value}"
+
+    @staticmethod
+    def _to_float(value: float | str | None) -> float | None:
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except ValueError:
+                return None
+        return None
+
+    def _event_meaningfully_changed(self, latest: AlertEvent, current: AlertEvent) -> bool:
+        if self._dedupe_event_key(latest) != self._dedupe_event_key(current):
+            return True
+        if latest.signal_type != current.signal_type:
+            return True
+        if latest.message != current.message:
+            return True
+        prev_num = self._to_float(latest.triggered_value)
+        cur_num = self._to_float(current.triggered_value)
+        if prev_num is None or cur_num is None:
+            return latest.triggered_value != current.triggered_value
+        # Prevent spam for near-identical recurring values; allow through once value changes materially.
+        tolerance = max(0.25, abs(prev_num) * 0.02)
+        return abs(cur_num - prev_num) > tolerance
 
     def _event_allowed_by_cooldown(self, rule: AlertRule, event: AlertEvent, existing_events: list[AlertEvent]) -> bool:
         cooldown_minutes = max(0, int(rule.cooldown_minutes))
@@ -586,11 +615,84 @@ class MonitoringService:
         if not candidates:
             return True
         latest = max(candidates, key=lambda row: row.timestamp)
+        event.last_triggered_at = latest.timestamp
         elapsed_seconds = (event.timestamp - latest.timestamp).total_seconds()
         if elapsed_seconds >= cooldown_minutes * 60:
             return True
-        # Allow state-change events through even inside cooldown.
-        return self._dedupe_event_key(event) != self._dedupe_event_key(latest)
+        # Allow state/meaning changes through even inside cooldown.
+        return self._event_meaningfully_changed(latest, event)
+
+    @staticmethod
+    def _build_alert_semantics(
+        *,
+        rule_type: AlertRuleType,
+        trend_state: str | None,
+        score_dynamics_state: str | None,
+        scanner_category: str | None,
+    ) -> tuple[AlertSignalType, str, str]:
+        trend = (trend_state or "").lower()
+        dynamics = (score_dynamics_state or "").lower()
+        category = (scanner_category or "").lower()
+
+        if rule_type in {AlertRuleType.CROSS_BELOW_EMA100, AlertRuleType.CROSS_BELOW_EMA200, AlertRuleType.BLOWOFF_EXTENSION_WARNING}:
+            return (
+                AlertSignalType.RISK_WARNING,
+                "Structure may be weakening or overly extended versus trend anchors.",
+                "Review risk controls and open Analysis before adding risk.",
+            )
+        if rule_type in {AlertRuleType.PRICE_GTE, AlertRuleType.PRICE_LTE, AlertRuleType.RSI14_GTE, AlertRuleType.RSI14_LTE}:
+            return (
+                AlertSignalType.INFO,
+                "A monitoring threshold was reached.",
+                "Open Analysis to confirm context. This is not an automatic signal.",
+            )
+        if rule_type in {AlertRuleType.NEW_BREAKOUT_HIGH, AlertRuleType.CROSS_ABOVE_EMA100, AlertRuleType.CROSS_ABOVE_EMA200}:
+            return (
+                AlertSignalType.MOMENTUM_WATCH,
+                "Price is showing expansion or reclaim behavior.",
+                "Check continuation quality, volume confirmation, and extension risk.",
+            )
+        if rule_type in {AlertRuleType.NEAR_EMA20, AlertRuleType.NEAR_EMA50, AlertRuleType.NEAR_EMA100, AlertRuleType.NEAR_EMA200}:
+            if trend in {"bullish_trend", "weakening_trend"} and dynamics in {"improving", "accelerating"}:
+                return (
+                    AlertSignalType.OPPORTUNITY,
+                    "Price is near a key EMA in a constructive trend, which may indicate pullback opportunity context.",
+                    "Open Analysis. This is a setup watch, not an automatic buy signal.",
+                )
+            if trend in {"damaged_trend", "sideways"}:
+                return (
+                    AlertSignalType.RISK_WARNING,
+                    "Price is near a key EMA but structure is weak, so this is caution context.",
+                    "Treat as risk-monitoring; wait for structure improvement.",
+                )
+            return (
+                AlertSignalType.INFO,
+                "Price is near a key EMA and may be entering an interaction zone.",
+                "Open Analysis and validate trend, trigger, and score dynamics.",
+            )
+        if rule_type in {AlertRuleType.RECLAIM_EMA200, AlertRuleType.FIB_EMA_CONFLUENCE_REACHED, AlertRuleType.RESISTANCE_TEST_COUNT_GTE}:
+            return (
+                AlertSignalType.OPPORTUNITY,
+                "A rebuild/confluence condition was detected and may indicate setup development.",
+                "Open Analysis and confirm regime, trigger quality, and room to resistance.",
+            )
+        if rule_type in {AlertRuleType.SCANNER_TOP_N, AlertRuleType.DYNAMICS_STATE_IS, AlertRuleType.VOLUME_RATIO_20_GTE}:
+            if dynamics in {"accelerating", "improving"} or category in {"momentum_mode", "trend_mode"}:
+                return (
+                    AlertSignalType.MOMENTUM_WATCH,
+                    "Momentum quality is improving in the monitored context.",
+                    "Review continuation conditions and extension state in Analysis.",
+                )
+            return (
+                AlertSignalType.EXIT_WATCH,
+                "Momentum quality changed and may impact continuation quality.",
+                "Review open risk and monitor for structure deterioration.",
+            )
+        return (
+            AlertSignalType.INFO,
+            "Monitoring condition triggered.",
+            "Open Analysis. This is not an automatic buy/sell signal.",
+        )
 
     def _append_event_if_allowed(
         self,
@@ -618,6 +720,14 @@ class MonitoringService:
         scanner_context: dict,
         analysis_context: dict,
     ) -> AlertEvent:
+        trend_state = str(analysis_context.get("trend_state", ""))
+        score_dynamics_state = str(analysis_context.get("score_dynamics_state", "") or scanner_context.get("score_dynamics_state", ""))
+        signal_type, plain_english_meaning, suggested_action = self._build_alert_semantics(
+            rule_type=rule.rule_type,
+            trend_state=trend_state,
+            score_dynamics_state=score_dynamics_state,
+            scanner_category=rule.scanner_category.value if rule.scanner_category else None,
+        )
         notification_status = "pending_notification" if rule.notification_enabled else "disabled"
         return AlertEvent(
             id=str(uuid4()),
@@ -638,6 +748,10 @@ class MonitoringService:
             notified_at=None,
             scanner_context=scanner_context,
             analysis_context=analysis_context,
+            signal_type=signal_type,
+            plain_english_meaning=plain_english_meaning,
+            suggested_action=suggested_action,
+            last_triggered_at=None,
         )
 
     def _evaluate_symbol_rule(self, rule: AlertRule, symbol: str) -> AlertEvent | None:
@@ -658,6 +772,7 @@ class MonitoringService:
         regime = combined.regime
         setup = combined.setup_interpretation
         chartmap = combined.chartmap
+        score_dynamics_state = combined.entry_gate.score_dynamics_state or "stable"
 
         prev_close = close
         prev_ema100 = ema100
@@ -684,7 +799,7 @@ class MonitoringService:
                     message=f"{symbol} is within {dist:.2f}% of EMA20",
                     trigger_context={"distance_pct": round(dist, 2), "ema": 20},
                     scanner_context={},
-                    analysis_context={"trend_state": setup.trend_state},
+                    analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
                 )
         elif rule.rule_type == AlertRuleType.NEAR_EMA50:
             dist = abs((close - ema50) / max(ema50, 0.01) * 100.0)
@@ -696,7 +811,7 @@ class MonitoringService:
                     message=f"{symbol} is within {dist:.2f}% of EMA50",
                     trigger_context={"distance_pct": round(dist, 2), "ema": 50},
                     scanner_context={},
-                    analysis_context={"trend_state": setup.trend_state},
+                    analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
                 )
         elif rule.rule_type == AlertRuleType.NEAR_EMA100:
             dist = abs((close - ema100) / max(ema100, 0.01) * 100.0)
@@ -708,7 +823,7 @@ class MonitoringService:
                     message=f"{symbol} is within {dist:.2f}% of EMA100",
                     trigger_context={"distance_pct": round(dist, 2), "ema": 100},
                     scanner_context={},
-                    analysis_context={"trend_state": setup.trend_state},
+                    analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
                 )
         elif rule.rule_type == AlertRuleType.NEAR_EMA200:
             dist = abs((close - ema200) / max(ema200, 0.01) * 100.0)
@@ -720,7 +835,7 @@ class MonitoringService:
                     message=f"{symbol} is within {dist:.2f}% of EMA200",
                     trigger_context={"distance_pct": round(dist, 2), "ema": 200},
                     scanner_context={},
-                    analysis_context={"trend_state": setup.trend_state},
+                    analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
                 )
         elif rule.rule_type == AlertRuleType.CROSS_ABOVE_EMA100:
             if prev_close <= prev_ema100 and close > ema100:
@@ -731,7 +846,7 @@ class MonitoringService:
                     message=f"{symbol} crossed above EMA100",
                     trigger_context={"prev_close": prev_close, "prev_ema100": prev_ema100, "close": close, "ema100": ema100},
                     scanner_context={},
-                    analysis_context={"trend_state": setup.trend_state},
+                    analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
                 )
         elif rule.rule_type == AlertRuleType.CROSS_ABOVE_EMA200:
             if prev_close <= prev_ema200 and close > ema200:
@@ -742,7 +857,7 @@ class MonitoringService:
                     message=f"{symbol} crossed above EMA200",
                     trigger_context={"prev_close": prev_close, "prev_ema200": prev_ema200, "close": close, "ema200": ema200},
                     scanner_context={},
-                    analysis_context={"trend_state": setup.trend_state},
+                    analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
                 )
         elif rule.rule_type == AlertRuleType.CROSS_BELOW_EMA100:
             if prev_close >= prev_ema100 and close < ema100:
@@ -753,7 +868,7 @@ class MonitoringService:
                     message=f"{symbol} crossed below EMA100",
                     trigger_context={"prev_close": prev_close, "prev_ema100": prev_ema100, "close": close, "ema100": ema100},
                     scanner_context={},
-                    analysis_context={"trend_state": setup.trend_state},
+                    analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
                 )
         elif rule.rule_type == AlertRuleType.CROSS_BELOW_EMA200:
             if prev_close >= prev_ema200 and close < ema200:
@@ -764,7 +879,7 @@ class MonitoringService:
                     message=f"{symbol} crossed below EMA200",
                     trigger_context={"prev_close": prev_close, "prev_ema200": prev_ema200, "close": close, "ema200": ema200},
                     scanner_context={},
-                    analysis_context={"trend_state": setup.trend_state},
+                    analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
                 )
         elif rule.rule_type == AlertRuleType.PRICE_GTE and value is not None and close >= value:
             return self._build_alert_event(
@@ -774,7 +889,7 @@ class MonitoringService:
                 message=f"{symbol} price {close:.2f} >= {value:.2f}",
                 trigger_context={"price": close, "threshold": value},
                 scanner_context={},
-                analysis_context={"trend_state": setup.trend_state},
+                analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
             )
         elif rule.rule_type == AlertRuleType.PRICE_LTE and value is not None and close <= value:
             return self._build_alert_event(
@@ -784,7 +899,7 @@ class MonitoringService:
                 message=f"{symbol} price {close:.2f} <= {value:.2f}",
                 trigger_context={"price": close, "threshold": value},
                 scanner_context={},
-                analysis_context={"trend_state": setup.trend_state},
+                analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
             )
         elif rule.rule_type == AlertRuleType.TREND_STATE_IS:
             target = str(params.get("state", "bullish_trend"))
@@ -796,7 +911,7 @@ class MonitoringService:
                     message=f"{symbol} trend_state became {setup.trend_state}",
                     trigger_context={"trend_state": setup.trend_state},
                     scanner_context={},
-                    analysis_context={"trend_state": setup.trend_state},
+                    analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
                 )
         elif rule.rule_type == AlertRuleType.RECLAIM_EMA200:
             if regime.bars_since_reclaim is not None and regime.bars_since_reclaim <= int(params.get("max_bars_since_reclaim", 5)):
@@ -807,7 +922,7 @@ class MonitoringService:
                     message=f"{symbol} reclaimed EMA200 ({regime.bars_since_reclaim} bars since reclaim)",
                     trigger_context={"bars_since_reclaim": regime.bars_since_reclaim},
                     scanner_context={},
-                    analysis_context={"trend_state": setup.trend_state},
+                    analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
                 )
         elif rule.rule_type == AlertRuleType.VOLUME_RATIO_20_GTE and value is not None and vol_ratio >= value:
             return self._build_alert_event(
@@ -817,7 +932,7 @@ class MonitoringService:
                 message=f"{symbol} volume ratio 20 {vol_ratio:.2f} >= {value:.2f}",
                 trigger_context={"volume_ratio_20": round(vol_ratio, 2), "threshold": value},
                 scanner_context={},
-                analysis_context={"trend_state": setup.trend_state},
+                analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
             )
         elif rule.rule_type == AlertRuleType.RSI14_LTE and value is not None and rsi14 <= value:
             return self._build_alert_event(
@@ -827,7 +942,7 @@ class MonitoringService:
                 message=f"{symbol} RSI14 {rsi14:.2f} <= {value:.2f}",
                 trigger_context={"rsi_14": round(rsi14, 2), "threshold": value},
                 scanner_context={},
-                analysis_context={"trend_state": setup.trend_state},
+                analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
             )
         elif rule.rule_type == AlertRuleType.RSI14_GTE and value is not None and rsi14 >= value:
             return self._build_alert_event(
@@ -837,7 +952,7 @@ class MonitoringService:
                 message=f"{symbol} RSI14 {rsi14:.2f} >= {value:.2f}",
                 trigger_context={"rsi_14": round(rsi14, 2), "threshold": value},
                 scanner_context={},
-                analysis_context={"trend_state": setup.trend_state},
+                analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
             )
         elif rule.rule_type == AlertRuleType.RESISTANCE_TEST_COUNT_GTE:
             count = int(snapshot.get("resistance_test_count", 0))
@@ -849,7 +964,7 @@ class MonitoringService:
                     message=f"{symbol} resistance_test_count reached {count}",
                     trigger_context={"resistance_test_count": count, "threshold": count_threshold},
                     scanner_context={},
-                    analysis_context={"trend_state": setup.trend_state},
+                    analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
                 )
         elif rule.rule_type == AlertRuleType.NEW_BREAKOUT_HIGH:
             lookback_bars = int(params.get("lookback_bars", 55))
@@ -865,7 +980,7 @@ class MonitoringService:
                         message=f"{symbol} printed a new breakout high above {prior_high:.2f}",
                         trigger_context={"close": round(close, 2), "prior_high": round(prior_high, 2), "lookback_bars": lookback_bars},
                         scanner_context={},
-                        analysis_context={"trend_state": setup.trend_state},
+                        analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
                     )
         elif rule.rule_type == AlertRuleType.BLOWOFF_EXTENSION_WARNING:
             if combined.location.extension_state == "blowoff_extension":
@@ -876,7 +991,7 @@ class MonitoringService:
                     message=f"{symbol} entered blowoff extension state",
                     trigger_context={"extension_state": combined.location.extension_state},
                     scanner_context={},
-                    analysis_context={"trend_state": setup.trend_state},
+                    analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
                 )
         elif rule.rule_type == AlertRuleType.FIB_EMA_CONFLUENCE_REACHED:
             max_distance = float(params.get("max_distance_pct", 1.5))
@@ -890,7 +1005,7 @@ class MonitoringService:
                     message=f"{symbol} reached fib/EMA confluence zone ({distance:.2f}% from nearest fib)",
                     trigger_context={"distance_to_nearest_fib_pct": round(distance, 2), "max_distance_pct": max_distance},
                     scanner_context={"fib_ema_confluence_score": chartmap.fib_ema_confluence_score},
-                    analysis_context={"trend_state": setup.trend_state},
+                    analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
                 )
         return None
 
@@ -922,7 +1037,7 @@ class MonitoringService:
                     message=f"{symbol} entered top {top_n} for {category.replace('_', ' ')}",
                     trigger_context={"rank_top_n": top_n, "category": category},
                     scanner_context={"scanner_score": row.scanner_score, "score_dynamics_state": row.score_dynamics_state},
-                    analysis_context={"trend_state": row.trend_state},
+                    analysis_context={"trend_state": row.trend_state, "score_dynamics_state": row.score_dynamics_state},
                 )
             )
         return events
@@ -1056,7 +1171,7 @@ class MonitoringService:
                                     message=f"{row.symbol} score dynamics became {row.score_dynamics_state}",
                                     trigger_context={"state": row.score_dynamics_state},
                                     scanner_context={"scanner_score": row.scanner_score},
-                                    analysis_context={"trend_state": row.trend_state},
+                                    analysis_context={"trend_state": row.trend_state, "score_dynamics_state": row.score_dynamics_state},
                                 ),
                                 existing_events=events,
                                 created_events=created,

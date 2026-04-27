@@ -14,13 +14,9 @@ const QUICK_TICKERS: Record<MarketCode, string[]> = {
 };
 
 const windows: { value: AnalysisWindow; label: string }[] = [
-  { value: "5d", label: "5D" },
-  { value: "1m", label: "1M" },
-  { value: "3m", label: "3M" },
-  { value: "6m", label: "6M" },
   { value: "1y", label: "1Y" },
-  { value: "5y", label: "5Y" },
-  { value: "10y", label: "10Y" }
+  { value: "2y", label: "2Y" },
+  { value: "3y", label: "3Y" }
 ];
 
 type Props = {

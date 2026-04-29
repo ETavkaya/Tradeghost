@@ -725,7 +725,7 @@ export default function ScannerPage() {
             {result.rule_impact.length > 0 ? (
               <div className="mt-2 space-y-1">
                 {result.rule_impact.map((r) => (
-                  <p key={r.rule_name} className="text-xs text-slate-300">{r.rule_name}: {r.before_count} -> {r.after_count} (removed {r.removed_count})</p>
+                  <p key={r.rule_name} className="text-xs text-slate-300">{r.rule_name}: {r.before_count} {"->"} {r.after_count} (removed {r.removed_count})</p>
                 ))}
               </div>
             ) : null}

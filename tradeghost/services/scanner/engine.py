@@ -16,6 +16,7 @@ from tradeghost.shared.models.schemas import (
     ScannerRuleOperator,
     ScannerRequest,
     ScannerResponse,
+    ScannerRuleImpact,
     ScannerResult,
     ScannerScopeSummary,
     ScannerUniverseScope,
@@ -106,7 +107,7 @@ class ScannerEngine:
     def __init__(self, analysis_engine: AnalysisEngine | None = None) -> None:
         self.analysis_engine = analysis_engine or AnalysisEngine()
 
-    def _universe(self, market: str, scope: ScannerUniverseScope) -> list[str]:
+    def _universe(self, market: str, scope: ScannerUniverseScope) -> tuple[list[str], str]:
         if market == "bist":
             full = BIST_FULL_UNIVERSE
             watch = BIST_WATCHLIST
@@ -115,10 +116,10 @@ class ScannerEngine:
             watch = US_WATCHLIST
 
         if scope == ScannerUniverseScope.WATCHLIST:
-            return watch
+            return watch, "watchlist_seed"
         if scope == ScannerUniverseScope.CAPPED:
-            return full[:30]
-        return full
+            return full[:30], "capped_top30"
+        return full, "full_supported_list"
 
     @staticmethod
     def _priority(score: float) -> ScannerPriority:
@@ -293,6 +294,18 @@ class ScannerEngine:
             return float(location.distance_to_ema20_pct)
         if field == ScannerRuleField.DISTANCE_TO_EMA50_PCT:
             return float(location.distance_to_ema50_pct)
+        if field == ScannerRuleField.DISTANCE_TO_EMA100_PCT:
+            return float(location.distance_to_ema100_pct)
+        if field == ScannerRuleField.DISTANCE_TO_EMA200_PCT:
+            return float(location.distance_to_ema200_pct)
+        if field == ScannerRuleField.ABS_DISTANCE_TO_EMA20_PCT:
+            return abs(float(location.distance_to_ema20_pct))
+        if field == ScannerRuleField.ABS_DISTANCE_TO_EMA50_PCT:
+            return abs(float(location.distance_to_ema50_pct))
+        if field == ScannerRuleField.ABS_DISTANCE_TO_EMA100_PCT:
+            return abs(float(location.distance_to_ema100_pct))
+        if field == ScannerRuleField.ABS_DISTANCE_TO_EMA200_PCT:
+            return abs(float(location.distance_to_ema200_pct))
         if field == ScannerRuleField.RSI_14:
             return float(snapshot.get("rsi_14", 0.0))
         if field == ScannerRuleField.VOLUME_RATIO_20:
@@ -478,15 +491,21 @@ class ScannerEngine:
 
     def scan(self, req: ScannerRequest) -> ScannerResponse:
         started = time.monotonic()
-        symbols = [sym.strip().upper() for sym in req.symbol_overrides if sym.strip()] if req.symbol_overrides else self._universe(req.market.value, req.universe_scope)
+        if req.symbol_overrides:
+            symbols = [sym.strip().upper() for sym in req.symbol_overrides if sym.strip()]
+            universe_source = "symbol_overrides"
+        else:
+            symbols, universe_source = self._universe(req.market.value, req.universe_scope)
         strict_results: list[ScannerResult] = []
         relaxed_results: list[ScannerResult] = []
+        filtered_candidates: list[ScannerResult] = []
         processed = 0
         partial = False
         partial_note = None
         category_eligible_count = 0
         relaxed_eligible_count = 0
         custom_filtered_count = 0
+        per_rule_stats: dict[str, dict[str, int]] = {}
 
         config = build_analysis_config(
             ticker="DUMMY",
@@ -548,28 +567,6 @@ class ScannerEngine:
                     confluence=confluence,
                 )
 
-                if req.use_custom_rules and req.custom_rules:
-                    matched = 0
-                    for rule in req.custom_rules:
-                        actual = self._field_value(rule.field, regime=regime, location=location, setup=setup, snapshot=snapshot)
-                        if self._rule_matches(
-                            actual=actual,
-                            operator=rule.operator,
-                            value_number=rule.value_number,
-                            value_text=rule.value_text,
-                            value_list=rule.value_list,
-                        ):
-                            matched += 1
-                    if matched != len(req.custom_rules):
-                        custom_filtered_count += 1
-                        processed += 1
-                        continue
-                    scored = _Eval(
-                        score=min(100.0, scored.score + min(10.0, 2.0 * matched)),
-                        tag=f"{scored.tag}_custom",
-                        reason=f"{scored.reason} Matched {matched}/{len(req.custom_rules)} custom rules.",
-                    )
-
                 range_low, range_high, from_low_pct, to_high_pct = self._range_metrics(
                     bundle.daily,
                     req.range_start,
@@ -614,6 +611,10 @@ class ScannerEngine:
                     resistance_test_count=counts.resistance_test_count,
                     ema200_test_count=counts.ema200_test_count,
                     repeated_test_count=counts.repeated_test_count,
+                    support_zone=(round(snapshot["support_resistance"]["support"] * 0.995, 2), round(snapshot["support_resistance"]["support"] * 1.005, 2)),
+                    resistance_zone=(round(snapshot["support_resistance"]["resistance"] * 0.995, 2), round(snapshot["support_resistance"]["resistance"] * 1.005, 2)),
+                    test_count=counts.repeated_test_count,
+                    distance_to_zone_pct=round(min(location.support_distance_pct, location.resistance_room_pct), 2),
                     distance_from_range_low_pct=from_low_pct,
                     distance_to_range_high_pct=to_high_pct,
                     range_low=range_low,
@@ -625,6 +626,7 @@ class ScannerEngine:
                 if eligibility.strict:
                     category_eligible_count += 1
                     strict_results.append(row)
+                    filtered_candidates.append(row)
                 if eligibility.relaxed:
                     relaxed_eligible_count += 1
                     relaxed_results.append(row)
@@ -646,6 +648,31 @@ class ScannerEngine:
             ]
             used_relaxed_fallback = True
 
+        # Apply custom rules as an optional narrowing layer after category eligibility.
+        if req.use_custom_rules and req.custom_rules:
+            narrowed: list[ScannerResult] = []
+            before = len(source)
+            for rule in req.custom_rules:
+                key = f"{rule.field.value} {rule.operator.value} {rule.value_number if rule.value_number is not None else (rule.value_text or ','.join(rule.value_list))}"
+                per_rule_stats[key] = {"before": before, "after": 0}
+                next_rows: list[ScannerResult] = []
+                for row in source:
+                    actual = getattr(row, rule.field.value, None)
+                    if actual is None:
+                        continue
+                    if self._rule_matches(
+                        actual=actual,
+                        operator=rule.operator,
+                        value_number=rule.value_number,
+                        value_text=rule.value_text,
+                        value_list=rule.value_list,
+                    ):
+                        next_rows.append(row)
+                per_rule_stats[key]["after"] = len(next_rows)
+                before = len(next_rows)
+                source = next_rows
+            custom_filtered_count = max(0, len(filtered_candidates) - len(source))
+
         ranked = sorted(
             source,
             key=lambda row: (
@@ -659,6 +686,15 @@ class ScannerEngine:
         )
         ranked_count = len(ranked)
         final_rows = ranked[: req.max_results]
+        impact_rows = [
+            ScannerRuleImpact(
+                rule_name=name,
+                before_count=vals["before"],
+                after_count=vals["after"],
+                removed_count=max(0, vals["before"] - vals["after"]),
+            )
+            for name, vals in per_rule_stats.items()
+        ]
 
         runtime = round(time.monotonic() - started, 2)
         return ScannerResponse(
@@ -680,6 +716,8 @@ class ScannerEngine:
                 ranked_count=ranked_count,
                 final_returned_count=len(final_rows),
                 used_relaxed_fallback=used_relaxed_fallback,
+                universe_source=universe_source,
             ),
             results=final_rows,
+            rule_impact=impact_rows,
         )

@@ -32,8 +32,13 @@ export default function LogicPage() {
           <p><strong>Setup types:</strong> pullback continuation, momentum continuation, value rebuild, second breakout attempt, overextended monitor. Setup type is descriptive context, not an automatic trade command.</p>
           <p><strong>Indicators:</strong> EMA20/50/100/200 are trend anchors. RSI14 tracks momentum stretch. Volume Ratio 20 compares current volume to its 20-bar baseline.</p>
           <p><strong>Scanner metrics:</strong> Score = current structural quality. Dynamics = improving/accelerating/stable/weakening/deteriorating. vs EMA200 = price distance to long regime anchor.</p>
+          <p><strong>EMA distance rules:</strong> signed distance uses + above EMA and - below EMA. absolute distance ignores sign and measures only magnitude from EMA.</p>
+          <p><strong>Fib mode:</strong> currently visual_only. Fib levels are context overlays and are not historical entry/exit rules in backtest.</p>
+          <p><strong>Support/Resistance zones:</strong> deterministic price bands around nearest support/resistance with repeated test counts for zone pressure context.</p>
           <p><strong>Location metrics:</strong> Support% = distance to nearest support. Room% = upside room to nearest resistance. Higher room generally means better upside space.</p>
           <p><strong>Alert terms:</strong> Alert Rule = condition being watched. Alert Event = rule trigger instance. Triggered value = numeric/string value that caused the trigger.</p>
+          <p><strong>Alert rule families:</strong> daily EMA, weekly EMA, price/low/high threshold, RSI, volume, resistance tests, scanner-top-N, and momentum/extension warnings.</p>
+          <p><strong>Rule presets:</strong> reusable saved scanner filter sets (for example RSI Pullback, Near EMA20, EMA200 Reclaim Watch) to avoid retyping thresholds.</p>
           <p><strong>Alert meaning types:</strong> opportunity, risk warning, exit watch, momentum watch, info. Each event now includes plain-English meaning + suggested action.</p>
           <p><strong>Watchlist terms:</strong> Watchlist stores symbols and monitoring metrics. last_checked shows most recent monitoring update for that symbol.</p>
           <p><strong>Financial ratios:</strong> PD/DD (price/book), F/K (price/earnings). Lower valuation can support value-rebuild context, but never overrides structure checks by itself.</p>

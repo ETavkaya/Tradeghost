@@ -46,6 +46,12 @@ const presetDefaults: Record<AlertRuleType, { label: string; valueKey: string | 
   cross_below_ema200: { label: "Cross below EMA200", valueKey: null, defaultValue: "", severity: "critical" },
   price_gte: { label: "Price >= X", valueKey: "value", defaultValue: "0", severity: "watch" },
   price_lte: { label: "Price <= X", valueKey: "value", defaultValue: "0", severity: "watch" },
+  low_lte: { label: "Daily Low <= X", valueKey: "value", defaultValue: "0", severity: "important" },
+  high_gte: { label: "Daily High >= X", valueKey: "value", defaultValue: "0", severity: "important" },
+  near_weekly_ema100: { label: "Near Weekly EMA100", valueKey: "threshold_pct", defaultValue: "4", severity: "watch" },
+  near_weekly_ema200: { label: "Near Weekly EMA200", valueKey: "threshold_pct", defaultValue: "5", severity: "watch" },
+  cross_above_weekly_ema100: { label: "Cross Above Weekly EMA100", valueKey: null, defaultValue: "", severity: "important" },
+  cross_above_weekly_ema200: { label: "Cross Above Weekly EMA200", valueKey: null, defaultValue: "", severity: "important" },
   trend_state_is: { label: "Trend state equals", valueKey: "state", defaultValue: "bullish_trend", severity: "important" },
   dynamics_state_is: { label: "Score dynamics equals", valueKey: "state", defaultValue: "accelerating", severity: "important" },
   scanner_top_n: { label: "Scanner top N", valueKey: "top_n", defaultValue: "20", severity: "watch" },
@@ -84,6 +90,12 @@ function ruleCondition(rule: AlertRule): string {
   if (rule.rule_type === "cross_above_ema200") return "Cross above EMA200";
   if (rule.rule_type === "cross_below_ema100") return "Cross below EMA100";
   if (rule.rule_type === "cross_below_ema200") return "Cross below EMA200";
+  if (rule.rule_type === "low_lte") return `Daily low <= ${p.value ?? "-"}`;
+  if (rule.rule_type === "high_gte") return `Daily high >= ${p.value ?? "-"}`;
+  if (rule.rule_type === "near_weekly_ema100") return `Near weekly EMA100 <= ${p.threshold_pct ?? "-"}%`;
+  if (rule.rule_type === "near_weekly_ema200") return `Near weekly EMA200 <= ${p.threshold_pct ?? "-"}%`;
+  if (rule.rule_type === "cross_above_weekly_ema100") return "Cross above weekly EMA100";
+  if (rule.rule_type === "cross_above_weekly_ema200") return "Cross above weekly EMA200";
   if (rule.rule_type === "dynamics_state_is") return `Dynamics = ${p.state ?? "-"}`;
   if (rule.rule_type === "rsi14_lte") return `RSI14 <= ${p.value ?? "-"}`;
   if (rule.rule_type === "rsi14_gte") return `RSI14 >= ${p.value ?? "-"}`;
@@ -120,6 +132,8 @@ export default function MonitorPage() {
   const [pollInterval, setPollInterval] = useState<PollInterval>("5m");
   const [alertDraft, setAlertDraft] = useState<AlertDraft | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [manualSymbol, setManualSymbol] = useState("");
+  const [manualMarket, setManualMarket] = useState<MarketCode>("us");
 
   const selectedWatchlist = useMemo(() => watchlists.find((w) => w.id === selectedWatchlistId) ?? null, [watchlists, selectedWatchlistId]);
   const enabledRules = useMemo(() => alertRules.filter((r) => r.is_enabled), [alertRules]);
@@ -266,6 +280,13 @@ export default function MonitorPage() {
     await api.removeWatchlistItem(selectedWatchlistId, symbol, market);
     await refresh();
   };
+  const addManualSymbol = async () => {
+    if (!selectedWatchlistId || !manualSymbol.trim()) return;
+    await api.addWatchlistItem(selectedWatchlistId, manualSymbol.trim().toUpperCase(), manualMarket);
+    setManualSymbol("");
+    setNotice("Symbol added to watchlist.");
+    await refresh();
+  };
 
   const openPreset = (symbol: string, market: MarketCode) => {
     const d = presetDefaults.near_ema50;
@@ -385,6 +406,11 @@ export default function MonitorPage() {
               <div className="mt-2 grid gap-2 md:grid-cols-[1fr_auto]">
                 <input value={renameWatchlistName} onChange={(e) => setRenameWatchlistName(e.target.value)} placeholder="Rename selected watchlist" className="h-9 rounded-lg border border-stroke bg-bg px-2 text-sm" />
                 <button type="button" onClick={renameWatchlist} className="rounded-lg border border-stroke px-3 py-2 text-xs">Rename</button>
+              </div>
+              <div className="mt-2 grid gap-2 md:grid-cols-[160px_1fr_auto]">
+                <select value={manualMarket} onChange={(e) => setManualMarket(e.target.value as MarketCode)} className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs"><option value="us">US</option><option value="bist">BIST</option></select>
+                <input value={manualSymbol} onChange={(e) => setManualSymbol(e.target.value)} placeholder="Add symbol manually (e.g. NVDA / FROTO)" className="h-9 rounded-lg border border-stroke bg-bg px-2 text-sm" />
+                <button type="button" onClick={addManualSymbol} className="rounded-lg border border-stroke px-3 py-2 text-xs">Add Symbol</button>
               </div>
 
               <div className="mt-3 overflow-x-auto rounded-lg border border-stroke/70">

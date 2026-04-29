@@ -8,6 +8,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
+import pandas as pd
+
 from tradeghost.services.analysis_engine import AnalysisEngine
 from tradeghost.services.scanner.engine import ScannerEngine
 from tradeghost.shared.config.settings import get_settings
@@ -788,6 +790,32 @@ class MonitoringService:
         threshold = float(params.get("threshold_pct", 3.0))
         value = float(params.get("value", 0.0)) if "value" in params else None
         count_threshold = int(params.get("count", 2))
+        last_low = float(combined.chart.candles[-1].low) if combined.chart.candles else close
+        last_high = float(combined.chart.candles[-1].high) if combined.chart.candles else close
+
+        # Weekly EMA context (deterministic from available daily candles in analysis payload window)
+        weekly_ema100 = ema100
+        weekly_ema200 = ema200
+        prev_weekly_ema100 = prev_ema100
+        prev_weekly_ema200 = prev_ema200
+        prev_week_close = prev_close
+        if len(combined.chart.candles) >= 40:
+            weekly_df = pd.DataFrame(
+                {
+                    "date": [c.date for c in combined.chart.candles],
+                    "close": [float(c.close) for c in combined.chart.candles],
+                }
+            )
+            weekly_df["date"] = pd.to_datetime(weekly_df["date"])
+            weekly_df = weekly_df.set_index("date").resample("W-FRI").last().dropna()
+            if len(weekly_df) >= 5:
+                ema100_series = weekly_df["close"].ewm(span=100, adjust=False).mean()
+                ema200_series = weekly_df["close"].ewm(span=200, adjust=False).mean()
+                weekly_ema100 = float(ema100_series.iloc[-1])
+                weekly_ema200 = float(ema200_series.iloc[-1])
+                prev_week_close = float(weekly_df["close"].iloc[-2]) if len(weekly_df) >= 2 else prev_close
+                prev_weekly_ema100 = float(ema100_series.iloc[-2]) if len(ema100_series) >= 2 else weekly_ema100
+                prev_weekly_ema200 = float(ema200_series.iloc[-2]) if len(ema200_series) >= 2 else weekly_ema200
 
         if rule.rule_type == AlertRuleType.NEAR_EMA20:
             dist = abs((close - ema20) / max(ema20, 0.01) * 100.0)
@@ -901,6 +929,26 @@ class MonitoringService:
                 scanner_context={},
                 analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
             )
+        elif rule.rule_type == AlertRuleType.LOW_LTE and value is not None and last_low <= value:
+            return self._build_alert_event(
+                rule=rule,
+                symbol=symbol,
+                triggered_value=round(last_low, 2),
+                message=f"{symbol} daily low {last_low:.2f} <= {value:.2f}",
+                trigger_context={"daily_low": round(last_low, 2), "threshold": value},
+                scanner_context={},
+                analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
+            )
+        elif rule.rule_type == AlertRuleType.HIGH_GTE and value is not None and last_high >= value:
+            return self._build_alert_event(
+                rule=rule,
+                symbol=symbol,
+                triggered_value=round(last_high, 2),
+                message=f"{symbol} daily high {last_high:.2f} >= {value:.2f}",
+                trigger_context={"daily_high": round(last_high, 2), "threshold": value},
+                scanner_context={},
+                analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
+            )
         elif rule.rule_type == AlertRuleType.TREND_STATE_IS:
             target = str(params.get("state", "bullish_trend"))
             if setup.trend_state == target:
@@ -1005,6 +1053,52 @@ class MonitoringService:
                     message=f"{symbol} reached fib/EMA confluence zone ({distance:.2f}% from nearest fib)",
                     trigger_context={"distance_to_nearest_fib_pct": round(distance, 2), "max_distance_pct": max_distance},
                     scanner_context={"fib_ema_confluence_score": chartmap.fib_ema_confluence_score},
+                    analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
+                )
+        elif rule.rule_type == AlertRuleType.NEAR_WEEKLY_EMA100:
+            dist = abs((close - weekly_ema100) / max(weekly_ema100, 0.01) * 100.0)
+            if dist <= threshold:
+                return self._build_alert_event(
+                    rule=rule,
+                    symbol=symbol,
+                    triggered_value=round(dist, 2),
+                    message=f"{symbol} is within {dist:.2f}% of weekly EMA100",
+                    trigger_context={"distance_pct": round(dist, 2), "ema": "weekly_100"},
+                    scanner_context={},
+                    analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
+                )
+        elif rule.rule_type == AlertRuleType.NEAR_WEEKLY_EMA200:
+            dist = abs((close - weekly_ema200) / max(weekly_ema200, 0.01) * 100.0)
+            if dist <= threshold:
+                return self._build_alert_event(
+                    rule=rule,
+                    symbol=symbol,
+                    triggered_value=round(dist, 2),
+                    message=f"{symbol} is within {dist:.2f}% of weekly EMA200",
+                    trigger_context={"distance_pct": round(dist, 2), "ema": "weekly_200"},
+                    scanner_context={},
+                    analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
+                )
+        elif rule.rule_type == AlertRuleType.CROSS_ABOVE_WEEKLY_EMA100:
+            if prev_week_close <= prev_weekly_ema100 and close > weekly_ema100:
+                return self._build_alert_event(
+                    rule=rule,
+                    symbol=symbol,
+                    triggered_value=round(close, 2),
+                    message=f"{symbol} crossed above weekly EMA100",
+                    trigger_context={"prev_week_close": prev_week_close, "prev_weekly_ema100": prev_weekly_ema100, "close": close, "weekly_ema100": weekly_ema100},
+                    scanner_context={},
+                    analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
+                )
+        elif rule.rule_type == AlertRuleType.CROSS_ABOVE_WEEKLY_EMA200:
+            if prev_week_close <= prev_weekly_ema200 and close > weekly_ema200:
+                return self._build_alert_event(
+                    rule=rule,
+                    symbol=symbol,
+                    triggered_value=round(close, 2),
+                    message=f"{symbol} crossed above weekly EMA200",
+                    trigger_context={"prev_week_close": prev_week_close, "prev_weekly_ema200": prev_weekly_ema200, "close": close, "weekly_ema200": weekly_ema200},
+                    scanner_context={},
                     analysis_context={"trend_state": setup.trend_state, "score_dynamics_state": score_dynamics_state},
                 )
         return None

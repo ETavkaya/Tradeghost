@@ -527,6 +527,12 @@ class ScannerRuleField(str, Enum):
     PRICE_VS_EMA200_PCT = "price_vs_ema200_pct"
     DISTANCE_TO_EMA20_PCT = "distance_to_ema20_pct"
     DISTANCE_TO_EMA50_PCT = "distance_to_ema50_pct"
+    DISTANCE_TO_EMA100_PCT = "distance_to_ema100_pct"
+    DISTANCE_TO_EMA200_PCT = "distance_to_ema200_pct"
+    ABS_DISTANCE_TO_EMA20_PCT = "abs_distance_to_ema20_pct"
+    ABS_DISTANCE_TO_EMA50_PCT = "abs_distance_to_ema50_pct"
+    ABS_DISTANCE_TO_EMA100_PCT = "abs_distance_to_ema100_pct"
+    ABS_DISTANCE_TO_EMA200_PCT = "abs_distance_to_ema200_pct"
     RSI_14 = "rsi_14"
     VOLUME_RATIO_20 = "volume_ratio_20"
     SUPPORT_DISTANCE_PCT = "support_distance_pct"
@@ -603,6 +609,10 @@ class ScannerResult(BaseModel):
     resistance_test_count: int
     ema200_test_count: int
     repeated_test_count: int
+    support_zone: tuple[float, float] | None = None
+    resistance_zone: tuple[float, float] | None = None
+    test_count: int = 0
+    distance_to_zone_pct: float | None = None
     distance_from_range_low_pct: float | None = None
     distance_to_range_high_pct: float | None = None
     range_low: float | None = None
@@ -630,11 +640,20 @@ class ScannerScopeSummary(BaseModel):
     ranked_count: int = 0
     final_returned_count: int = 0
     used_relaxed_fallback: bool = False
+    universe_source: str | None = None
+
+
+class ScannerRuleImpact(BaseModel):
+    rule_name: str
+    before_count: int
+    after_count: int
+    removed_count: int
 
 
 class ScannerResponse(BaseModel):
     scope: ScannerScopeSummary
     results: list[ScannerResult]
+    rule_impact: list[ScannerRuleImpact] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -704,6 +723,12 @@ class AlertRuleType(str, Enum):
     CROSS_BELOW_EMA200 = "cross_below_ema200"
     PRICE_GTE = "price_gte"
     PRICE_LTE = "price_lte"
+    LOW_LTE = "low_lte"
+    HIGH_GTE = "high_gte"
+    NEAR_WEEKLY_EMA100 = "near_weekly_ema100"
+    NEAR_WEEKLY_EMA200 = "near_weekly_ema200"
+    CROSS_ABOVE_WEEKLY_EMA100 = "cross_above_weekly_ema100"
+    CROSS_ABOVE_WEEKLY_EMA200 = "cross_above_weekly_ema200"
     TREND_STATE_IS = "trend_state_is"
     DYNAMICS_STATE_IS = "dynamics_state_is"
     SCANNER_TOP_N = "scanner_top_n"

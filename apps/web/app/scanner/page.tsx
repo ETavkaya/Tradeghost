@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { UnifiedAnalysisChart } from "@/components/unified-analysis-chart";
 import { Panel, SectionTitle, StatCard } from "@/components/ui";
 import { api } from "@/lib/api";
 import {
@@ -17,7 +18,10 @@ import {
   ScannerRuleOperator,
   ScannerUniverseScope,
   Watchlist,
+  CombinedAnalysisResponse,
 } from "@/lib/types";
+
+const SCANNER_STATE_STORAGE_KEY = "tradeghost_scanner_state_v1";
 
 const recommendedDurationByCategory: Record<ScannerCategory, ScannerDuration> = {
   trend_mode: "2y",
@@ -78,8 +82,14 @@ const sortOptions: Array<{ key: keyof ScannerResult; label: string }> = [
 
 const ruleFieldOptions: Array<{ value: ScannerRuleField; label: string; numeric: boolean }> = [
   { value: "price_vs_ema200_pct", label: "Price vs EMA200 %", numeric: true },
-  { value: "distance_to_ema20_pct", label: "Distance to EMA20 %", numeric: true },
-  { value: "distance_to_ema50_pct", label: "Distance to EMA50 %", numeric: true },
+  { value: "distance_to_ema20_pct", label: "Distance to EMA20 % (signed)", numeric: true },
+  { value: "distance_to_ema50_pct", label: "Distance to EMA50 % (signed)", numeric: true },
+  { value: "distance_to_ema100_pct", label: "Distance to EMA100 % (signed)", numeric: true },
+  { value: "distance_to_ema200_pct", label: "Distance to EMA200 % (signed)", numeric: true },
+  { value: "abs_distance_to_ema20_pct", label: "Abs Distance to EMA20 %", numeric: true },
+  { value: "abs_distance_to_ema50_pct", label: "Abs Distance to EMA50 %", numeric: true },
+  { value: "abs_distance_to_ema100_pct", label: "Abs Distance to EMA100 %", numeric: true },
+  { value: "abs_distance_to_ema200_pct", label: "Abs Distance to EMA200 %", numeric: true },
   { value: "rsi_14", label: "RSI 14", numeric: true },
   { value: "volume_ratio_20", label: "Volume Ratio 20", numeric: true },
   { value: "support_distance_pct", label: "Support Distance %", numeric: true },
@@ -101,6 +111,12 @@ const ruleDefaultByField: Record<ScannerRuleField, ScannerCustomRule> = {
   price_vs_ema200_pct: { field: "price_vs_ema200_pct", operator: "gt", value_number: 0 },
   distance_to_ema20_pct: { field: "distance_to_ema20_pct", operator: "lt", value_number: 5 },
   distance_to_ema50_pct: { field: "distance_to_ema50_pct", operator: "lt", value_number: 8 },
+  distance_to_ema100_pct: { field: "distance_to_ema100_pct", operator: "lt", value_number: 10 },
+  distance_to_ema200_pct: { field: "distance_to_ema200_pct", operator: "lt", value_number: 12 },
+  abs_distance_to_ema20_pct: { field: "abs_distance_to_ema20_pct", operator: "lt", value_number: 3 },
+  abs_distance_to_ema50_pct: { field: "abs_distance_to_ema50_pct", operator: "lt", value_number: 5 },
+  abs_distance_to_ema100_pct: { field: "abs_distance_to_ema100_pct", operator: "lt", value_number: 7 },
+  abs_distance_to_ema200_pct: { field: "abs_distance_to_ema200_pct", operator: "lt", value_number: 9 },
   rsi_14: { field: "rsi_14", operator: "lt", value_number: 35 },
   volume_ratio_20: { field: "volume_ratio_20", operator: "gt", value_number: 1.5 },
   support_distance_pct: { field: "support_distance_pct", operator: "lt", value_number: 6 },
@@ -137,6 +153,88 @@ export default function ScannerPage() {
   const [alertPlanNotificationEnabled, setAlertPlanNotificationEnabled] = useState(false);
   const [alertPlanNotifyEmail, setAlertPlanNotifyEmail] = useState("");
   const [userLabel, setUserLabel] = useState("local-user");
+  const [presetName, setPresetName] = useState("");
+  const [savedPresets, setSavedPresets] = useState<Array<{ name: string; rules: ScannerCustomRule[] }>>([]);
+  const [selectedPreview, setSelectedPreview] = useState<ScannerResult | null>(null);
+  const [previewAnalysis, setPreviewAnalysis] = useState<CombinedAnalysisResponse | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(SCANNER_STATE_STORAGE_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as {
+        market?: MarketCode;
+        category?: ScannerCategory;
+        duration?: ScannerDuration;
+        maxResults?: number;
+        universeScope?: ScannerUniverseScope;
+        selectedWatchlistId?: string;
+        sortKey?: keyof ScannerResult;
+        sortDirection?: "asc" | "desc";
+        useCustomRules?: boolean;
+        customRules?: ScannerCustomRule[];
+        rangeStart?: string;
+        rangeEnd?: string;
+        result?: ScannerResponse | null;
+      };
+      if (saved.market) setMarket(saved.market);
+      if (saved.category) setCategory(saved.category);
+      if (saved.duration) setDuration(saved.duration);
+      if (saved.maxResults) setMaxResults(saved.maxResults);
+      if (saved.universeScope) setUniverseScope(saved.universeScope);
+      if (saved.selectedWatchlistId !== undefined) setSelectedWatchlistId(saved.selectedWatchlistId);
+      if (saved.sortKey) setSortKey(saved.sortKey);
+      if (saved.sortDirection) setSortDirection(saved.sortDirection);
+      if (saved.useCustomRules !== undefined) setUseCustomRules(saved.useCustomRules);
+      if (saved.customRules) setCustomRules(saved.customRules);
+      if (saved.rangeStart !== undefined) setRangeStart(saved.rangeStart);
+      if (saved.rangeEnd !== undefined) setRangeEnd(saved.rangeEnd);
+      if (saved.result) setResult(saved.result);
+    } catch {
+      // ignore broken local state and continue with defaults
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        SCANNER_STATE_STORAGE_KEY,
+        JSON.stringify({
+          market,
+          category,
+          duration,
+          maxResults,
+          universeScope,
+          selectedWatchlistId,
+          sortKey,
+          sortDirection,
+          useCustomRules,
+          customRules,
+          rangeStart,
+          rangeEnd,
+          result,
+        })
+      );
+    } catch {
+      // ignore storage write errors
+    }
+  }, [
+    market,
+    category,
+    duration,
+    maxResults,
+    universeScope,
+    selectedWatchlistId,
+    sortKey,
+    sortDirection,
+    useCustomRules,
+    customRules,
+    rangeStart,
+    rangeEnd,
+    result,
+  ]);
 
   const recommended = recommendedDurationByCategory[category];
 
@@ -160,6 +258,24 @@ export default function ScannerPage() {
     const id = setTimeout(() => setNotice(null), 2500);
     return () => clearTimeout(id);
   }, [notice]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem("tradeghost_scanner_rule_presets_v1");
+      if (!raw) return;
+      setSavedPresets(JSON.parse(raw));
+    } catch {
+      setSavedPresets([]);
+    }
+  }, []);
+
+  const persistPresets = (next: Array<{ name: string; rules: ScannerCustomRule[] }>) => {
+    setSavedPresets(next);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("tradeghost_scanner_rule_presets_v1", JSON.stringify(next));
+    }
+  };
 
   const onCategoryChange = (next: ScannerCategory) => {
     setCategory(next);
@@ -297,6 +413,26 @@ export default function ScannerPage() {
     } finally {
       setAlertPlanLoading(false);
     }
+  };
+
+  const openPreview = async (row: ScannerResult) => {
+    setSelectedPreview(row);
+    try {
+      const analysis = await api.analyzeCombined(row.symbol, market, duration, {});
+      setPreviewAnalysis(analysis);
+    } catch {
+      setPreviewAnalysis(null);
+    }
+  };
+
+  const ruleMeaning = (rule: ScannerCustomRule): string => {
+    if (rule.field === "rsi_14") return `RSI ${rule.operator} ${rule.value_number ?? "?"}: lower values are stricter for oversold screens.`;
+    if (rule.field.startsWith("distance_to_ema")) return `${rule.field} uses signed distance: + above EMA, - below EMA.`;
+    if (rule.field.startsWith("abs_distance_to_ema")) return `${rule.field} uses absolute distance (ignores above/below sign).`;
+    if (rule.field === "volume_ratio_20") return "Higher value requires stronger volume expansion.";
+    if (rule.field === "support_distance_pct") return "Lower value keeps symbols closer to support.";
+    if (rule.field === "resistance_room_pct") return "Higher value requires more upside room to resistance.";
+    return "Deterministic AND filter.";
   };
 
   const updateAlertPlanRule = (index: number, patch: Partial<AlertProfileSuggestionRule>) => {
@@ -486,7 +622,18 @@ export default function ScannerPage() {
                       {operatorOptions.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                     </select>
                     {fieldMeta.numeric && rule.operator !== "in" ? (
-                      <input type="number" value={rule.value_number ?? 0} onChange={(event) => updateRule(index, { value_number: Number(event.target.value), value_text: null, value_list: [] })} className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs" />
+                      <div className="space-y-1">
+                        <input type="number" value={rule.value_number ?? 0} onChange={(event) => updateRule(index, { value_number: Number(event.target.value), value_text: null, value_list: [] })} className="h-9 w-full rounded-lg border border-stroke bg-bg px-2 text-xs" />
+                        <input
+                          type="range"
+                          min={rule.field === "rsi_14" ? 0 : -25}
+                          max={rule.field === "rsi_14" ? 100 : 25}
+                          step={0.5}
+                          value={rule.value_number ?? 0}
+                          onChange={(event) => updateRule(index, { value_number: Number(event.target.value), value_text: null, value_list: [] })}
+                          className="w-full"
+                        />
+                      </div>
                     ) : (
                       <input
                         type="text"
@@ -508,10 +655,29 @@ export default function ScannerPage() {
                       />
                     )}
                     <button type="button" onClick={() => removeRule(index)} className="h-9 rounded-lg border border-stroke px-2 text-xs text-red">Remove</button>
+                    <p className="md:col-span-4 text-[11px] text-slate-400">{ruleMeaning(rule)}</p>
                   </div>
                 );
               })}
               <button type="button" onClick={addRule} className="rounded-lg border border-stroke px-3 py-2 text-xs text-slate-200 hover:text-cyan">Add Rule</button>
+              <div className="mt-2 grid gap-2 md:grid-cols-[1fr_auto_auto]">
+                <input value={presetName} onChange={(e) => setPresetName(e.target.value)} placeholder="Preset name (e.g. RSI Pullback)" className="h-9 rounded-lg border border-stroke bg-bg px-2 text-xs" />
+                <button type="button" onClick={() => { if (!presetName.trim()) return; persistPresets([...savedPresets, { name: presetName.trim(), rules: customRules }]); setPresetName(""); }} className="rounded-lg border border-stroke px-3 py-2 text-xs">Save Preset</button>
+                <button type="button" onClick={() => { setCustomRules([]); }} className="rounded-lg border border-stroke px-3 py-2 text-xs">Clear Rules</button>
+              </div>
+              {savedPresets.length > 0 ? (
+                <div className="grid gap-2 md:grid-cols-2">
+                  {savedPresets.map((p) => (
+                    <div key={p.name} className="flex items-center justify-between rounded-md border border-stroke/70 px-2 py-1 text-xs">
+                      <span>{p.name}</span>
+                      <div className="flex gap-1">
+                        <button type="button" onClick={() => { setUseCustomRules(true); setCustomRules(p.rules); }} className="rounded border border-stroke px-2 py-1">Load</button>
+                        <button type="button" onClick={() => persistPresets(savedPresets.filter((x) => x.name !== p.name))} className="rounded border border-red/40 px-2 py-1 text-red">Delete</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -555,42 +721,56 @@ export default function ScannerPage() {
           </div>
 
           <Panel className="bg-panelSoft">
-            <p className="text-xs text-slate-300">Diagnostics: eligible {result.scope.category_eligible_count}, relaxed eligible {result.scope.relaxed_eligible_count}, custom-filtered {result.scope.custom_filtered_count}, ranked {result.scope.ranked_count}, returned {result.scope.final_returned_count}.</p>
+            <p className="text-xs text-slate-300">Diagnostics: eligible {result.scope.category_eligible_count}, relaxed eligible {result.scope.relaxed_eligible_count}, custom-filtered {result.scope.custom_filtered_count}, ranked {result.scope.ranked_count}, returned {result.scope.final_returned_count}. Universe source: {result.scope.universe_source ?? "n/a"}.</p>
+            {result.rule_impact.length > 0 ? (
+              <div className="mt-2 space-y-1">
+                {result.rule_impact.map((r) => (
+                  <p key={r.rule_name} className="text-xs text-slate-300">{r.rule_name}: {r.before_count} -> {r.after_count} (removed {r.removed_count})</p>
+                ))}
+              </div>
+            ) : null}
           </Panel>
+
+          {selectedPreview && previewAnalysis ? (
+            <Panel>
+              <SectionTitle title={`Scanner Chart Preview: ${selectedPreview.symbol}`} subtitle="Quick visual check without leaving Scanner" />
+              <UnifiedAnalysisChart chart={previewAnalysis.chart} title={`${selectedPreview.symbol} Preview`} />
+            </Panel>
+          ) : null}
 
           <Panel>
             <SectionTitle title="Scanner Results" subtitle="Ranked shortlist for next analysis step" />
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
+            <div className="max-h-[72vh] overflow-auto rounded-xl border border-stroke/70">
+              <table className="min-w-[2600px] whitespace-nowrap text-sm">
                 <thead>
                   <tr className="border-b border-stroke text-left text-slate-400">
-                    <th className="sticky left-0 z-20 bg-panel px-2 py-2 shadow-[8px_0_12px_-12px_rgba(0,0,0,0.6)]">Symbol</th>
+                    <th className="sticky left-0 top-0 z-30 bg-panel px-2 py-2 shadow-[8px_0_12px_-12px_rgba(0,0,0,0.6)]">Symbol</th>
                     {sortOptions.map((option) => (
-                      <th key={option.key} className="px-2 py-2">
+                      <th key={option.key} className="sticky top-0 z-20 bg-panel px-2 py-2">
                         <button type="button" onClick={() => toggleSort(option.key)} className="inline-flex items-center gap-1 hover:text-slate-200">
                           {option.label}
                           {sortKey === option.key ? (sortDirection === "asc" ? "up" : "down") : ""}
                         </button>
                       </th>
                     ))}
-                    <th className="px-2 py-2">Dynamics</th>
-                    <th className="px-2 py-2">Momentum Fit</th>
-                    <th className="px-2 py-2">Ext State</th>
-                    <th className="px-2 py-2">Mom Candidate</th>
-                    <th className="px-2 py-2">Opportunity</th>
-                    <th className="px-2 py-2">Fib Confluence</th>
-                    <th className="px-2 py-2">Fib Room%</th>
-                    <th className="px-2 py-2">P/B</th>
-                    <th className="px-2 py-2">P/E</th>
-                    <th className="px-2 py-2">Priority</th>
-                    <th className="px-2 py-2">Category</th>
-                    <th className="px-2 py-2">Reason</th>
-                    <th className="px-2 py-2">Trend State</th>
-                    <th className="px-2 py-2">EMA200 Slope</th>
-                    <th className="px-2 py-2">Rep Tests</th>
-                    <th className="px-2 py-2 whitespace-nowrap">TV</th>
-                    <th className="px-2 py-2 whitespace-nowrap">Open</th>
-                    <th className="px-2 py-2 whitespace-nowrap">Track</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Dynamics</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Momentum Fit</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Ext State</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Mom Candidate</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Opportunity</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Fib Confluence</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Fib Room%</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">P/B</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">P/E</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Priority</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Category</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Reason</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Trend State</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">EMA200 Slope</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Rep Tests</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2 whitespace-nowrap">TV</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2 whitespace-nowrap">Open</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2 whitespace-nowrap">Track</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -605,6 +785,7 @@ export default function ScannerPage() {
                         <td className="sticky left-0 z-10 bg-panel px-2 py-2 shadow-[8px_0_12px_-12px_rgba(0,0,0,0.6)]">
                           <div className="font-medium text-slate-100">{row.symbol}</div>
                           <div className="text-[11px] text-slate-400">Score {row.scanner_score.toFixed(1)} | {row.priority}</div>
+                          <button type="button" onClick={() => openPreview(row)} className="mt-1 rounded border border-stroke px-1 py-0.5 text-[10px] hover:text-cyan">Preview</button>
                         </td>
                         <td className="px-2 py-2">{row.scanner_score.toFixed(2)}</td>
                         <td className="px-2 py-2">{row.current_score.toFixed(2)}</td>
@@ -627,7 +808,7 @@ export default function ScannerPage() {
                         <td className="px-2 py-2">{row.price_to_earnings?.toFixed(2) ?? "n/a"}</td>
                         <td className="px-2 py-2 capitalize">{row.priority}</td>
                         <td className="px-2 py-2">{row.category_tag.replaceAll("_", " ")}</td>
-                        <td className="max-w-[260px] px-2 py-2 text-xs text-slate-300">{row.short_reason}</td>
+                        <td className="max-w-[520px] px-2 py-2 text-xs text-slate-300">{row.short_reason}</td>
                         <td className="px-2 py-2">{row.trend_state}</td>
                         <td className="px-2 py-2">{row.ema200_slope_state}</td>
                         <td className="px-2 py-2">{row.repeated_test_count}</td>

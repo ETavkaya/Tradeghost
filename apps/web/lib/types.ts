@@ -10,6 +10,12 @@ export type ScannerRuleField =
   | "price_vs_ema200_pct"
   | "distance_to_ema20_pct"
   | "distance_to_ema50_pct"
+  | "distance_to_ema100_pct"
+  | "distance_to_ema200_pct"
+  | "abs_distance_to_ema20_pct"
+  | "abs_distance_to_ema50_pct"
+  | "abs_distance_to_ema100_pct"
+  | "abs_distance_to_ema200_pct"
   | "rsi_14"
   | "volume_ratio_20"
   | "support_distance_pct"
@@ -546,6 +552,13 @@ export type ScannerScopeSummary = {
   ranked_count: number;
   final_returned_count: number;
   used_relaxed_fallback: boolean;
+  universe_source: string | null;
+};
+export type ScannerRuleImpact = {
+  rule_name: string;
+  before_count: number;
+  after_count: number;
+  removed_count: number;
 };
 
 export type ScannerCustomRule = {
@@ -607,6 +620,10 @@ export type ScannerResult = {
   resistance_test_count: number;
   ema200_test_count: number;
   repeated_test_count: number;
+  support_zone: [number, number] | null;
+  resistance_zone: [number, number] | null;
+  test_count: number;
+  distance_to_zone_pct: number | null;
   distance_from_range_low_pct: number | null;
   distance_to_range_high_pct: number | null;
   range_low: number | null;
@@ -619,6 +636,7 @@ export type ScannerResult = {
 export type ScannerResponse = {
   scope: ScannerScopeSummary;
   results: ScannerResult[];
+  rule_impact: ScannerRuleImpact[];
   generated_at: string;
 };
 
@@ -664,6 +682,12 @@ export type AlertRuleType =
   | "cross_below_ema200"
   | "price_gte"
   | "price_lte"
+  | "low_lte"
+  | "high_gte"
+  | "near_weekly_ema100"
+  | "near_weekly_ema200"
+  | "cross_above_weekly_ema100"
+  | "cross_above_weekly_ema200"
   | "trend_state_is"
   | "dynamics_state_is"
   | "scanner_top_n"

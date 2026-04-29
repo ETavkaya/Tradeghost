@@ -602,8 +602,14 @@ export default function ScannerPage() {
               Enable custom filters
             </label>
           </div>
+          <p className="mt-2 text-xs text-slate-400">
+            Custom filters refine selected category results. They do not replace category logic. Slider controls appear for numeric rules.
+          </p>
           {useCustomRules ? (
             <div className="mt-3 space-y-2">
+              <p className="text-xs text-slate-400">
+                Numeric rules include slider tuning. Signed EMA distance means: positive above EMA, negative below EMA.
+              </p>
               <div className="flex flex-wrap gap-2">
                 <button type="button" onClick={() => addPresetRule("price_vs_ema200_pct")} className="rounded-lg border border-stroke px-2 py-1 text-xs hover:text-cyan">Above EMA200</button>
                 <button type="button" onClick={() => addPresetRule("distance_to_ema20_pct")} className="rounded-lg border border-stroke px-2 py-1 text-xs hover:text-cyan">Near EMA20</button>
@@ -611,6 +617,9 @@ export default function ScannerPage() {
                 <button type="button" onClick={() => addPresetRule("rsi_14")} className="rounded-lg border border-stroke px-2 py-1 text-xs hover:text-cyan">Oversold RSI</button>
                 <button type="button" onClick={addBuildUpPreset} className="rounded-lg border border-stroke px-2 py-1 text-xs hover:text-cyan">Build-up Basic</button>
               </div>
+              {customRules.length === 0 ? (
+                <p className="text-xs text-slate-400">No custom rule yet. Click a quick preset or "Add Rule" to show slider controls.</p>
+              ) : null}
               {customRules.map((rule, index) => {
                 const fieldMeta = ruleFieldOptions.find((f) => f.value === rule.field) ?? ruleFieldOptions[0];
                 return (
@@ -626,7 +635,7 @@ export default function ScannerPage() {
                         <input type="number" value={rule.value_number ?? 0} onChange={(event) => updateRule(index, { value_number: Number(event.target.value), value_text: null, value_list: [] })} className="h-9 w-full rounded-lg border border-stroke bg-bg px-2 text-xs" />
                         <input
                           type="range"
-                          min={rule.field === "rsi_14" ? 0 : -25}
+                          min={rule.field === "rsi_14" ? 0 : rule.field.startsWith("abs_distance_to_ema") ? 0 : -25}
                           max={rule.field === "rsi_14" ? 100 : 25}
                           step={0.5}
                           value={rule.value_number ?? 0}
@@ -678,6 +687,11 @@ export default function ScannerPage() {
                   ))}
                 </div>
               ) : null}
+            </div>
+          ) : null}
+          {!useCustomRules ? (
+            <div className="mt-3 rounded-lg border border-stroke/50 bg-bg/40 px-3 py-2 text-xs text-slate-400">
+              Enable custom filters, then add a numeric rule (like RSI or EMA distance) to use sliders.
             </div>
           ) : null}
         </div>
@@ -741,33 +755,33 @@ export default function ScannerPage() {
           <Panel>
             <SectionTitle title="Scanner Results" subtitle="Ranked shortlist for next analysis step" />
             <div className="max-h-[72vh] overflow-auto rounded-xl border border-stroke/70">
-              <table className="min-w-[2600px] whitespace-nowrap text-sm">
+              <table className="min-w-[2500px] table-auto text-sm">
                 <thead>
                   <tr className="border-b border-stroke text-left text-slate-400">
-                    <th className="sticky left-0 top-0 z-30 bg-panel px-2 py-2 shadow-[8px_0_12px_-12px_rgba(0,0,0,0.6)]">Symbol</th>
+                    <th className="sticky left-0 top-0 z-30 w-[120px] bg-panel px-2 py-2 shadow-[8px_0_12px_-12px_rgba(0,0,0,0.6)]">Symbol</th>
                     {sortOptions.map((option) => (
-                      <th key={option.key} className="sticky top-0 z-20 bg-panel px-2 py-2">
+                      <th key={option.key} className="sticky top-0 z-20 w-[88px] bg-panel px-2 py-2">
                         <button type="button" onClick={() => toggleSort(option.key)} className="inline-flex items-center gap-1 hover:text-slate-200">
                           {option.label}
                           {sortKey === option.key ? (sortDirection === "asc" ? "up" : "down") : ""}
                         </button>
                       </th>
                     ))}
-                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Dynamics</th>
-                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Momentum Fit</th>
-                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Ext State</th>
-                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Mom Candidate</th>
-                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Opportunity</th>
-                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Fib Confluence</th>
-                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Fib Room%</th>
-                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">P/B</th>
-                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">P/E</th>
-                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Priority</th>
-                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Category</th>
-                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Reason</th>
-                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Trend State</th>
-                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">EMA200 Slope</th>
-                    <th className="sticky top-0 z-20 bg-panel px-2 py-2">Rep Tests</th>
+                    <th className="sticky top-0 z-20 w-[112px] bg-panel px-2 py-2">Dynamics</th>
+                    <th className="sticky top-0 z-20 w-[108px] bg-panel px-2 py-2">Momentum Fit</th>
+                    <th className="sticky top-0 z-20 w-[120px] bg-panel px-2 py-2">Ext State</th>
+                    <th className="sticky top-0 z-20 w-[120px] bg-panel px-2 py-2">Mom Candidate</th>
+                    <th className="sticky top-0 z-20 w-[140px] bg-panel px-2 py-2">Opportunity</th>
+                    <th className="sticky top-0 z-20 w-[110px] bg-panel px-2 py-2">Fib Confluence</th>
+                    <th className="sticky top-0 z-20 w-[90px] bg-panel px-2 py-2">Fib Room%</th>
+                    <th className="sticky top-0 z-20 w-[80px] bg-panel px-2 py-2">P/B</th>
+                    <th className="sticky top-0 z-20 w-[80px] bg-panel px-2 py-2">P/E</th>
+                    <th className="sticky top-0 z-20 w-[90px] bg-panel px-2 py-2">Priority</th>
+                    <th className="sticky top-0 z-20 w-[130px] bg-panel px-2 py-2">Category</th>
+                    <th className="sticky top-0 z-20 w-[420px] bg-panel px-2 py-2">Reason</th>
+                    <th className="sticky top-0 z-20 w-[130px] bg-panel px-2 py-2">Trend State</th>
+                    <th className="sticky top-0 z-20 w-[110px] bg-panel px-2 py-2">EMA200 Slope</th>
+                    <th className="sticky top-0 z-20 w-[90px] bg-panel px-2 py-2">Rep Tests</th>
                     <th className="sticky top-0 z-20 bg-panel px-2 py-2 whitespace-nowrap">TV</th>
                     <th className="sticky top-0 z-20 bg-panel px-2 py-2 whitespace-nowrap">Open</th>
                     <th className="sticky top-0 z-20 bg-panel px-2 py-2 whitespace-nowrap">Track</th>
@@ -781,7 +795,7 @@ export default function ScannerPage() {
                     </tr>
                   ) : (
                     sortedResults.map((row) => (
-                      <tr key={row.normalized_symbol} className="border-b border-stroke/50">
+                      <tr key={row.normalized_symbol} className="border-b border-stroke/50 align-top">
                         <td className="sticky left-0 z-10 bg-panel px-2 py-2 shadow-[8px_0_12px_-12px_rgba(0,0,0,0.6)]">
                           <div className="font-medium text-slate-100">{row.symbol}</div>
                           <div className="text-[11px] text-slate-400">Score {row.scanner_score.toFixed(1)} | {row.priority}</div>
@@ -808,7 +822,9 @@ export default function ScannerPage() {
                         <td className="px-2 py-2">{row.price_to_earnings?.toFixed(2) ?? "n/a"}</td>
                         <td className="px-2 py-2 capitalize">{row.priority}</td>
                         <td className="px-2 py-2">{row.category_tag.replaceAll("_", " ")}</td>
-                        <td className="max-w-[520px] px-2 py-2 text-xs text-slate-300">{row.short_reason}</td>
+                        <td className="px-2 py-2 text-xs text-slate-300">
+                          <div className="max-w-[420px] whitespace-normal break-words leading-5" title={row.short_reason}>{row.short_reason}</div>
+                        </td>
                         <td className="px-2 py-2">{row.trend_state}</td>
                         <td className="px-2 py-2">{row.ema200_slope_state}</td>
                         <td className="px-2 py-2">{row.repeated_test_count}</td>

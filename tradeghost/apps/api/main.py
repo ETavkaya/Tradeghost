@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, Query
 from tradeghost.services.analysis_engine import AnalysisEngine
 from tradeghost.services.backtest.engine import BacktestEngine
 from tradeghost.services.backtest.review_log import BacktestReviewLogService
+from tradeghost.services.intelligence.service import IntelligenceService
 from tradeghost.services.monitoring.service import MonitoringService
 from tradeghost.services.scanner.engine import ScannerEngine
 from tradeghost.shared.config.settings import get_settings
@@ -28,6 +29,11 @@ from tradeghost.shared.models.schemas import (
     BacktestSnapshotCommentCreateRequest,
     BacktestSnapshotCreateRequest,
     CombinedAnalysisResponse,
+    DailyBriefing,
+    DailyBriefingRequest,
+    DailyPipelineRequest,
+    IntelligenceDashboardResponse,
+    IntelligenceRunResponse,
     MonitoringRunRequest,
     MonitoringRunDueRequest,
     MonitoringRunSummary,
@@ -37,7 +43,11 @@ from tradeghost.shared.models.schemas import (
     ScannerRequest,
     ScannerResponse,
     ScoreResponse,
+    SymbolContextBatchRequest,
+    SymbolContextBatchResponse,
     StrategyMode,
+    SystemReview,
+    SystemReviewRequest,
     TradePlanResponse,
     Watchlist,
     WatchlistCreateRequest,
@@ -54,6 +64,11 @@ backtest_engine = BacktestEngine(analysis_engine=analysis_engine)
 review_log_service = BacktestReviewLogService()
 scanner_engine = ScannerEngine(analysis_engine=analysis_engine)
 monitoring_service = MonitoringService(analysis_engine=analysis_engine, scanner_engine=scanner_engine)
+intelligence_service = IntelligenceService(
+    analysis_engine=analysis_engine,
+    scanner_engine=scanner_engine,
+    backtest_engine=backtest_engine,
+)
 _monitor_stop_event = threading.Event()
 _monitor_thread: threading.Thread | None = None
 
@@ -473,5 +488,45 @@ def run_monitoring(payload: MonitoringRunRequest) -> MonitoringRunSummary:
 def run_due_monitoring(payload: MonitoringRunDueRequest) -> MonitoringRunSummary:
     try:
         return monitoring_service.run_due_schedules(max_runtime_seconds=payload.max_runtime_seconds)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/daily-pipeline", response_model=IntelligenceRunResponse)
+def run_daily_pipeline(payload: DailyPipelineRequest) -> IntelligenceRunResponse:
+    try:
+        return intelligence_service.run_daily_pipeline(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/symbol-contexts", response_model=SymbolContextBatchResponse)
+def generate_symbol_contexts(payload: SymbolContextBatchRequest) -> SymbolContextBatchResponse:
+    try:
+        return intelligence_service.generate_symbol_contexts(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/daily-briefing", response_model=DailyBriefing)
+def generate_daily_briefing(payload: DailyBriefingRequest) -> DailyBriefing:
+    try:
+        return intelligence_service.generate_daily_briefing(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/review", response_model=SystemReview)
+def run_system_review(payload: SystemReviewRequest) -> SystemReview:
+    try:
+        return intelligence_service.run_system_review(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/dashboard", response_model=IntelligenceDashboardResponse)
+def get_intelligence_dashboard() -> IntelligenceDashboardResponse:
+    try:
+        return intelligence_service.get_dashboard()
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc

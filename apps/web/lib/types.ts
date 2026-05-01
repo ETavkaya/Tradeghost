@@ -810,3 +810,87 @@ export type MonitoringRunSummary = {
   partial_run: boolean;
   note: string | null;
 };
+
+export type SymbolBacktestSummary = {
+  trades: number;
+  win_rate: number;
+  expectancy: number;
+  average_return: number;
+  max_drawdown: number;
+};
+
+export type DailyRun = {
+  id: string;
+  date: string;
+  timestamp: string;
+  symbols_count: number;
+  scanner_categories: ScannerCategory[];
+  status: string;
+  note: string | null;
+};
+
+export type SymbolResult = {
+  symbol: string;
+  market: MarketCode;
+  category_tags: ScannerCategory[];
+  score: number;
+  trend: string;
+  ema_distances: Record<string, number>;
+  setup_type: string;
+  analysis_snapshot: Record<string, unknown>;
+  backtest_summary: SymbolBacktestSummary;
+};
+
+export type SymbolContext = {
+  symbol: string;
+  date: string;
+  bull_case: string;
+  bear_case: string;
+  risks: string;
+  summary: string;
+  model: string;
+  status: string;
+  error: string | null;
+};
+
+export type DailyBriefing = {
+  date: string;
+  summary_text: string;
+  model: string;
+  generated_at: string;
+  status: string;
+  error: string | null;
+};
+
+export type SystemReview = {
+  id: string;
+  period: string;
+  findings: string;
+  mistakes: string;
+  missed_patterns: string;
+  recommendations: string;
+  model: string;
+  generated_at: string;
+  status: string;
+  error: string | null;
+};
+
+export type IntelligenceRunResponse = {
+  run: DailyRun;
+  symbol_results: SymbolResult[];
+};
+
+export type SymbolContextBatchResponse = {
+  run_id: string;
+  generated: number;
+  failed: number;
+  contexts: SymbolContext[];
+};
+
+export type IntelligenceDashboardResponse = {
+  runs: DailyRun[];
+  latest_run_results: SymbolResult[];
+  latest_contexts: SymbolContext[];
+  latest_briefing: DailyBriefing | null;
+  latest_review: SystemReview | null;
+};

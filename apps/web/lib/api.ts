@@ -11,6 +11,9 @@ import {
   AlertRule,
   AlertEvent,
   AlertProfileSuggestionResponse,
+  DailyBriefing,
+  IntelligenceDashboardResponse,
+  IntelligenceRunResponse,
   MonitoringSchedule,
   MonitoringRunSummary,
   ScannerCategory,
@@ -21,6 +24,8 @@ import {
   BacktestResponse,
   CombinedAnalysisResponse,
   ScoreResponse,
+  SymbolContextBatchResponse,
+  SystemReview,
   TradePlanResponse
 } from "@/lib/types";
 
@@ -203,4 +208,29 @@ export const api = {
     }),
   deleteMonitoringSchedule: (scheduleId: string) =>
     fetchJson<{ status: string }>(`/api/monitoring/schedules/${encodeURIComponent(scheduleId)}`, { method: "DELETE" }),
+  getIntelligenceDashboard: () => fetchJson<IntelligenceDashboardResponse>("/api/intelligence/dashboard"),
+  runDailyPipeline: (payload: Record<string, unknown>) =>
+    fetchJson<IntelligenceRunResponse>("/api/intelligence/daily-pipeline", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
+  generateSymbolContexts: (payload: Record<string, unknown>) =>
+    fetchJson<SymbolContextBatchResponse>("/api/intelligence/symbol-contexts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
+  generateDailyBriefing: (payload: Record<string, unknown>) =>
+    fetchJson<DailyBriefing>("/api/intelligence/daily-briefing", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
+  runSystemReview: (payload: Record<string, unknown>) =>
+    fetchJson<SystemReview>("/api/intelligence/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
 };

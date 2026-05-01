@@ -41,6 +41,8 @@ class Settings(BaseSettings):
 
     cache_dir: Path = Field(default=Path("./.cache"))
     logs_dir: Path = Field(default=Path("./logs"))
+    ollama_base_url: str = Field(default="http://localhost:11435")
+    intelligence_llm_enabled: bool = Field(default=True)
 
 
 @lru_cache(maxsize=1)

@@ -13,6 +13,7 @@ const tabs = [
   { label: "Analysis", href: "/analysis" },
   { label: "Backtest", href: "/backtest" },
   { label: "Monitor", href: "/monitor" },
+  { label: "Intelligence", href: "/intelligence" },
   { label: "Logic", href: "/logic" }
 ];
 

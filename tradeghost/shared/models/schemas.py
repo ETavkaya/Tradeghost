@@ -1024,3 +1024,129 @@ class BacktestSnapshotCommentCreateRequest(BaseModel):
     commentator: str
     content: str
     tags: list[str] = Field(default_factory=list)
+
+
+class SymbolBacktestSummary(BaseModel):
+    trades: int = 0
+    win_rate: float = 0.0
+    expectancy: float = 0.0
+    average_return: float = 0.0
+    max_drawdown: float = 0.0
+
+
+class SymbolResult(BaseModel):
+    symbol: str
+    market: MarketCode
+    category_tags: list[ScannerCategory] = Field(default_factory=list)
+    score: float
+    trend: str
+    ema_distances: dict[str, float] = Field(default_factory=dict)
+    setup_type: str
+    analysis_snapshot: dict[str, Any] = Field(default_factory=dict)
+    backtest_summary: SymbolBacktestSummary = Field(default_factory=SymbolBacktestSummary)
+
+
+class DailyRun(BaseModel):
+    id: str
+    date: date
+    timestamp: datetime
+    symbols_count: int
+    scanner_categories: list[ScannerCategory] = Field(default_factory=list)
+    status: str = "completed"
+    note: str | None = None
+
+
+class DailyRunDetail(BaseModel):
+    run: DailyRun
+    symbol_results: list[SymbolResult] = Field(default_factory=list)
+
+
+class SymbolContext(BaseModel):
+    symbol: str
+    date: date
+    bull_case: str
+    bear_case: str
+    risks: str
+    summary: str
+    model: str = "llama3"
+    status: str = "generated"
+    error: str | None = None
+
+
+class DailyBriefing(BaseModel):
+    date: date
+    summary_text: str
+    model: str = "llama3"
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    status: str = "generated"
+    error: str | None = None
+
+
+class SystemReview(BaseModel):
+    id: str
+    period: str
+    findings: str
+    mistakes: str
+    missed_patterns: str
+    recommendations: str
+    model: str = "llama3"
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    status: str = "generated"
+    error: str | None = None
+
+
+class DailyPipelineRequest(BaseModel):
+    market: MarketCode = MarketCode.US
+    duration: ScannerDuration = ScannerDuration.ONE_YEAR
+    categories: list[ScannerCategory] = Field(
+        default_factory=lambda: [
+            ScannerCategory.TREND_MODE,
+            ScannerCategory.BUILD_UP,
+            ScannerCategory.MOMENTUM_MODE,
+            ScannerCategory.VALUE_REBUILD,
+            ScannerCategory.OVEREXTENDED,
+        ]
+    )
+    max_candidates: int = Field(default=20, ge=5, le=60)
+    scanner_max_results: int = Field(default=20, ge=5, le=100)
+    scanner_universe_scope: ScannerUniverseScope = ScannerUniverseScope.CAPPED
+    scanner_max_runtime_seconds: float = Field(default=18.0, ge=3.0, le=45.0)
+
+
+class SymbolContextBatchRequest(BaseModel):
+    run_id: str
+    max_concurrency: int = Field(default=4, ge=1, le=8)
+    timeout_seconds: float = Field(default=20.0, ge=5.0, le=60.0)
+    model: str = "llama3"
+
+
+class DailyBriefingRequest(BaseModel):
+    run_id: str
+    model: str = "llama3"
+
+
+class SystemReviewRequest(BaseModel):
+    days: int = Field(default=28, ge=7, le=365)
+    model: str = "llama3"
+    max_concurrency: int = Field(default=4, ge=1, le=8)
+    timeout_seconds: float = Field(default=20.0, ge=5.0, le=60.0)
+
+
+class IntelligenceRunResponse(BaseModel):
+    run: DailyRun
+    symbol_results: list[SymbolResult]
+
+
+class SymbolContextBatchResponse(BaseModel):
+    run_id: str
+    generated: int
+    failed: int
+    contexts: list[SymbolContext] = Field(default_factory=list)
+
+
+class IntelligenceDashboardResponse(BaseModel):
+    runs: list[DailyRun] = Field(default_factory=list)
+    latest_run_results: list[SymbolResult] = Field(default_factory=list)
+    latest_contexts: list[SymbolContext] = Field(default_factory=list)
+    latest_briefing: DailyBriefing | None = None
+    latest_review: SystemReview | None = None

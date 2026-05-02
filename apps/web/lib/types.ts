@@ -825,6 +825,9 @@ export type DailyRun = {
   timestamp: string;
   symbols_count: number;
   scanner_categories: ScannerCategory[];
+  top_n_per_category: number;
+  raw_candidates_before_merge: number;
+  final_candidates_after_merge: number;
   status: string;
   note: string | null;
 };
@@ -833,6 +836,10 @@ export type SymbolResult = {
   symbol: string;
   market: MarketCode;
   category_tags: ScannerCategory[];
+  score_by_category: Record<string, number>;
+  merged_rank: number;
+  multi_category: boolean;
+  priority_boost: number;
   score: number;
   trend: string;
   ema_distances: Record<string, number>;

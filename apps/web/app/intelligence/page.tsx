@@ -15,6 +15,7 @@ export default function IntelligencePage() {
   const [duration, setDuration] = useState<ScannerDuration>("1y");
   const [scope, setScope] = useState<ScannerUniverseScope>("capped_universe");
   const [maxCandidates, setMaxCandidates] = useState(20);
+  const [topNPerCategory, setTopNPerCategory] = useState(5);
   const [maxResults, setMaxResults] = useState(20);
   const [categories, setCategories] = useState<ScannerCategory[]>(["trend_mode", "build_up", "momentum_mode", "value_rebuild", "overextended"]);
 
@@ -43,6 +44,7 @@ export default function IntelligencePage() {
         duration,
         categories,
         max_candidates: maxCandidates,
+        top_n_per_category: topNPerCategory,
         scanner_max_results: maxResults,
         scanner_universe_scope: scope,
       });
@@ -145,11 +147,12 @@ export default function IntelligencePage() {
 
       <Panel>
         <SectionTitle title="Run Controls" subtitle="Deterministic pipeline first, then optional LLM context and review" />
-        <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+        <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-7">
           <select value={market} onChange={(e) => setMarket(e.target.value as MarketCode)} className="h-10 rounded-lg border border-stroke bg-bg px-2 text-sm"><option value="us">US</option><option value="bist">BIST</option></select>
           <select value={duration} onChange={(e) => setDuration(e.target.value as ScannerDuration)} className="h-10 rounded-lg border border-stroke bg-bg px-2 text-sm"><option value="1y">1Y</option><option value="2y">2Y</option><option value="3y">3Y</option><option value="5y">5Y</option></select>
           <select value={scope} onChange={(e) => setScope(e.target.value as ScannerUniverseScope)} className="h-10 rounded-lg border border-stroke bg-bg px-2 text-sm"><option value="capped_universe">Capped</option><option value="full_universe">Full</option><option value="watchlist">Watchlist</option></select>
           <input type="number" min={5} max={60} value={maxCandidates} onChange={(e) => setMaxCandidates(Number(e.target.value))} className="h-10 rounded-lg border border-stroke bg-bg px-2 text-sm" placeholder="max candidates" />
+          <input type="number" min={1} max={20} value={topNPerCategory} onChange={(e) => setTopNPerCategory(Number(e.target.value))} className="h-10 rounded-lg border border-stroke bg-bg px-2 text-sm" placeholder="top N per category" />
           <input type="number" min={5} max={100} value={maxResults} onChange={(e) => setMaxResults(Number(e.target.value))} className="h-10 rounded-lg border border-stroke bg-bg px-2 text-sm" placeholder="scanner max rows" />
           <button type="button" onClick={runPipeline} disabled={loading} className="h-10 rounded-lg bg-cyan px-3 text-sm font-semibold text-bg disabled:opacity-60">{loading ? "Running..." : "Run Daily Pipeline"}</button>
         </div>
@@ -176,10 +179,40 @@ export default function IntelligencePage() {
         <SectionTitle title="Daily Runs" subtitle="Deterministic scanner -> analysis -> lightweight backtest snapshots" />
         <div className="max-h-[240px] overflow-auto rounded-lg border border-stroke/70">
           <table className="w-full text-xs">
-            <thead><tr className="border-b border-stroke text-left text-slate-400"><th className="px-2 py-2">Date</th><th className="px-2 py-2">Symbols</th><th className="px-2 py-2">Categories</th><th className="px-2 py-2">Status</th></tr></thead>
+            <thead><tr className="border-b border-stroke text-left text-slate-400"><th className="px-2 py-2">Date</th><th className="px-2 py-2">Symbols</th><th className="px-2 py-2">Categories</th><th className="px-2 py-2">Top N / Cat</th><th className="px-2 py-2">Raw Before Merge</th><th className="px-2 py-2">Final After Merge</th><th className="px-2 py-2">Status</th></tr></thead>
             <tbody>
               {(dashboard?.runs ?? []).map((row) => (
-                <tr key={row.id} className="border-b border-stroke/50"><td className="px-2 py-2">{new Date(row.timestamp).toLocaleString()}</td><td className="px-2 py-2">{row.symbols_count}</td><td className="px-2 py-2">{row.scanner_categories.join(", ")}</td><td className="px-2 py-2">{row.status}</td></tr>
+                <tr key={row.id} className="border-b border-stroke/50"><td className="px-2 py-2">{new Date(row.timestamp).toLocaleString()}</td><td className="px-2 py-2">{row.symbols_count}</td><td className="px-2 py-2">{row.scanner_categories.join(", ")}</td><td className="px-2 py-2">{row.top_n_per_category}</td><td className="px-2 py-2">{row.raw_candidates_before_merge}</td><td className="px-2 py-2">{row.final_candidates_after_merge}</td><td className="px-2 py-2">{row.status}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+
+      <Panel>
+        <SectionTitle title="Latest Merged Candidates" subtitle="Category-balanced merge, deduplication, and multi-category priority boost" />
+        <div className="max-h-[360px] overflow-auto rounded-lg border border-stroke/70">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-stroke text-left text-slate-400">
+                <th className="px-2 py-2">Merged Rank</th>
+                <th className="px-2 py-2">Symbol</th>
+                <th className="px-2 py-2">Category Source</th>
+                <th className="px-2 py-2">Score / Category</th>
+                <th className="px-2 py-2">Final Score</th>
+                <th className="px-2 py-2">Multi-Category</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(dashboard?.latest_run_results ?? []).map((row) => (
+                <tr key={`${row.symbol}-${row.merged_rank}`} className="border-b border-stroke/50">
+                  <td className="px-2 py-2">{row.merged_rank}</td>
+                  <td className="px-2 py-2 font-semibold text-slate-100">{row.symbol}</td>
+                  <td className="px-2 py-2">{row.category_tags.join(", ")}</td>
+                  <td className="px-2 py-2">{Object.entries(row.score_by_category).map(([k, v]) => `${k}:${v.toFixed(1)}`).join(" | ")}</td>
+                  <td className="px-2 py-2">{row.score.toFixed(2)} {row.priority_boost > 0 ? `(+${row.priority_boost.toFixed(1)} boost)` : ""}</td>
+                  <td className="px-2 py-2">{row.multi_category ? <span className="rounded border border-cyan/60 px-2 py-1 text-cyan">multi-category</span> : "-"}</td>
+                </tr>
               ))}
             </tbody>
           </table>
@@ -207,4 +240,3 @@ export default function IntelligencePage() {
     </main>
   );
 }
-

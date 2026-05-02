@@ -99,6 +99,7 @@ class IntelligenceService:
     def run_daily_pipeline(self, req: DailyPipelineRequest) -> IntelligenceRunResponse:
         started_at = datetime.now(UTC)
         category_rows: dict[str, SymbolResult] = {}
+        raw_candidates = 0
 
         for category in req.categories:
             scan = self.scanner_engine.scan(
@@ -112,9 +113,13 @@ class IntelligenceService:
                     use_custom_rules=False,
                 )
             )
-            for row in scan.results:
+            per_category_rows = scan.results[: req.top_n_per_category]
+            raw_candidates += len(per_category_rows)
+            for row in per_category_rows:
                 if row.symbol not in category_rows:
-                    category_rows[row.symbol] = self._build_symbol_result(row.symbol, req.market.value, [category.value], row.scanner_score)
+                    built = self._build_symbol_result(row.symbol, req.market.value, [category.value], row.scanner_score)
+                    built = built.model_copy(update={"score_by_category": {category.value: float(row.scanner_score)}})
+                    category_rows[row.symbol] = built
                 else:
                     existing = category_rows[row.symbol]
                     merged = sorted(
@@ -123,14 +128,34 @@ class IntelligenceService:
                             category.value,
                         }
                     )
+                    existing_scores = dict(existing.score_by_category)
+                    existing_scores[category.value] = float(row.scanner_score)
                     category_rows[row.symbol] = existing.model_copy(
                         update={
                             "category_tags": merged,
                             "score": max(existing.score, row.scanner_score),
+                            "score_by_category": existing_scores,
                         }
                     )
 
-        ranked = sorted(category_rows.values(), key=lambda r: r.score, reverse=True)[: req.max_candidates]
+        boosted_rows: list[SymbolResult] = []
+        for row in category_rows.values():
+            category_count = len(row.category_tags)
+            boost = max(0.0, (category_count - 1) * 2.0)
+            boosted_rows.append(
+                row.model_copy(
+                    update={
+                        "score": row.score + boost,
+                        "priority_boost": boost,
+                        "multi_category": category_count > 1,
+                    }
+                )
+            )
+        ranked = sorted(boosted_rows, key=lambda r: (r.score, len(r.category_tags)), reverse=True)[: req.max_candidates]
+        ranked = [
+            row.model_copy(update={"merged_rank": idx + 1})
+            for idx, row in enumerate(ranked)
+        ]
 
         run = DailyRun(
             id=str(uuid4()),
@@ -138,8 +163,11 @@ class IntelligenceService:
             timestamp=started_at,
             symbols_count=len(ranked),
             scanner_categories=req.categories,
+            top_n_per_category=req.top_n_per_category,
+            raw_candidates_before_merge=raw_candidates,
+            final_candidates_after_merge=len(category_rows),
             status="completed",
-            note="Deterministic pipeline run complete; no LLM calls were used.",
+            note="Deterministic category-balanced pipeline complete; no LLM calls were used.",
         )
 
         runs = self._read_runs()

@@ -1038,6 +1038,10 @@ class SymbolResult(BaseModel):
     symbol: str
     market: MarketCode
     category_tags: list[ScannerCategory] = Field(default_factory=list)
+    score_by_category: dict[str, float] = Field(default_factory=dict)
+    merged_rank: int = 0
+    multi_category: bool = False
+    priority_boost: float = 0.0
     score: float
     trend: str
     ema_distances: dict[str, float] = Field(default_factory=dict)
@@ -1052,6 +1056,9 @@ class DailyRun(BaseModel):
     timestamp: datetime
     symbols_count: int
     scanner_categories: list[ScannerCategory] = Field(default_factory=list)
+    top_n_per_category: int = 5
+    raw_candidates_before_merge: int = 0
+    final_candidates_after_merge: int = 0
     status: str = "completed"
     note: str | None = None
 
@@ -1107,8 +1114,9 @@ class DailyPipelineRequest(BaseModel):
             ScannerCategory.OVEREXTENDED,
         ]
     )
-    max_candidates: int = Field(default=20, ge=5, le=60)
-    scanner_max_results: int = Field(default=20, ge=5, le=100)
+    max_candidates: int = Field(default=30, ge=5, le=100)
+    top_n_per_category: int = Field(default=5, ge=1, le=20)
+    scanner_max_results: int = Field(default=30, ge=5, le=100)
     scanner_universe_scope: ScannerUniverseScope = ScannerUniverseScope.CAPPED
     scanner_max_runtime_seconds: float = Field(default=18.0, ge=3.0, le=45.0)
 

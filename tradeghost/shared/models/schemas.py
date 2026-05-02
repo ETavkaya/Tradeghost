@@ -1075,7 +1075,7 @@ class SymbolContext(BaseModel):
     bear_case: str
     risks: str
     summary: str
-    model: str = "llama3"
+    model: str = "llama3.2:3b"
     status: str = "generated"
     error: str | None = None
 
@@ -1083,7 +1083,7 @@ class SymbolContext(BaseModel):
 class DailyBriefing(BaseModel):
     date: date
     summary_text: str
-    model: str = "llama3"
+    model: str = "llama3.2:3b"
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     status: str = "generated"
     error: str | None = None
@@ -1096,7 +1096,7 @@ class SystemReview(BaseModel):
     mistakes: str
     missed_patterns: str
     recommendations: str
-    model: str = "llama3"
+    model: str = "llama3.2:3b"
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     status: str = "generated"
     error: str | None = None
@@ -1124,22 +1124,22 @@ class DailyPipelineRequest(BaseModel):
 
 class SymbolContextBatchRequest(BaseModel):
     run_id: str
-    context_symbol_limit: int = Field(default=20, ge=1, le=100)
-    max_concurrency: int = Field(default=4, ge=1, le=8)
-    timeout_seconds: float = Field(default=20.0, ge=5.0, le=60.0)
-    model: str = "llama3"
+    context_symbol_limit: int = Field(default=10, ge=1, le=100)
+    max_concurrency: int = Field(default=2, ge=1, le=8)
+    timeout_seconds: float = Field(default=45.0, ge=5.0, le=120.0)
+    model: str = "llama3.2:3b"
 
 
 class DailyBriefingRequest(BaseModel):
     run_id: str
-    model: str = "llama3"
+    model: str = "llama3.2:3b"
 
 
 class SystemReviewRequest(BaseModel):
     days: int = Field(default=28, ge=7, le=365)
-    model: str = "llama3"
-    max_concurrency: int = Field(default=4, ge=1, le=8)
-    timeout_seconds: float = Field(default=20.0, ge=5.0, le=60.0)
+    model: str = "llama3.2:3b"
+    max_concurrency: int = Field(default=2, ge=1, le=8)
+    timeout_seconds: float = Field(default=45.0, ge=5.0, le=120.0)
 
 
 class IntelligenceRunResponse(BaseModel):

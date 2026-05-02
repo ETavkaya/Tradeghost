@@ -5,6 +5,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from threading import Lock
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -55,11 +56,26 @@ class IntelligenceService:
         self.scanner_engine = scanner_engine or ScannerEngine(analysis_engine=self.analysis_engine)
         self.backtest_engine = backtest_engine or BacktestEngine(analysis_engine=self.analysis_engine)
         self._logger = logging.getLogger(__name__)
+        self._llm_logs_lock = Lock()
 
     def _read_rows(self, path: Path) -> list[dict[str, Any]]:
         if not path.exists():
             return []
-        return json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8").strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+            return parsed if isinstance(parsed, list) else []
+        except json.JSONDecodeError as exc:
+            backup = path.with_suffix(f"{path.suffix}.bad")
+            try:
+                path.rename(backup)
+            except OSError:
+                backup = path
+            self._logger.warning("Recovered malformed JSON file at %s (%s)", path, exc)
+            self._write_rows(path, [])
+            return []
 
     def _write_rows(self, path: Path, rows: list[dict[str, Any]]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,9 +118,13 @@ class IntelligenceService:
         self._write_rows(self.llm_logs_path, [row.model_dump(mode="json") for row in rows])
 
     def _append_llm_log(self, row: LLMDebugLog) -> None:
-        rows = self._read_llm_logs()
-        rows.append(row)
-        self._save_llm_logs(rows[-500:])
+        with self._llm_logs_lock:
+            try:
+                rows = self._read_llm_logs()
+                rows.append(row)
+                self._save_llm_logs(rows[-500:])
+            except Exception as exc:  # pragma: no cover - best effort logging path
+                self._logger.warning("Failed to persist LLM debug log: %s", exc)
 
     @staticmethod
     def _slice_latest(rows: list[Any], limit: int = 1) -> list[Any]:

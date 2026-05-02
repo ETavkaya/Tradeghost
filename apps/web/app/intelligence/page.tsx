@@ -30,9 +30,9 @@ export default function IntelligencePage() {
   const [scannerResultCap, setScannerResultCap] = useState(30);
   const [categories, setCategories] = useState<ScannerCategory[]>(["trend_mode", "build_up", "momentum_mode", "value_rebuild", "overextended"]);
 
-  const [llmConcurrency, setLlmConcurrency] = useState(2);
-  const [contextSymbolLimit, setContextSymbolLimit] = useState(10);
-  const [contextTimeout, setContextTimeout] = useState(45);
+  const [llmConcurrency, setLlmConcurrency] = useState(1);
+  const [contextSymbolLimit, setContextSymbolLimit] = useState(3);
+  const [contextTimeout, setContextTimeout] = useState(120);
   const [reviewDays, setReviewDays] = useState(28);
 
   const [showLLMConsole, setShowLLMConsole] = useState(false);

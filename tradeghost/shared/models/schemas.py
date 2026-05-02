@@ -1124,9 +1124,9 @@ class DailyPipelineRequest(BaseModel):
 
 class SymbolContextBatchRequest(BaseModel):
     run_id: str
-    context_symbol_limit: int = Field(default=10, ge=1, le=100)
-    max_concurrency: int = Field(default=2, ge=1, le=8)
-    timeout_seconds: float = Field(default=45.0, ge=5.0, le=120.0)
+    context_symbol_limit: int = Field(default=3, ge=1, le=100)
+    max_concurrency: int = Field(default=1, ge=1, le=8)
+    timeout_seconds: float = Field(default=120.0, ge=5.0, le=120.0)
     model: str = "llama3.2:3b"
 
 

@@ -22,6 +22,8 @@ from tradeghost.shared.models.schemas import (
     DailyRunDetail,
     IntelligenceDashboardResponse,
     IntelligenceRunResponse,
+    LLMConnectionStatus,
+    LLMDebugLog,
     ScannerRequest,
     SymbolBacktestSummary,
     SymbolContext,
@@ -611,5 +613,3 @@ class IntelligenceService:
             return LLMConnectionStatus(connected=True, base_url=base_url, checked_at=checked_at)
         except Exception as exc:
             return LLMConnectionStatus(connected=False, base_url=base_url, checked_at=checked_at, error=str(exc))
-    LLMConnectionStatus,
-    LLMDebugLog,

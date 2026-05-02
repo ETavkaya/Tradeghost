@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     logs_dir: Path = Field(default=Path("./logs"))
     ollama_base_url: str = Field(default="http://localhost:11435")
     intelligence_llm_enabled: bool = Field(default=True)
+    ollama_model: str = Field(default="llama3.2:3b")
+    ollama_temperature: float = Field(default=0.2)
+    ollama_top_p: float = Field(default=0.9)
+    ollama_repeat_penalty: float = Field(default=1.05)
+    ollama_num_predict: int = Field(default=180)
+    ollama_num_ctx: int = Field(default=2048)
+    ollama_num_thread: int = Field(default=4)
+    ollama_keep_alive: str = Field(default="30m")
 
 
 @lru_cache(maxsize=1)

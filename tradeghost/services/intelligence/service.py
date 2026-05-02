@@ -295,7 +295,20 @@ class IntelligenceService:
             )
             raise RuntimeError(err)
         url = endpoint
-        payload = {"model": model, "prompt": prompt, "stream": False}
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "keep_alive": self.settings.ollama_keep_alive,
+            "options": {
+                "temperature": self.settings.ollama_temperature,
+                "top_p": self.settings.ollama_top_p,
+                "repeat_penalty": self.settings.ollama_repeat_penalty,
+                "num_predict": self.settings.ollama_num_predict,
+                "num_ctx": self.settings.ollama_num_ctx,
+                "num_thread": self.settings.ollama_num_thread,
+            },
+        }
         req = Request(
             url=url,
             data=json.dumps(payload).encode("utf-8"),

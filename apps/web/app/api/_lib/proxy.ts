@@ -15,7 +15,13 @@ export async function proxyGet(request: NextRequest, path: string): Promise<Next
     });
   } catch (error) {
     return NextResponse.json(
-      { detail: "Backend connection failed", error: error instanceof Error ? error.message : "Unknown error" },
+      {
+        detail: "Backend connection failed",
+        error: error instanceof Error ? error.message : "Unknown error",
+        method: "GET",
+        path,
+        endpoint: url,
+      },
       { status: 502 }
     );
   }
@@ -40,7 +46,13 @@ export async function proxyPost(request: NextRequest, path: string): Promise<Nex
     });
   } catch (error) {
     return NextResponse.json(
-      { detail: "Backend connection failed", error: error instanceof Error ? error.message : "Unknown error" },
+      {
+        detail: "Backend connection failed",
+        error: error instanceof Error ? error.message : "Unknown error",
+        method: "POST",
+        path,
+        endpoint: url,
+      },
       { status: 502 }
     );
   }
@@ -64,7 +76,13 @@ export async function proxyPut(request: NextRequest, path: string): Promise<Next
     });
   } catch (error) {
     return NextResponse.json(
-      { detail: "Backend connection failed", error: error instanceof Error ? error.message : "Unknown error" },
+      {
+        detail: "Backend connection failed",
+        error: error instanceof Error ? error.message : "Unknown error",
+        method: "PUT",
+        path,
+        endpoint: url,
+      },
       { status: 502 }
     );
   }
@@ -82,7 +100,13 @@ export async function proxyDelete(request: NextRequest, path: string): Promise<N
     });
   } catch (error) {
     return NextResponse.json(
-      { detail: "Backend connection failed", error: error instanceof Error ? error.message : "Unknown error" },
+      {
+        detail: "Backend connection failed",
+        error: error instanceof Error ? error.message : "Unknown error",
+        method: "DELETE",
+        path,
+        endpoint: url,
+      },
       { status: 502 }
     );
   }

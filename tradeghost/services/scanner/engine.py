@@ -121,6 +121,10 @@ class ScannerEngine:
             return full[:30], "capped_top30"
         return full, "full_supported_list"
 
+    def get_universe_symbols(self, market: str, scope: ScannerUniverseScope) -> tuple[list[str], str]:
+        symbols, source = self._universe(market, scope)
+        return list(symbols), source
+
     @staticmethod
     def _priority(score: float) -> ScannerPriority:
         if score >= 78:

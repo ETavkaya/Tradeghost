@@ -35,7 +35,13 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { cache: "no-store", ...init });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Request failed with status ${response.status}`);
+    let detail: unknown = text || `Request failed with status ${response.status}`;
+    try {
+      detail = JSON.parse(text);
+    } catch {
+      // keep raw text
+    }
+    throw new Error(JSON.stringify({ status: response.status, path, detail }));
   }
   return response.json() as Promise<T>;
 }

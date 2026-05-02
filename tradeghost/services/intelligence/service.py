@@ -114,6 +114,8 @@ class IntelligenceService:
         raw_candidates = 0
 
         for category in req.categories:
+            universe_symbols, _ = self.scanner_engine.get_universe_symbols(req.market.value, req.scanner_universe_scope)
+            symbol_overrides = universe_symbols[: req.max_universe_symbols]
             scan = self.scanner_engine.scan(
                 ScannerRequest(
                     market=req.market,
@@ -123,6 +125,7 @@ class IntelligenceService:
                     universe_scope=req.scanner_universe_scope,
                     max_runtime_seconds=req.scanner_max_runtime_seconds,
                     use_custom_rules=False,
+                    symbol_overrides=symbol_overrides,
                 )
             )
             per_category_rows = scan.results[: req.top_n_per_category]
@@ -419,6 +422,7 @@ class IntelligenceService:
 
     def generate_symbol_contexts(self, req: SymbolContextBatchRequest) -> SymbolContextBatchResponse:
         detail = self._get_run_detail(req.run_id)
+        target_rows = detail.symbol_results[: req.context_symbol_limit]
         contexts: list[SymbolContext] = []
         with ThreadPoolExecutor(max_workers=req.max_concurrency) as executor:
             futures = [
@@ -428,7 +432,7 @@ class IntelligenceService:
                     model=req.model,
                     timeout_seconds=req.timeout_seconds,
                 )
-                for row in detail.symbol_results
+                for row in target_rows
             ]
             for future in as_completed(futures):
                 contexts.append(future.result())

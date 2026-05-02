@@ -1116,6 +1116,7 @@ class DailyPipelineRequest(BaseModel):
     )
     max_candidates: int = Field(default=30, ge=5, le=100)
     top_n_per_category: int = Field(default=5, ge=1, le=20)
+    max_universe_symbols: int = Field(default=60, ge=10, le=500)
     scanner_max_results: int = Field(default=30, ge=5, le=100)
     scanner_universe_scope: ScannerUniverseScope = ScannerUniverseScope.CAPPED
     scanner_max_runtime_seconds: float = Field(default=18.0, ge=3.0, le=45.0)
@@ -1123,6 +1124,7 @@ class DailyPipelineRequest(BaseModel):
 
 class SymbolContextBatchRequest(BaseModel):
     run_id: str
+    context_symbol_limit: int = Field(default=20, ge=1, le=100)
     max_concurrency: int = Field(default=4, ge=1, le=8)
     timeout_seconds: float = Field(default=20.0, ge=5.0, le=60.0)
     model: str = "llama3"

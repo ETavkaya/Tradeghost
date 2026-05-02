@@ -48,6 +48,7 @@ class IntelligenceService:
         self.contexts_path = self.base_dir / "symbol_contexts.json"
         self.briefings_path = self.base_dir / "daily_briefings.json"
         self.reviews_path = self.base_dir / "system_reviews.json"
+        self.llm_logs_path = self.base_dir / "llm_calls.json"
         self.analysis_engine = analysis_engine or AnalysisEngine()
         self.scanner_engine = scanner_engine or ScannerEngine(analysis_engine=self.analysis_engine)
         self.backtest_engine = backtest_engine or BacktestEngine(analysis_engine=self.analysis_engine)
@@ -91,6 +92,17 @@ class IntelligenceService:
 
     def _save_reviews(self, rows: list[SystemReview]) -> None:
         self._write_rows(self.reviews_path, [row.model_dump(mode="json") for row in rows])
+
+    def _read_llm_logs(self) -> list[LLMDebugLog]:
+        return [LLMDebugLog.model_validate(row) for row in self._read_rows(self.llm_logs_path)]
+
+    def _save_llm_logs(self, rows: list[LLMDebugLog]) -> None:
+        self._write_rows(self.llm_logs_path, [row.model_dump(mode="json") for row in rows])
+
+    def _append_llm_log(self, row: LLMDebugLog) -> None:
+        rows = self._read_llm_logs()
+        rows.append(row)
+        self._save_llm_logs(rows[-500:])
 
     @staticmethod
     def _slice_latest(rows: list[Any], limit: int = 1) -> list[Any]:
@@ -228,10 +240,36 @@ class IntelligenceService:
             ),
         )
 
-    def _ollama_generate(self, *, prompt: str, model: str, timeout_seconds: float) -> str:
+    def _ollama_generate(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        timeout_seconds: float,
+        call_type: str,
+        symbol: str | None = None,
+        parsed_output: dict[str, Any] | None = None,
+    ) -> str:
+        started = datetime.now(UTC)
+        endpoint = self.settings.ollama_base_url.rstrip("/") + "/api/generate"
         if not self.settings.intelligence_llm_enabled:
-            raise RuntimeError("LLM layer is disabled by configuration.")
-        url = self.settings.ollama_base_url.rstrip("/") + "/api/generate"
+            err = "LLM layer is disabled by configuration."
+            self._append_llm_log(
+                LLMDebugLog(
+                    id=str(uuid4()),
+                    timestamp=started,
+                    symbol=symbol,
+                    endpoint=endpoint,
+                    call_type=call_type,
+                    prompt=prompt,
+                    status="fail",
+                    error_message=err,
+                    duration_ms=0,
+                    parsed_output=parsed_output or {},
+                )
+            )
+            raise RuntimeError(err)
+        url = endpoint
         payload = {"model": model, "prompt": prompt, "stream": False}
         req = Request(
             url=url,
@@ -239,12 +277,45 @@ class IntelligenceService:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urlopen(req, timeout=timeout_seconds) as response:  # noqa: S310
-            body = json.loads(response.read().decode("utf-8"))
-        text = str(body.get("response", "")).strip()
-        if not text:
-            raise RuntimeError("Empty LLM response.")
-        return text
+        try:
+            with urlopen(req, timeout=timeout_seconds) as response:  # noqa: S310
+                body = json.loads(response.read().decode("utf-8"))
+            text = str(body.get("response", "")).strip()
+            if not text:
+                raise RuntimeError("Empty LLM response.")
+            duration_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
+            self._append_llm_log(
+                LLMDebugLog(
+                    id=str(uuid4()),
+                    timestamp=started,
+                    symbol=symbol,
+                    endpoint=endpoint,
+                    call_type=call_type,
+                    prompt=prompt,
+                    raw_response=text,
+                    parsed_output=parsed_output or {},
+                    status="success",
+                    duration_ms=duration_ms,
+                )
+            )
+            return text
+        except Exception as exc:
+            duration_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
+            self._append_llm_log(
+                LLMDebugLog(
+                    id=str(uuid4()),
+                    timestamp=started,
+                    symbol=symbol,
+                    endpoint=endpoint,
+                    call_type=call_type,
+                    prompt=prompt,
+                    status="fail",
+                    error_message=str(exc),
+                    duration_ms=duration_ms,
+                    parsed_output=parsed_output or {},
+                )
+            )
+            raise
 
     def _context_prompt(self, row: SymbolResult) -> str:
         return (
@@ -285,11 +356,36 @@ class IntelligenceService:
 
     def _generate_single_symbol_context(self, row: SymbolResult, *, model: str, timeout_seconds: float) -> SymbolContext:
         try:
-            raw = self._ollama_generate(prompt=self._context_prompt(row), model=model, timeout_seconds=timeout_seconds)
+            raw = self._ollama_generate(
+                prompt=self._context_prompt(row),
+                model=model,
+                timeout_seconds=timeout_seconds,
+                call_type="symbol_context",
+                symbol=row.symbol,
+            )
             bull = self._extract_section(raw, "Bull case") or "No clear bull-case context returned."
             bear = self._extract_section(raw, "Bear case") or "No clear bear-case context returned."
             risks = self._extract_section(raw, "Risks") or "No explicit risks returned."
             summary = self._extract_section(raw, "Summary") or raw[:400]
+            self._append_llm_log(
+                LLMDebugLog(
+                    id=str(uuid4()),
+                    timestamp=datetime.now(UTC),
+                    symbol=row.symbol,
+                    endpoint=self.settings.ollama_base_url.rstrip("/") + "/api/generate",
+                    call_type="symbol_context_parsed",
+                    prompt="(parsed output)",
+                    raw_response=raw,
+                    parsed_output={
+                        "bull_case": bull,
+                        "bear_case": bear,
+                        "risks": risks,
+                        "summary": summary,
+                    },
+                    status="success",
+                    duration_ms=0,
+                )
+            )
             return SymbolContext(
                 symbol=row.symbol,
                 date=date.today(),
@@ -367,7 +463,7 @@ class IntelligenceService:
             )
         prompt = "\n".join(prompt_parts)
         try:
-            text = self._ollama_generate(prompt=prompt, model=req.model, timeout_seconds=25.0)
+            text = self._ollama_generate(prompt=prompt, model=req.model, timeout_seconds=25.0, call_type="daily_briefing")
             briefing = DailyBriefing(date=detail.run.date, summary_text=text, model=req.model, status="generated")
         except (TimeoutError, URLError, RuntimeError, OSError, ValueError) as exc:
             briefing = DailyBriefing(
@@ -433,7 +529,7 @@ class IntelligenceService:
             "Return strict sections:\nFindings:\nMistakes:\nMissed patterns:\nRecommendations:\n"
         )
         try:
-            text = self._ollama_generate(prompt=prompt, model=req.model, timeout_seconds=req.timeout_seconds)
+            text = self._ollama_generate(prompt=prompt, model=req.model, timeout_seconds=req.timeout_seconds, call_type="system_review")
             review = SystemReview(
                 id=str(uuid4()),
                 period=f"last_{req.days}d",
@@ -494,3 +590,22 @@ class IntelligenceService:
             latest_briefing=briefings[-1] if briefings else None,
             latest_review=reviews[-1] if reviews else None,
         )
+
+    def get_llm_logs(self, limit: int = 200) -> list[LLMDebugLog]:
+        rows = self._read_llm_logs()
+        return sorted(rows, key=lambda row: row.timestamp, reverse=True)[: max(1, min(limit, 500))]
+
+    def get_llm_status(self, timeout_seconds: float = 2.0) -> LLMConnectionStatus:
+        checked_at = datetime.now(UTC)
+        base_url = self.settings.ollama_base_url.rstrip("/")
+        url = base_url + "/api/tags"
+        req = Request(url=url, method="GET")
+        try:
+            with urlopen(req, timeout=timeout_seconds) as response:  # noqa: S310
+                if response.status < 200 or response.status >= 300:
+                    raise RuntimeError(f"Unexpected status {response.status}")
+            return LLMConnectionStatus(connected=True, base_url=base_url, checked_at=checked_at)
+        except Exception as exc:
+            return LLMConnectionStatus(connected=False, base_url=base_url, checked_at=checked_at, error=str(exc))
+    LLMConnectionStatus,
+    LLMDebugLog,

@@ -901,3 +901,24 @@ export type IntelligenceDashboardResponse = {
   latest_briefing: DailyBriefing | null;
   latest_review: SystemReview | null;
 };
+
+export type LLMConnectionStatus = {
+  connected: boolean;
+  base_url: string;
+  checked_at: string;
+  error: string | null;
+};
+
+export type LLMDebugLog = {
+  id: string;
+  timestamp: string;
+  symbol: string | null;
+  endpoint: string;
+  call_type: string;
+  prompt: string;
+  raw_response: string | null;
+  parsed_output: Record<string, unknown>;
+  status: string;
+  error_message: string | null;
+  duration_ms: number;
+};

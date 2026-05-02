@@ -14,6 +14,8 @@ import {
   DailyBriefing,
   IntelligenceDashboardResponse,
   IntelligenceRunResponse,
+  LLMConnectionStatus,
+  LLMDebugLog,
   MonitoringSchedule,
   MonitoringRunSummary,
   ScannerCategory,
@@ -233,4 +235,6 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)
     }),
+  getLLMStatus: () => fetchJson<LLMConnectionStatus>("/api/intelligence/llm/status"),
+  getLLMLogs: (limit = 200) => fetchJson<LLMDebugLog[]>(`/api/intelligence/llm/logs?limit=${encodeURIComponent(String(limit))}`),
 };

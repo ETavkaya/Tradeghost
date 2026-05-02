@@ -34,6 +34,8 @@ from tradeghost.shared.models.schemas import (
     DailyPipelineRequest,
     IntelligenceDashboardResponse,
     IntelligenceRunResponse,
+    LLMConnectionStatus,
+    LLMDebugLog,
     MonitoringRunRequest,
     MonitoringRunDueRequest,
     MonitoringRunSummary,
@@ -528,5 +530,21 @@ def run_system_review(payload: SystemReviewRequest) -> SystemReview:
 def get_intelligence_dashboard() -> IntelligenceDashboardResponse:
     try:
         return intelligence_service.get_dashboard()
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/llm/status", response_model=LLMConnectionStatus)
+def get_intelligence_llm_status() -> LLMConnectionStatus:
+    try:
+        return intelligence_service.get_llm_status()
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/llm/logs", response_model=list[LLMDebugLog])
+def get_intelligence_llm_logs(limit: int = Query(default=200, ge=1, le=500)) -> list[LLMDebugLog]:
+    try:
+        return intelligence_service.get_llm_logs(limit=limit)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc

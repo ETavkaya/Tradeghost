@@ -1158,3 +1158,24 @@ class IntelligenceDashboardResponse(BaseModel):
     latest_contexts: list[SymbolContext] = Field(default_factory=list)
     latest_briefing: DailyBriefing | None = None
     latest_review: SystemReview | None = None
+
+
+class LLMDebugLog(BaseModel):
+    id: str
+    timestamp: datetime
+    symbol: str | None = None
+    endpoint: str
+    call_type: str
+    prompt: str
+    raw_response: str | None = None
+    parsed_output: dict[str, Any] = Field(default_factory=dict)
+    status: str
+    error_message: str | None = None
+    duration_ms: int
+
+
+class LLMConnectionStatus(BaseModel):
+    connected: bool
+    base_url: str
+    checked_at: datetime
+    error: str | None = None

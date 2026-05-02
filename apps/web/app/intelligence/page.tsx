@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Panel, SectionTitle, StatCard } from "@/components/ui";
 import { api } from "@/lib/api";
-import { IntelligenceDashboardResponse, MarketCode, ScannerCategory, ScannerDuration, ScannerUniverseScope } from "@/lib/types";
+import { IntelligenceDashboardResponse, LLMDebugLog, LLMConnectionStatus, MarketCode, ScannerCategory, ScannerDuration, ScannerUniverseScope } from "@/lib/types";
 
 export default function IntelligencePage() {
   const [dashboard, setDashboard] = useState<IntelligenceDashboardResponse | null>(null);
@@ -22,10 +22,20 @@ export default function IntelligencePage() {
   const [contextConcurrency, setContextConcurrency] = useState(4);
   const [contextTimeout, setContextTimeout] = useState(20);
   const [reviewDays, setReviewDays] = useState(28);
+  const [showLLMConsole, setShowLLMConsole] = useState(false);
+  const [llmStatus, setLLMStatus] = useState<LLMConnectionStatus | null>(null);
+  const [llmLogs, setLLMLogs] = useState<LLMDebugLog[]>([]);
+  const [expandedLogIds, setExpandedLogIds] = useState<Record<string, boolean>>({});
 
   const load = async () => {
-    const data = await api.getIntelligenceDashboard();
+    const [data, status, logs] = await Promise.all([
+      api.getIntelligenceDashboard(),
+      api.getLLMStatus(),
+      api.getLLMLogs(120),
+    ]);
     setDashboard(data);
+    setLLMStatus(status);
+    setLLMLogs(logs);
   };
 
   useEffect(() => {
@@ -134,6 +144,15 @@ export default function IntelligencePage() {
         <p className="text-xs text-slate-300">
           Safety boundary: LLM never opens trades, never modifies configs, and never overrides deterministic engine decisions.
         </p>
+        <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
+          <span className={`rounded-md border px-2 py-1 ${llmStatus?.connected ? "border-green/60 text-green" : "border-red/60 text-red"}`}>
+            LLM: {llmStatus?.connected ? "Connected" : "Not reachable"}
+          </span>
+          <button type="button" onClick={() => setShowLLMConsole((prev) => !prev)} className="rounded-md border border-stroke px-2 py-1 hover:text-cyan">
+            {showLLMConsole ? "Hide LLM Console" : "Show LLM Console"}
+          </button>
+          <button type="button" onClick={load} className="rounded-md border border-stroke px-2 py-1 hover:text-cyan">Refresh</button>
+        </div>
       </Panel>
 
       {dashboard ? (
@@ -174,6 +193,62 @@ export default function IntelligencePage() {
         {notice ? <p className="mt-3 text-xs text-green">{notice}</p> : null}
         {error ? <p className="mt-3 text-xs text-red">{error}</p> : null}
       </Panel>
+
+      {showLLMConsole ? (
+        <Panel>
+          <SectionTitle title="LLM Debug Console" subtitle="Ollama request/response inspection (raw + parsed output)" />
+          {llmStatus ? (
+            <p className="text-xs text-slate-400">
+              Endpoint: {llmStatus.base_url} | Checked: {new Date(llmStatus.checked_at).toLocaleString()} | Status: {llmStatus.connected ? "connected" : `error: ${llmStatus.error ?? "unknown"}`}
+            </p>
+          ) : null}
+          <div className="mt-3 max-h-[420px] overflow-auto rounded-lg border border-stroke/70">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-stroke text-left text-slate-400">
+                  <th className="px-2 py-2">Time</th>
+                  <th className="px-2 py-2">Symbol</th>
+                  <th className="px-2 py-2">Type</th>
+                  <th className="px-2 py-2">Status</th>
+                  <th className="px-2 py-2">Duration ms</th>
+                  <th className="px-2 py-2">Details</th>
+                </tr>
+              </thead>
+              <tbody>
+                {llmLogs.map((row) => (
+                  <Fragment key={row.id}>
+                    <tr key={row.id} className={`border-b border-stroke/50 ${row.status === "fail" ? "bg-red/10" : ""}`}>
+                      <td className="px-2 py-2">{new Date(row.timestamp).toLocaleTimeString()}</td>
+                      <td className="px-2 py-2">{row.symbol ?? "-"}</td>
+                      <td className="px-2 py-2">{row.call_type}</td>
+                      <td className={`px-2 py-2 ${row.status === "fail" ? "text-red" : "text-green"}`}>{row.status}</td>
+                      <td className="px-2 py-2">{row.duration_ms}</td>
+                      <td className="px-2 py-2">
+                        <button type="button" onClick={() => setExpandedLogIds((prev) => ({ ...prev, [row.id]: !prev[row.id] }))} className="rounded border border-stroke px-2 py-1 hover:text-cyan">
+                          {expandedLogIds[row.id] ? "Collapse" : "Expand"}
+                        </button>
+                      </td>
+                    </tr>
+                    {expandedLogIds[row.id] ? (
+                      <tr className="border-b border-stroke/40 bg-panelSoft/60">
+                        <td className="px-2 py-2 text-slate-300" colSpan={6}>
+                          {row.error_message ? <p className="mb-2 text-red">Error: {row.error_message}</p> : null}
+                          <p className="font-semibold text-slate-200">Prompt</p>
+                          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{row.prompt}</pre>
+                          <p className="mt-2 font-semibold text-slate-200">Raw Response</p>
+                          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{row.raw_response ?? "-"}</pre>
+                          <p className="mt-2 font-semibold text-slate-200">Parsed/Used Output</p>
+                          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{JSON.stringify(row.parsed_output, null, 2)}</pre>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      ) : null}
 
       <Panel>
         <SectionTitle title="Daily Runs" subtitle="Deterministic scanner -> analysis -> lightweight backtest snapshots" />

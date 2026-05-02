@@ -1181,3 +1181,22 @@ class LLMConnectionStatus(BaseModel):
     base_url: str
     checked_at: datetime
     error: str | None = None
+
+
+class LLMResponseTestRequest(BaseModel):
+    model: str = "llama3.2:3b"
+    timeout_seconds: float = Field(default=25.0, ge=5.0, le=180.0)
+    threshold_seconds: float = Field(default=20.0, ge=1.0, le=180.0)
+
+
+class LLMResponseTestResult(BaseModel):
+    ok: bool
+    model: str
+    endpoint: str
+    response_time_ms: int
+    threshold_ms: int
+    within_threshold: bool
+    status: str
+    response_preview: str | None = None
+    error: str | None = None
+    checked_at: datetime

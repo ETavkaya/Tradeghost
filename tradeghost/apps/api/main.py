@@ -36,6 +36,8 @@ from tradeghost.shared.models.schemas import (
     IntelligenceRunResponse,
     LLMConnectionStatus,
     LLMDebugLog,
+    LLMResponseTestRequest,
+    LLMResponseTestResult,
     MonitoringRunRequest,
     MonitoringRunDueRequest,
     MonitoringRunSummary,
@@ -546,5 +548,13 @@ def get_intelligence_llm_status() -> LLMConnectionStatus:
 def get_intelligence_llm_logs(limit: int = Query(default=200, ge=1, le=500)) -> list[LLMDebugLog]:
     try:
         return intelligence_service.get_llm_logs(limit=limit)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/llm/test", response_model=LLMResponseTestResult)
+def test_intelligence_llm_response(payload: LLMResponseTestRequest) -> LLMResponseTestResult:
+    try:
+        return intelligence_service.test_llm_response(payload)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc

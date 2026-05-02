@@ -16,6 +16,7 @@ import {
   IntelligenceRunResponse,
   LLMConnectionStatus,
   LLMDebugLog,
+  LLMResponseTestResult,
   MonitoringSchedule,
   MonitoringRunSummary,
   ScannerCategory,
@@ -243,4 +244,10 @@ export const api = {
     }),
   getLLMStatus: () => fetchJson<LLMConnectionStatus>("/api/intelligence/llm/status"),
   getLLMLogs: (limit = 200) => fetchJson<LLMDebugLog[]>(`/api/intelligence/llm/logs?limit=${encodeURIComponent(String(limit))}`),
+  testLLMResponse: (payload?: Record<string, unknown>) =>
+    fetchJson<LLMResponseTestResult>("/api/intelligence/llm/test", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload ?? {})
+    }),
 };

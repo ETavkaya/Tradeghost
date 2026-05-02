@@ -23,6 +23,8 @@ from tradeghost.shared.models.schemas import (
     DailyRunDetail,
     IntelligenceDashboardResponse,
     IntelligenceRunResponse,
+    LLMResponseTestRequest,
+    LLMResponseTestResult,
     LLMConnectionStatus,
     LLMDebugLog,
     ScannerRequest,
@@ -646,3 +648,42 @@ class IntelligenceService:
             return LLMConnectionStatus(connected=True, base_url=base_url, checked_at=checked_at)
         except Exception as exc:
             return LLMConnectionStatus(connected=False, base_url=base_url, checked_at=checked_at, error=str(exc))
+
+    def test_llm_response(self, req: LLMResponseTestRequest) -> LLMResponseTestResult:
+        checked_at = datetime.now(UTC)
+        endpoint = self.settings.ollama_base_url.rstrip("/") + "/api/generate"
+        started = datetime.now(UTC)
+        try:
+            text = self._ollama_generate(
+                prompt="Reply with exactly: OK",
+                model=req.model,
+                timeout_seconds=req.timeout_seconds,
+                call_type="health_probe",
+            )
+            elapsed_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
+            threshold_ms = int(req.threshold_seconds * 1000)
+            return LLMResponseTestResult(
+                ok=True,
+                model=req.model,
+                endpoint=endpoint,
+                response_time_ms=elapsed_ms,
+                threshold_ms=threshold_ms,
+                within_threshold=elapsed_ms <= threshold_ms,
+                status="success",
+                response_preview=text[:120],
+                checked_at=checked_at,
+            )
+        except Exception as exc:
+            elapsed_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
+            threshold_ms = int(req.threshold_seconds * 1000)
+            return LLMResponseTestResult(
+                ok=False,
+                model=req.model,
+                endpoint=endpoint,
+                response_time_ms=elapsed_ms,
+                threshold_ms=threshold_ms,
+                within_threshold=False,
+                status="fail",
+                error=str(exc),
+                checked_at=checked_at,
+            )

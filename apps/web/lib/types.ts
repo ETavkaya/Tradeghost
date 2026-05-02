@@ -922,3 +922,16 @@ export type LLMDebugLog = {
   error_message: string | null;
   duration_ms: number;
 };
+
+export type LLMResponseTestResult = {
+  ok: boolean;
+  model: string;
+  endpoint: string;
+  response_time_ms: number;
+  threshold_ms: number;
+  within_threshold: boolean;
+  status: string;
+  response_preview: string | null;
+  error: string | null;
+  checked_at: string;
+};

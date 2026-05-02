@@ -7,6 +7,7 @@ import {
   IntelligenceDashboardResponse,
   LLMDebugLog,
   LLMConnectionStatus,
+  LLMResponseTestResult,
   MarketCode,
   ScannerCategory,
   ScannerDuration,
@@ -36,6 +37,7 @@ export default function IntelligencePage() {
 
   const [showLLMConsole, setShowLLMConsole] = useState(false);
   const [llmStatus, setLLMStatus] = useState<LLMConnectionStatus | null>(null);
+  const [llmTest, setLlmTest] = useState<LLMResponseTestResult | null>(null);
   const [llmLogs, setLLMLogs] = useState<LLMDebugLog[]>([]);
   const [expandedLogIds, setExpandedLogIds] = useState<Record<string, boolean>>({});
   const [backendConnected, setBackendConnected] = useState(false);
@@ -178,6 +180,30 @@ export default function IntelligencePage() {
     }
   };
 
+  const runLLMResponseTest = async () => {
+    setError(null);
+    setNotice(null);
+    setLoading(true);
+    try {
+      const result = await api.testLLMResponse({
+        model: "llama3.2:3b",
+        timeout_seconds: 30,
+        threshold_seconds: 20,
+      });
+      setLlmTest(result);
+      setNotice(
+        result.ok
+          ? `LLM test success: ${result.response_time_ms} ms (${result.within_threshold ? "within" : "above"} 20s threshold).`
+          : `LLM test failed: ${result.error ?? "unknown error"}`,
+      );
+      await load();
+    } catch (err) {
+      setError(formatError(err, "LLM response test"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const toggleCategory = (category: ScannerCategory) => {
     setCategories((prev) => (prev.includes(category) ? prev.filter((x) => x !== category) : [...prev, category]));
   };
@@ -196,8 +222,17 @@ export default function IntelligencePage() {
           <button type="button" onClick={() => setShowLLMConsole((prev) => !prev)} className="rounded-md border border-stroke px-2 py-1 hover:text-cyan">
             {showLLMConsole ? "Hide LLM Console" : "Show LLM Console"}
           </button>
+          <button type="button" onClick={runLLMResponseTest} disabled={loading || !backendConnected || !llmStatus?.connected} className="rounded-md border border-stroke px-2 py-1 hover:text-cyan disabled:opacity-60">
+            Test Ollama Response
+          </button>
           <button type="button" onClick={load} className="rounded-md border border-stroke px-2 py-1 hover:text-cyan">Refresh</button>
         </div>
+        {llmTest ? (
+          <p className={`mt-2 text-xs ${llmTest.ok && llmTest.within_threshold ? "text-green" : llmTest.ok ? "text-yellow-300" : "text-red"}`}>
+            LLM test: {llmTest.status} | model={llmTest.model} | latency={llmTest.response_time_ms} ms | threshold={llmTest.threshold_ms} ms
+            {llmTest.error ? ` | error=${llmTest.error}` : ""}
+          </p>
+        ) : null}
         {llmStatus && !llmStatus.connected ? (
           <p className="mt-2 text-xs text-red">LLM check endpoint: {llmStatus.base_url}. Error: {llmStatus.error ?? "unknown"}. Suggested fix: ensure Ollama is running and reachable from backend.</p>
         ) : null}

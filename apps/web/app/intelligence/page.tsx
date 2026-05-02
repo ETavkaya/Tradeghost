@@ -21,15 +21,16 @@ export default function IntelligencePage() {
 
   const [market, setMarket] = useState<MarketCode>("us");
   const [duration, setDuration] = useState<ScannerDuration>("1y");
-  const [scope, setScope] = useState<ScannerUniverseScope>("capped_universe");
+  const [scope, setScope] = useState<ScannerUniverseScope>("full_universe");
+  const [debugCappedUniverse, setDebugCappedUniverse] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [maxUniverseSymbols, setMaxUniverseSymbols] = useState(60);
   const [topNPerCategory, setTopNPerCategory] = useState(5);
-  const [finalShortlistLimit, setFinalShortlistLimit] = useState(20);
   const [scannerResultCap, setScannerResultCap] = useState(30);
   const [categories, setCategories] = useState<ScannerCategory[]>(["trend_mode", "build_up", "momentum_mode", "value_rebuild", "overextended"]);
 
   const [llmConcurrency, setLlmConcurrency] = useState(4);
-  const [contextSymbolLimit, setContextSymbolLimit] = useState(20);
+  const [contextSymbolLimit, setContextSymbolLimit] = useState(25);
   const [contextTimeout, setContextTimeout] = useState(20);
   const [reviewDays, setReviewDays] = useState(28);
 
@@ -59,16 +60,17 @@ export default function IntelligencePage() {
   };
 
   const load = async () => {
-    const [data, status, logs, health] = await Promise.all([
+    const [dataR, statusR, logsR, healthR] = await Promise.allSettled([
       api.getIntelligenceDashboard(),
       api.getLLMStatus(),
       api.getLLMLogs(120),
       api.health(),
     ]);
-    setDashboard(data);
-    setLLMStatus(status);
-    setLLMLogs(logs);
-    setBackendConnected(health.status === "ok");
+    if (dataR.status === "fulfilled") setDashboard(dataR.value);
+    if (statusR.status === "fulfilled") setLLMStatus(statusR.value);
+    if (logsR.status === "fulfilled") setLLMLogs(logsR.value);
+    if (healthR.status === "fulfilled") setBackendConnected(healthR.value.status === "ok");
+    else setBackendConnected(false);
   };
 
   useEffect(() => {
@@ -84,6 +86,9 @@ export default function IntelligencePage() {
   const canRunContexts = Boolean(latestRun) && Boolean(llmStatus?.connected);
   const canRunBriefing = Boolean(latestRun) && latestRunContextCount > 0 && Boolean(llmStatus?.connected);
   const canRunReview = (dashboard?.runs.length ?? 0) > 0;
+  const selectedCategoryCount = categories.length;
+  const rawExpected = selectedCategoryCount * topNPerCategory;
+  const autoFinalShortlistLimit = rawExpected;
 
   const runPipeline = async () => {
     setError(null);
@@ -96,9 +101,9 @@ export default function IntelligencePage() {
         categories,
         max_universe_symbols: maxUniverseSymbols,
         top_n_per_category: topNPerCategory,
-        max_candidates: finalShortlistLimit,
+        max_candidates: autoFinalShortlistLimit,
         scanner_max_results: scannerResultCap,
-        scanner_universe_scope: scope,
+        scanner_universe_scope: debugCappedUniverse ? "capped_universe" : scope,
       });
       setNotice(`Daily pipeline completed: ${response.run.symbols_count} symbols stored.`);
       await load();
@@ -212,14 +217,9 @@ export default function IntelligencePage() {
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 text-xs text-slate-300">
           <label>Market<select value={market} onChange={(e) => setMarket(e.target.value as MarketCode)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm"><option value="us">US</option><option value="bist">BIST</option></select></label>
           <label>Analysis Window<select value={duration} onChange={(e) => setDuration(e.target.value as ScannerDuration)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm"><option value="1y">1Y</option><option value="2y">2Y</option><option value="3y">3Y</option></select></label>
-          <label>Universe Scope<select value={scope} onChange={(e) => setScope(e.target.value as ScannerUniverseScope)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm"><option value="capped_universe">Capped</option><option value="full_universe">Full</option><option value="watchlist">Watchlist</option></select></label>
-          <label>Max Universe Symbols<input type="number" min={10} max={500} value={maxUniverseSymbols} onChange={(e) => setMaxUniverseSymbols(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
+          <label>Universe<select value={scope} onChange={(e) => setScope(e.target.value as ScannerUniverseScope)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm"><option value="full_universe">Full Universe</option><option value="watchlist">Watchlist</option></select></label>
           <label>Top N Per Category<input type="number" min={1} max={20} value={topNPerCategory} onChange={(e) => setTopNPerCategory(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
-          <label>Final Shortlist Limit<input type="number" min={5} max={100} value={finalShortlistLimit} onChange={(e) => setFinalShortlistLimit(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
-          <label>Scanner Result Cap<input type="number" min={5} max={100} value={scannerResultCap} onChange={(e) => setScannerResultCap(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
-          <label>LLM Concurrency<input type="number" min={1} max={8} value={llmConcurrency} onChange={(e) => setLlmConcurrency(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
-          <label>Context Symbol Limit<input type="number" min={1} max={100} value={contextSymbolLimit} onChange={(e) => setContextSymbolLimit(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
-          <label>Review Period Days<input type="number" min={7} max={365} value={reviewDays} onChange={(e) => setReviewDays(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
+          <label>Final Shortlist Limit (auto)<input type="text" readOnly value={`${selectedCategoryCount} x ${topNPerCategory} = ${autoFinalShortlistLimit}`} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm text-slate-300" /></label>
         </div>
 
         <div className="mt-3 flex flex-wrap gap-2 text-xs">
@@ -227,6 +227,22 @@ export default function IntelligencePage() {
             <button key={cat} type="button" onClick={() => toggleCategory(cat)} className={`rounded-md border px-2 py-1 ${categories.includes(cat) ? "border-cyan/60 text-cyan" : "border-stroke text-slate-300"}`}>{cat}</button>
           ))}
         </div>
+        <p className="mt-2 text-xs text-slate-400">
+          Daily Intelligence runs each selected category separately, selects Top N per category, merges duplicates, then optionally sends final candidates to Ollama for context.
+        </p>
+        <button type="button" onClick={() => setShowAdvanced((prev) => !prev)} className="mt-3 rounded-md border border-stroke px-2 py-1 text-xs hover:text-cyan">
+          {showAdvanced ? "Hide Advanced Settings" : "Show Advanced Settings"}
+        </button>
+        {showAdvanced ? (
+          <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3 text-xs text-slate-300 rounded-lg border border-stroke/70 p-3">
+            <label>Debug capped universe<input type="checkbox" checked={debugCappedUniverse} onChange={(e) => setDebugCappedUniverse(e.target.checked)} className="ml-2" /></label>
+            <label>Max Universe Symbols<input type="number" min={10} max={500} value={maxUniverseSymbols} onChange={(e) => setMaxUniverseSymbols(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
+            <label>Scanner Result Cap<input type="number" min={5} max={100} value={scannerResultCap} onChange={(e) => setScannerResultCap(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
+            <label>LLM Concurrency<input type="number" min={1} max={8} value={llmConcurrency} onChange={(e) => setLlmConcurrency(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
+            <label>Context Symbol Limit<input type="number" min={1} max={100} value={contextSymbolLimit} onChange={(e) => setContextSymbolLimit(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
+            <label>Review Period Days<input type="number" min={7} max={365} value={reviewDays} onChange={(e) => setReviewDays(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
+          </div>
+        ) : null}
 
         <div className="mt-3 grid gap-2 md:grid-cols-2">
           <button type="button" onClick={runPipeline} disabled={loading || !backendConnected} className="h-10 rounded-lg bg-cyan px-3 text-sm font-semibold text-bg disabled:opacity-60">{loading ? "Running..." : "Run Daily Pipeline"}</button>

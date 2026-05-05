@@ -34,6 +34,7 @@ export default function IntelligencePage() {
   const [llmConcurrency, setLlmConcurrency] = useState(1);
   const [contextSymbolLimit, setContextSymbolLimit] = useState(3);
   const [contextTimeout, setContextTimeout] = useState(120);
+  const [liveStreamDebug, setLiveStreamDebug] = useState(false);
   const [reviewDays, setReviewDays] = useState(28);
 
   const [showLLMConsole, setShowLLMConsole] = useState(false);
@@ -150,6 +151,7 @@ export default function IntelligencePage() {
         model: "llama3.2:3b",
         sequential_mode: true,
         short_context_mode: true,
+        debug_stream: liveStreamDebug,
       });
       setNotice(`Symbol context completed: generated ${response.generated}, failed ${response.failed}.`);
       await load();
@@ -169,7 +171,12 @@ export default function IntelligencePage() {
     setNotice(null);
     setLoading(true);
     try {
-      const response = await api.generateDailyBriefing({ run_id: latestRun.id, model: "llama3.2:3b" });
+      const response = await api.generateDailyBriefing({
+        run_id: latestRun.id,
+        model: "llama3.2:3b",
+        timeout_seconds: contextTimeout,
+        short_briefing_mode: true,
+      });
       setNotice(`Daily briefing ${response.status === "generated" ? "generated" : "failed"}.`);
       await load();
     } catch (err) {
@@ -303,6 +310,7 @@ export default function IntelligencePage() {
             <label>LLM Concurrency<input type="number" min={1} max={8} value={llmConcurrency} onChange={(e) => setLlmConcurrency(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
             <label>Context Symbol Limit<input type="number" min={1} max={100} value={contextSymbolLimit} onChange={(e) => setContextSymbolLimit(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
             <label>LLM Timeout (sec)<input type="number" min={5} max={120} value={contextTimeout} onChange={(e) => setContextTimeout(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
+            <label>Live Stream Debug<input type="checkbox" checked={liveStreamDebug} onChange={(e) => setLiveStreamDebug(e.target.checked)} className="ml-2" /></label>
             <label>Review Period Days<input type="number" min={7} max={365} value={reviewDays} onChange={(e) => setReviewDays(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
           </div>
         ) : null}

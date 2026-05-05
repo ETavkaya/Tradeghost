@@ -1130,11 +1130,14 @@ class SymbolContextBatchRequest(BaseModel):
     model: str = "llama3.2:3b"
     sequential_mode: bool = True
     short_context_mode: bool = True
+    debug_stream: bool = False
 
 
 class DailyBriefingRequest(BaseModel):
     run_id: str
     model: str = "llama3.2:3b"
+    timeout_seconds: float = Field(default=90.0, ge=5.0, le=180.0)
+    short_briefing_mode: bool = True
 
 
 class SystemReviewRequest(BaseModel):

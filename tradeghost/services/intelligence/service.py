@@ -166,6 +166,22 @@ class IntelligenceService:
             rows.append(event)
             self._save_pipeline_events(rows[-1500:])
 
+    def _finalize_stale_running_events(self, stale_after_seconds: int = 300) -> None:
+        now = datetime.now(UTC)
+        with self._pipeline_logs_lock:
+            rows = self._read_pipeline_events()
+            changed = False
+            updated: list[PipelineDebugEvent] = []
+            for row in rows:
+                if row.status == "running":
+                    age = (now - row.timestamp).total_seconds()
+                    if age > stale_after_seconds:
+                        row = row.model_copy(update={"status": "failed", "error_message": "stale_running_timeout"})
+                        changed = True
+                updated.append(row)
+            if changed:
+                self._save_pipeline_events(updated[-1500:])
+
     @staticmethod
     def _slice_latest(rows: list[Any], limit: int = 1) -> list[Any]:
         return rows[-limit:] if rows else []
@@ -340,6 +356,8 @@ class IntelligenceService:
         call_type: str,
         symbol: str | None = None,
         parsed_output: dict[str, Any] | None = None,
+        run_id: str | None = None,
+        debug_stream: bool = False,
     ) -> str:
         started = datetime.now(UTC)
         endpoint = self.settings.ollama_base_url.rstrip("/") + "/api/generate"
@@ -364,7 +382,7 @@ class IntelligenceService:
         payload = {
             "model": model,
             "prompt": prompt,
-            "stream": False,
+            "stream": bool(debug_stream),
             "keep_alive": self.settings.ollama_keep_alive,
             "options": {
                 "temperature": self.settings.ollama_temperature,
@@ -383,8 +401,33 @@ class IntelligenceService:
         )
         try:
             with urlopen(req, timeout=timeout_seconds) as response:  # noqa: S310
-                body = json.loads(response.read().decode("utf-8"))
-            text = str(body.get("response", "")).strip()
+                if debug_stream:
+                    chunks: list[str] = []
+                    chunk_idx = 0
+                    while True:
+                        line = response.readline()
+                        if not line:
+                            break
+                        line_str = line.decode("utf-8").strip()
+                        if not line_str:
+                            continue
+                        evt = json.loads(line_str)
+                        token = str(evt.get("response", ""))
+                        if token:
+                            chunks.append(token)
+                            if symbol and run_id and (chunk_idx % 20 == 0):
+                                self._append_pipeline_event(
+                                    step_name="ollama_stream_chunk",
+                                    status="running",
+                                    run_id=run_id,
+                                    symbol=symbol,
+                                    message=f"chunks={chunk_idx+1} preview={''.join(chunks)[-60:]}",
+                                )
+                            chunk_idx += 1
+                    text = "".join(chunks).strip()
+                else:
+                    body = json.loads(response.read().decode("utf-8"))
+                    text = str(body.get("response", "")).strip()
             if not text:
                 raise RuntimeError("Empty LLM response.")
             duration_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
@@ -479,7 +522,7 @@ class IntelligenceService:
         end = min(candidates) if candidates else len(text)
         return text[start:end].strip()
 
-    def _generate_single_symbol_context(self, row: SymbolResult, *, model: str, timeout_seconds: float, short_context_mode: bool, run_id: str) -> SymbolContext:
+    def _generate_single_symbol_context(self, row: SymbolResult, *, model: str, timeout_seconds: float, short_context_mode: bool, run_id: str, debug_stream: bool) -> SymbolContext:
         symbol_started = datetime.now(UTC)
         self._append_pipeline_event(
             step_name="symbol_context_started",
@@ -495,6 +538,8 @@ class IntelligenceService:
                 timeout_seconds=timeout_seconds,
                 call_type="symbol_context",
                 symbol=row.symbol,
+                run_id=run_id,
+                debug_stream=debug_stream,
             )
             bull = ""
             bear = ""
@@ -613,6 +658,7 @@ class IntelligenceService:
                     timeout_seconds=req.timeout_seconds,
                     short_context_mode=req.short_context_mode,
                     run_id=req.run_id,
+                    debug_stream=req.debug_stream,
                 )
                 for row in target_rows
             ]
@@ -646,8 +692,19 @@ class IntelligenceService:
             "You are preparing a deterministic market briefing.",
             "Do NOT give buy/sell advice.",
             "Do NOT provide price targets.",
-            "Return three sections: Top opportunities, Key risks, Market tone summary.",
         ]
+        if req.short_briefing_mode:
+            prompt_parts.extend(
+                [
+                    "Keep output compact.",
+                    "Return exactly 3 sections with 2-3 bullets each:",
+                    "Top opportunities",
+                    "Key risks",
+                    "Market tone summary",
+                ]
+            )
+        else:
+            prompt_parts.append("Return three sections: Top opportunities, Key risks, Market tone summary.")
         for row in top_rows:
             ctx = by_symbol.get(row.symbol)
             summary = ctx.summary if ctx and ctx.status == "generated" else "No LLM context available."
@@ -657,7 +714,12 @@ class IntelligenceService:
             )
         prompt = "\n".join(prompt_parts)
         try:
-            text = self._ollama_generate(prompt=prompt, model=req.model, timeout_seconds=25.0, call_type="daily_briefing")
+            text = self._ollama_generate(
+                prompt=prompt,
+                model=req.model,
+                timeout_seconds=req.timeout_seconds,
+                call_type="daily_briefing",
+            )
             briefing = DailyBriefing(date=detail.run.date, summary_text=text, model=req.model, status="generated")
         except (TimeoutError, URLError, RuntimeError, OSError, ValueError) as exc:
             briefing = DailyBriefing(
@@ -766,6 +828,7 @@ class IntelligenceService:
             return {"1d": None, "3d": None, "7d": None}
 
     def get_dashboard(self) -> IntelligenceDashboardResponse:
+        self._finalize_stale_running_events()
         runs = self._read_runs()
         latest_results: list[SymbolResult] = []
         if runs:

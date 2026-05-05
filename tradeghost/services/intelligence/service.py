@@ -209,7 +209,7 @@ class IntelligenceService:
                 status="success",
                 category=category.value,
                 duration_ms=int((datetime.now(UTC) - cat_started).total_seconds() * 1000),
-                message=f"selected={len(per_category_rows)} processed={scan.summary.processed}",
+                message=f"selected={len(per_category_rows)} processed={scan.scope.processed_count}",
             )
             for row in per_category_rows:
                 if row.symbol not in category_rows:

@@ -309,7 +309,7 @@ export default function IntelligencePage() {
             <label>Scanner Result Cap<input type="number" min={5} max={100} value={scannerResultCap} onChange={(e) => setScannerResultCap(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
             <label>LLM Concurrency<input type="number" min={1} max={8} value={llmConcurrency} onChange={(e) => setLlmConcurrency(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
             <label>Context Symbol Limit<input type="number" min={1} max={100} value={contextSymbolLimit} onChange={(e) => setContextSymbolLimit(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
-            <label>LLM Timeout (sec)<input type="number" min={5} max={120} value={contextTimeout} onChange={(e) => setContextTimeout(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
+            <label>LLM Timeout (sec)<input type="number" min={5} max={300} value={contextTimeout} onChange={(e) => setContextTimeout(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
             <label>Live Stream Debug<input type="checkbox" checked={liveStreamDebug} onChange={(e) => setLiveStreamDebug(e.target.checked)} className="ml-2" /></label>
             <label>Review Period Days<input type="number" min={7} max={365} value={reviewDays} onChange={(e) => setReviewDays(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
           </div>

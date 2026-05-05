@@ -9,6 +9,7 @@ import {
   LLMConnectionStatus,
   LLMResponseTestResult,
   MarketCode,
+  PipelineDebugEvent,
   ScannerCategory,
   ScannerDuration,
   ScannerUniverseScope,
@@ -39,6 +40,7 @@ export default function IntelligencePage() {
   const [llmStatus, setLLMStatus] = useState<LLMConnectionStatus | null>(null);
   const [llmTest, setLlmTest] = useState<LLMResponseTestResult | null>(null);
   const [llmLogs, setLLMLogs] = useState<LLMDebugLog[]>([]);
+  const [pipelineEvents, setPipelineEvents] = useState<PipelineDebugEvent[]>([]);
   const [expandedLogIds, setExpandedLogIds] = useState<Record<string, boolean>>({});
   const [backendConnected, setBackendConnected] = useState(false);
 
@@ -50,10 +52,15 @@ export default function IntelligencePage() {
       const detailObj = parsed.detail as Record<string, unknown> | string | undefined;
       if (detailObj && typeof detailObj === "object") {
         const detail = String(detailObj.detail ?? `${stage} failed`);
+        const failedStage = detailObj.failed_stage ? ` failed_stage=${String(detailObj.failed_stage)}` : "";
+        const failedSymbol = detailObj.failed_symbol ? ` failed_symbol=${String(detailObj.failed_symbol)}` : "";
+        const model = detailObj.model ? ` model=${String(detailObj.model)}` : "";
+        const errorType = detailObj.error_type ? ` error_type=${String(detailObj.error_type)}` : "";
+        const errorMessage = detailObj.error_message ? ` error_message=${String(detailObj.error_message)}` : "";
         const endpoint = detailObj.endpoint ? ` endpoint=${String(detailObj.endpoint)}` : "";
         const method = detailObj.method ? ` method=${String(detailObj.method)}` : "";
         const backendError = detailObj.error ? ` error=${String(detailObj.error)}` : "";
-        return `${detail}.${status}${method}${endpoint}${backendError}`;
+        return `${detail}.${status}${method}${endpoint}${backendError}${failedStage}${failedSymbol}${model}${errorType}${errorMessage}`;
       }
       return `${String(detailObj ?? `${stage} failed`)}.${status}`;
     } catch {
@@ -62,15 +69,17 @@ export default function IntelligencePage() {
   };
 
   const load = async () => {
-    const [dataR, statusR, logsR, healthR] = await Promise.allSettled([
+    const [dataR, statusR, logsR, eventsR, healthR] = await Promise.allSettled([
       api.getIntelligenceDashboard(),
       api.getLLMStatus(),
       api.getLLMLogs(120),
+      api.getPipelineEvents(250),
       api.health(),
     ]);
     if (dataR.status === "fulfilled") setDashboard(dataR.value);
     if (statusR.status === "fulfilled") setLLMStatus(statusR.value);
     if (logsR.status === "fulfilled") setLLMLogs(logsR.value);
+    if (eventsR.status === "fulfilled") setPipelineEvents(eventsR.value);
     if (healthR.status === "fulfilled") setBackendConnected(healthR.value.status === "ok");
     else setBackendConnected(false);
   };
@@ -78,6 +87,14 @@ export default function IntelligencePage() {
   useEffect(() => {
     void load();
   }, []);
+
+  useEffect(() => {
+    if (!showLLMConsole && !loading) return;
+    const t = setInterval(() => {
+      void load();
+    }, 2500);
+    return () => clearInterval(t);
+  }, [showLLMConsole, loading]);
 
   const latestRun = dashboard?.runs?.[0] ?? null;
   const latestRunDate = latestRun?.date ?? null;
@@ -131,6 +148,8 @@ export default function IntelligencePage() {
         max_concurrency: llmConcurrency,
         timeout_seconds: contextTimeout,
         model: "llama3.2:3b",
+        sequential_mode: true,
+        short_context_mode: true,
       });
       setNotice(`Symbol context completed: generated ${response.generated}, failed ${response.failed}.`);
       await load();
@@ -236,6 +255,11 @@ export default function IntelligencePage() {
         {llmStatus && !llmStatus.connected ? (
           <p className="mt-2 text-xs text-red">LLM check endpoint: {llmStatus.base_url}. Error: {llmStatus.error ?? "unknown"}. Suggested fix: ensure Ollama is running and reachable from backend.</p>
         ) : null}
+        {llmStatus?.connected ? (
+          <p className="mt-2 text-xs text-slate-300">
+            Ollama model: {llmStatus.model_used ?? "-"} | available: {llmStatus.model_available === null ? "unknown" : llmStatus.model_available ? "yes" : "no"}
+          </p>
+        ) : null}
       </Panel>
 
       {dashboard ? (
@@ -264,6 +288,9 @@ export default function IntelligencePage() {
         </div>
         <p className="mt-2 text-xs text-slate-400">
           Daily Intelligence runs each selected category separately, selects Top N per category, merges duplicates, then optionally sends final candidates to Ollama for context.
+        </p>
+        <p className="mt-1 text-xs text-slate-400">
+          Debug mode sends symbols to Ollama one by one using short JSON context prompt mode.
         </p>
         <button type="button" onClick={() => setShowAdvanced((prev) => !prev)} className="mt-3 rounded-md border border-stroke px-2 py-1 text-xs hover:text-cyan">
           {showAdvanced ? "Hide Advanced Settings" : "Show Advanced Settings"}
@@ -301,12 +328,40 @@ export default function IntelligencePage() {
 
       {showLLMConsole ? (
         <Panel>
-          <SectionTitle title="LLM Debug Console" subtitle="Ollama request/response inspection (raw + parsed output)" />
+          <SectionTitle title="Pipeline / LLM Console" subtitle="Live pipeline steps + Ollama request/response inspection" />
           {llmStatus ? (
             <p className="text-xs text-slate-400">
               Endpoint: {llmStatus.base_url} | Checked: {new Date(llmStatus.checked_at).toLocaleString()} | Status: {llmStatus.connected ? "connected" : `error: ${llmStatus.error ?? "unknown"}`}
             </p>
           ) : null}
+          <div className="mt-3 max-h-[260px] overflow-auto rounded-lg border border-stroke/70">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-stroke text-left text-slate-400">
+                  <th className="px-2 py-2">Time</th>
+                  <th className="px-2 py-2">Step</th>
+                  <th className="px-2 py-2">Status</th>
+                  <th className="px-2 py-2">Category</th>
+                  <th className="px-2 py-2">Symbol</th>
+                  <th className="px-2 py-2">Duration ms</th>
+                  <th className="px-2 py-2">Message</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pipelineEvents.map((row) => (
+                  <tr key={row.id} className={`border-b border-stroke/50 ${row.status === "failed" ? "bg-red/10" : ""}`}>
+                    <td className="px-2 py-2">{new Date(row.timestamp).toLocaleTimeString()}</td>
+                    <td className="px-2 py-2">{row.step_name}</td>
+                    <td className={`px-2 py-2 ${row.status === "failed" ? "text-red" : row.status === "success" ? "text-green" : "text-yellow-300"}`}>{row.status}</td>
+                    <td className="px-2 py-2">{row.category ?? "-"}</td>
+                    <td className="px-2 py-2">{row.symbol ?? "-"}</td>
+                    <td className="px-2 py-2">{row.duration_ms}</td>
+                    <td className="px-2 py-2">{row.error_message ?? row.message ?? "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           <div className="mt-3 max-h-[420px] overflow-auto rounded-lg border border-stroke/70">
             <table className="w-full text-xs">
               <thead>

@@ -900,6 +900,7 @@ export type IntelligenceDashboardResponse = {
   latest_contexts: SymbolContext[];
   latest_briefing: DailyBriefing | null;
   latest_review: SystemReview | null;
+  pipeline_events: PipelineDebugEvent[];
 };
 
 export type LLMConnectionStatus = {
@@ -907,6 +908,9 @@ export type LLMConnectionStatus = {
   base_url: string;
   checked_at: string;
   error: string | null;
+  model_used: string | null;
+  model_available: boolean | null;
+  installed_models: string[];
 };
 
 export type LLMDebugLog = {
@@ -934,4 +938,17 @@ export type LLMResponseTestResult = {
   response_preview: string | null;
   error: string | null;
   checked_at: string;
+};
+
+export type PipelineDebugEvent = {
+  id: string;
+  timestamp: string;
+  step_name: string;
+  status: string;
+  duration_ms: number;
+  run_id: string | null;
+  symbol: string | null;
+  category: string | null;
+  message: string | null;
+  error_message: string | null;
 };

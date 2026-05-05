@@ -1128,6 +1128,8 @@ class SymbolContextBatchRequest(BaseModel):
     max_concurrency: int = Field(default=1, ge=1, le=8)
     timeout_seconds: float = Field(default=120.0, ge=5.0, le=120.0)
     model: str = "llama3.2:3b"
+    sequential_mode: bool = True
+    short_context_mode: bool = True
 
 
 class DailyBriefingRequest(BaseModel):
@@ -1160,6 +1162,7 @@ class IntelligenceDashboardResponse(BaseModel):
     latest_contexts: list[SymbolContext] = Field(default_factory=list)
     latest_briefing: DailyBriefing | None = None
     latest_review: SystemReview | None = None
+    pipeline_events: list["PipelineDebugEvent"] = Field(default_factory=list)
 
 
 class LLMDebugLog(BaseModel):
@@ -1181,6 +1184,22 @@ class LLMConnectionStatus(BaseModel):
     base_url: str
     checked_at: datetime
     error: str | None = None
+    model_used: str | None = None
+    model_available: bool | None = None
+    installed_models: list[str] = Field(default_factory=list)
+
+
+class PipelineDebugEvent(BaseModel):
+    id: str
+    timestamp: datetime
+    step_name: str
+    status: str
+    duration_ms: int = 0
+    run_id: str | None = None
+    symbol: str | None = None
+    category: str | None = None
+    message: str | None = None
+    error_message: str | None = None
 
 
 class LLMResponseTestRequest(BaseModel):

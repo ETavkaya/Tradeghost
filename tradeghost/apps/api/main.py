@@ -38,6 +38,7 @@ from tradeghost.shared.models.schemas import (
     LLMDebugLog,
     LLMResponseTestRequest,
     LLMResponseTestResult,
+    PipelineDebugEvent,
     MonitoringRunRequest,
     MonitoringRunDueRequest,
     MonitoringRunSummary,
@@ -509,7 +510,18 @@ def generate_symbol_contexts(payload: SymbolContextBatchRequest) -> SymbolContex
     try:
         return intelligence_service.generate_symbol_contexts(payload)
     except Exception as exc:  # pragma: no cover
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "detail": "Symbol context generation failed",
+                "failed_stage": "symbol_context_batch",
+                "failed_symbol": None,
+                "ollama_endpoint": settings.ollama_base_url,
+                "model": payload.model,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            },
+        ) from exc
 
 
 @app.post("/intelligence/daily-briefing", response_model=DailyBriefing)
@@ -548,6 +560,15 @@ def get_intelligence_llm_status() -> LLMConnectionStatus:
 def get_intelligence_llm_logs(limit: int = Query(default=200, ge=1, le=500)) -> list[LLMDebugLog]:
     try:
         return intelligence_service.get_llm_logs(limit=limit)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/pipeline-events", response_model=list[PipelineDebugEvent])
+def get_intelligence_pipeline_events(limit: int = Query(default=250, ge=1, le=1500)) -> list[PipelineDebugEvent]:
+    try:
+        dashboard = intelligence_service.get_dashboard()
+        return dashboard.pipeline_events[:limit]
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -27,6 +27,7 @@ from tradeghost.shared.models.schemas import (
     LLMResponseTestResult,
     LLMConnectionStatus,
     LLMDebugLog,
+    PipelineDebugEvent,
     ScannerRequest,
     SymbolBacktestSummary,
     SymbolContext,
@@ -54,11 +55,13 @@ class IntelligenceService:
         self.briefings_path = self.base_dir / "daily_briefings.json"
         self.reviews_path = self.base_dir / "system_reviews.json"
         self.llm_logs_path = self.base_dir / "llm_calls.json"
+        self.pipeline_logs_path = self.base_dir / "pipeline_events.json"
         self.analysis_engine = analysis_engine or AnalysisEngine()
         self.scanner_engine = scanner_engine or ScannerEngine(analysis_engine=self.analysis_engine)
         self.backtest_engine = backtest_engine or BacktestEngine(analysis_engine=self.analysis_engine)
         self._logger = logging.getLogger(__name__)
         self._llm_logs_lock = Lock()
+        self._pipeline_logs_lock = Lock()
 
     def _read_rows(self, path: Path) -> list[dict[str, Any]]:
         if not path.exists():
@@ -128,16 +131,63 @@ class IntelligenceService:
             except Exception as exc:  # pragma: no cover - best effort logging path
                 self._logger.warning("Failed to persist LLM debug log: %s", exc)
 
+    def _read_pipeline_events(self) -> list[PipelineDebugEvent]:
+        return [PipelineDebugEvent.model_validate(row) for row in self._read_rows(self.pipeline_logs_path)]
+
+    def _save_pipeline_events(self, rows: list[PipelineDebugEvent]) -> None:
+        self._write_rows(self.pipeline_logs_path, [row.model_dump(mode="json") for row in rows])
+
+    def _append_pipeline_event(
+        self,
+        *,
+        step_name: str,
+        status: str,
+        duration_ms: int = 0,
+        run_id: str | None = None,
+        symbol: str | None = None,
+        category: str | None = None,
+        message: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        event = PipelineDebugEvent(
+            id=str(uuid4()),
+            timestamp=datetime.now(UTC),
+            step_name=step_name,
+            status=status,
+            duration_ms=duration_ms,
+            run_id=run_id,
+            symbol=symbol,
+            category=category,
+            message=message,
+            error_message=error_message,
+        )
+        with self._pipeline_logs_lock:
+            rows = self._read_pipeline_events()
+            rows.append(event)
+            self._save_pipeline_events(rows[-1500:])
+
     @staticmethod
     def _slice_latest(rows: list[Any], limit: int = 1) -> list[Any]:
         return rows[-limit:] if rows else []
 
     def run_daily_pipeline(self, req: DailyPipelineRequest) -> IntelligenceRunResponse:
         started_at = datetime.now(UTC)
+        self._append_pipeline_event(
+            step_name="daily_pipeline_started",
+            status="running",
+            message=f"market={req.market.value} duration={req.duration.value} categories={','.join([c.value for c in req.categories])}",
+        )
         category_rows: dict[str, SymbolResult] = {}
         raw_candidates = 0
 
         for category in req.categories:
+            cat_started = datetime.now(UTC)
+            self._append_pipeline_event(
+                step_name="scanner_category_started",
+                status="running",
+                category=category.value,
+                message=f"top_n={req.top_n_per_category}",
+            )
             universe_symbols, _ = self.scanner_engine.get_universe_symbols(req.market.value, req.scanner_universe_scope)
             symbol_overrides = universe_symbols[: req.max_universe_symbols]
             scan = self.scanner_engine.scan(
@@ -154,6 +204,13 @@ class IntelligenceService:
             )
             per_category_rows = scan.results[: req.top_n_per_category]
             raw_candidates += len(per_category_rows)
+            self._append_pipeline_event(
+                step_name="scanner_category_completed",
+                status="success",
+                category=category.value,
+                duration_ms=int((datetime.now(UTC) - cat_started).total_seconds() * 1000),
+                message=f"selected={len(per_category_rows)} processed={scan.summary.processed}",
+            )
             for row in per_category_rows:
                 if row.symbol not in category_rows:
                     built = self._build_symbol_result(row.symbol, req.market.value, [category.value], row.scanner_score)
@@ -218,6 +275,13 @@ class IntelligenceService:
             DailyRunDetail(run=run, symbol_results=ranked).model_dump(mode="json")
         )
         self._save_symbol_results(result_rows)
+        self._append_pipeline_event(
+            step_name="daily_pipeline_completed",
+            status="success",
+            run_id=run.id,
+            duration_ms=int((datetime.now(UTC) - started_at).total_seconds() * 1000),
+            message=f"raw={raw_candidates} merged={len(category_rows)} final={len(ranked)}",
+        )
         return IntelligenceRunResponse(run=run, symbol_results=ranked)
 
     def _build_symbol_result(self, symbol: str, market: str, category_tags: list[str], scanner_score: float) -> SymbolResult:
@@ -357,7 +421,28 @@ class IntelligenceService:
             )
             raise
 
-    def _context_prompt(self, row: SymbolResult) -> str:
+    def _context_prompt(self, row: SymbolResult, short_context_mode: bool) -> str:
+        if short_context_mode:
+            return (
+                "Return ONLY valid JSON. No markdown. No investment advice. Keep each field under 25 words.\n"
+                "Fields:\n"
+                "{\n"
+                '  "bull_case": "...",\n'
+                '  "bear_case": "...",\n'
+                '  "risks": "...",\n'
+                '  "summary": "..."\n'
+                "}\n\n"
+                "Input:\n"
+                f"symbol={row.symbol}\n"
+                f"category={','.join([tag.value if hasattr(tag, 'value') else str(tag) for tag in row.category_tags])}\n"
+                f"score={row.score:.2f}\n"
+                f"trend={row.trend}\n"
+                f"setup_type={row.setup_type}\n"
+                f"ema20={row.ema_distances.get('ema20', 0.0):.2f}\n"
+                f"ema50={row.ema_distances.get('ema50', 0.0):.2f}\n"
+                f"ema100={row.ema_distances.get('ema100', 0.0):.2f}\n"
+                f"ema200={row.ema_distances.get('ema200', 0.0):.2f}\n"
+            )
         return (
             "You are a financial analyst.\n"
             "Do NOT give buy/sell advice.\n"
@@ -394,19 +479,47 @@ class IntelligenceService:
         end = min(candidates) if candidates else len(text)
         return text[start:end].strip()
 
-    def _generate_single_symbol_context(self, row: SymbolResult, *, model: str, timeout_seconds: float) -> SymbolContext:
+    def _generate_single_symbol_context(self, row: SymbolResult, *, model: str, timeout_seconds: float, short_context_mode: bool, run_id: str) -> SymbolContext:
+        symbol_started = datetime.now(UTC)
+        self._append_pipeline_event(
+            step_name="symbol_context_started",
+            status="running",
+            run_id=run_id,
+            symbol=row.symbol,
+            message=f"model={model} short_mode={short_context_mode}",
+        )
         try:
             raw = self._ollama_generate(
-                prompt=self._context_prompt(row),
+                prompt=self._context_prompt(row, short_context_mode),
                 model=model,
                 timeout_seconds=timeout_seconds,
                 call_type="symbol_context",
                 symbol=row.symbol,
             )
-            bull = self._extract_section(raw, "Bull case") or "No clear bull-case context returned."
-            bear = self._extract_section(raw, "Bear case") or "No clear bear-case context returned."
-            risks = self._extract_section(raw, "Risks") or "No explicit risks returned."
-            summary = self._extract_section(raw, "Summary") or raw[:400]
+            bull = ""
+            bear = ""
+            risks = ""
+            summary = ""
+            if short_context_mode:
+                parsed_json: dict[str, Any]
+                try:
+                    parsed_json = json.loads(raw)
+                except json.JSONDecodeError:
+                    left = raw.find("{")
+                    right = raw.rfind("}")
+                    if left >= 0 and right > left:
+                        parsed_json = json.loads(raw[left : right + 1])
+                    else:
+                        raise
+                bull = str(parsed_json.get("bull_case", "")).strip()
+                bear = str(parsed_json.get("bear_case", "")).strip()
+                risks = str(parsed_json.get("risks", "")).strip()
+                summary = str(parsed_json.get("summary", "")).strip()
+            else:
+                bull = self._extract_section(raw, "Bull case") or "No clear bull-case context returned."
+                bear = self._extract_section(raw, "Bear case") or "No clear bear-case context returned."
+                risks = self._extract_section(raw, "Risks") or "No explicit risks returned."
+                summary = self._extract_section(raw, "Summary") or raw[:400]
             self._append_llm_log(
                 LLMDebugLog(
                     id=str(uuid4()),
@@ -426,6 +539,14 @@ class IntelligenceService:
                     duration_ms=0,
                 )
             )
+            self._append_pipeline_event(
+                step_name="symbol_context_completed",
+                status="success",
+                run_id=run_id,
+                symbol=row.symbol,
+                duration_ms=int((datetime.now(UTC) - symbol_started).total_seconds() * 1000),
+                message="parsed successfully",
+            )
             return SymbolContext(
                 symbol=row.symbol,
                 date=date.today(),
@@ -436,7 +557,15 @@ class IntelligenceService:
                 model=model,
                 status="generated",
             )
-        except (TimeoutError, URLError, RuntimeError, OSError, ValueError) as exc:
+        except (TimeoutError, URLError, RuntimeError, OSError, ValueError, json.JSONDecodeError) as exc:
+            self._append_pipeline_event(
+                step_name="symbol_context_completed",
+                status="failed",
+                run_id=run_id,
+                symbol=row.symbol,
+                duration_ms=int((datetime.now(UTC) - symbol_started).total_seconds() * 1000),
+                error_message=str(exc),
+            )
             return SymbolContext(
                 symbol=row.symbol,
                 date=date.today(),
@@ -458,16 +587,32 @@ class IntelligenceService:
         raise FileNotFoundError(run_id)
 
     def generate_symbol_contexts(self, req: SymbolContextBatchRequest) -> SymbolContextBatchResponse:
+        started = datetime.now(UTC)
+        self._append_pipeline_event(
+            step_name="symbol_context_batch_started",
+            status="running",
+            run_id=req.run_id,
+            message=f"limit={req.context_symbol_limit} concurrency={req.max_concurrency} timeout={req.timeout_seconds}s sequential={req.sequential_mode}",
+        )
         detail = self._get_run_detail(req.run_id)
         target_rows = detail.symbol_results[: req.context_symbol_limit]
+        self._append_pipeline_event(
+            step_name="symbol_context_candidates_selected",
+            status="success",
+            run_id=req.run_id,
+            message="symbols=" + ",".join([row.symbol for row in target_rows]),
+        )
         contexts: list[SymbolContext] = []
-        with ThreadPoolExecutor(max_workers=req.max_concurrency) as executor:
+        workers = 1 if req.sequential_mode else req.max_concurrency
+        with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = [
                 executor.submit(
                     self._generate_single_symbol_context,
                     row,
                     model=req.model,
                     timeout_seconds=req.timeout_seconds,
+                    short_context_mode=req.short_context_mode,
+                    run_id=req.run_id,
                 )
                 for row in target_rows
             ]
@@ -478,6 +623,14 @@ class IntelligenceService:
         stored.extend(contexts)
         self._save_contexts(stored)
         failed = sum(1 for row in contexts if row.status != "generated")
+        self._append_pipeline_event(
+            step_name="symbol_context_batch_completed",
+            status="success" if failed < len(contexts) else "failed",
+            run_id=req.run_id,
+            duration_ms=int((datetime.now(UTC) - started).total_seconds() * 1000),
+            message=f"generated={len(contexts)-failed} failed={failed}",
+            error_message=None if failed < len(contexts) else "all symbol contexts failed",
+        )
         return SymbolContextBatchResponse(
             run_id=req.run_id,
             generated=len(contexts) - failed,
@@ -630,6 +783,7 @@ class IntelligenceService:
             latest_contexts=sorted(self._slice_latest(contexts, limit=50), key=lambda row: (row.date, row.symbol), reverse=True),
             latest_briefing=briefings[-1] if briefings else None,
             latest_review=reviews[-1] if reviews else None,
+            pipeline_events=sorted(self._slice_latest(self._read_pipeline_events(), limit=250), key=lambda row: row.timestamp, reverse=True),
         )
 
     def get_llm_logs(self, limit: int = 200) -> list[LLMDebugLog]:
@@ -645,9 +799,26 @@ class IntelligenceService:
             with urlopen(req, timeout=timeout_seconds) as response:  # noqa: S310
                 if response.status < 200 or response.status >= 300:
                     raise RuntimeError(f"Unexpected status {response.status}")
-            return LLMConnectionStatus(connected=True, base_url=base_url, checked_at=checked_at)
+                data = json.loads(response.read().decode("utf-8"))
+            installed = [str(item.get("name")) for item in data.get("models", []) if item.get("name")]
+            model_used = self.settings.ollama_model
+            return LLMConnectionStatus(
+                connected=True,
+                base_url=base_url,
+                checked_at=checked_at,
+                model_used=model_used,
+                model_available=model_used in installed if installed else None,
+                installed_models=installed[:100],
+            )
         except Exception as exc:
-            return LLMConnectionStatus(connected=False, base_url=base_url, checked_at=checked_at, error=str(exc))
+            return LLMConnectionStatus(
+                connected=False,
+                base_url=base_url,
+                checked_at=checked_at,
+                error=str(exc),
+                model_used=self.settings.ollama_model,
+                model_available=False,
+            )
 
     def test_llm_response(self, req: LLMResponseTestRequest) -> LLMResponseTestResult:
         checked_at = datetime.now(UTC)

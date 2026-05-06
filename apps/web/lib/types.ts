@@ -911,6 +911,12 @@ export type LLMConnectionStatus = {
   model_used: string | null;
   model_available: boolean | null;
   installed_models: string[];
+  primary_provider: string | null;
+  fallback_provider: string | null;
+  primary_connected: boolean | null;
+  fallback_connected: boolean | null;
+  last_response_duration_ms: number | null;
+  last_fallback_used: boolean | null;
 };
 
 export type LLMDebugLog = {

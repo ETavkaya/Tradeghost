@@ -1180,6 +1180,10 @@ class LLMDebugLog(BaseModel):
     status: str
     error_message: str | None = None
     duration_ms: int
+    provider: str | None = None
+    model: str | None = None
+    fallback_used: bool = False
+    fallback_provider: str | None = None
 
 
 class LLMConnectionStatus(BaseModel):
@@ -1190,6 +1194,12 @@ class LLMConnectionStatus(BaseModel):
     model_used: str | None = None
     model_available: bool | None = None
     installed_models: list[str] = Field(default_factory=list)
+    primary_provider: str | None = None
+    fallback_provider: str | None = None
+    primary_connected: bool | None = None
+    fallback_connected: bool | None = None
+    last_response_duration_ms: int | None = None
+    last_fallback_used: bool | None = None
 
 
 class PipelineDebugEvent(BaseModel):

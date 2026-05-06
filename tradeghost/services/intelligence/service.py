@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from tradeghost.services.analysis_engine import AnalysisEngine
 from tradeghost.services.backtest.engine import BacktestEngine
+from tradeghost.services.intelligence.providers import GroqProvider, LLMProvider, OllamaProvider
 from tradeghost.services.scanner.engine import ScannerEngine
 from tradeghost.shared.config.settings import get_settings
 from tradeghost.shared.models.schemas import (
@@ -62,6 +63,77 @@ class IntelligenceService:
         self._logger = logging.getLogger(__name__)
         self._llm_logs_lock = Lock()
         self._pipeline_logs_lock = Lock()
+        self._providers: dict[str, LLMProvider] = {
+            "groq": GroqProvider(self.settings),
+            "ollama": OllamaProvider(self.settings),
+        }
+
+    def _normalize_provider(self, provider: str | None) -> str:
+        value = (provider or "ollama").strip().lower()
+        return value if value in {"ollama", "groq"} else "ollama"
+
+    def _ollama_generate_direct(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        timeout_seconds: float,
+        symbol: str | None = None,
+        run_id: str | None = None,
+        debug_stream: bool = False,
+    ) -> tuple[str, str]:
+        endpoint = self.settings.ollama_base_url.rstrip("/") + "/api/generate"
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": bool(debug_stream),
+            "keep_alive": self.settings.ollama_keep_alive,
+            "options": {
+                "temperature": self.settings.ollama_temperature,
+                "top_p": self.settings.ollama_top_p,
+                "repeat_penalty": self.settings.ollama_repeat_penalty,
+                "num_predict": self.settings.ollama_num_predict,
+                "num_ctx": self.settings.ollama_num_ctx,
+                "num_thread": self.settings.ollama_num_thread,
+            },
+        }
+        req = Request(
+            url=endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(req, timeout=timeout_seconds) as response:  # noqa: S310
+            if debug_stream:
+                chunks: list[str] = []
+                chunk_idx = 0
+                while True:
+                    line = response.readline()
+                    if not line:
+                        break
+                    line_str = line.decode("utf-8").strip()
+                    if not line_str:
+                        continue
+                    evt = json.loads(line_str)
+                    token = str(evt.get("response", ""))
+                    if token:
+                        chunks.append(token)
+                        if symbol and run_id and (chunk_idx % 20 == 0):
+                            self._append_pipeline_event(
+                                step_name="ollama_stream_chunk",
+                                status="running",
+                                run_id=run_id,
+                                symbol=symbol,
+                                message=f"chunks={chunk_idx+1} preview={''.join(chunks)[-60:]}",
+                            )
+                        chunk_idx += 1
+                text = "".join(chunks).strip()
+            else:
+                body = json.loads(response.read().decode("utf-8"))
+                text = str(body.get("response", "")).strip()
+        if not text:
+            raise RuntimeError("Empty Ollama response")
+        return text, endpoint
 
     def _read_rows(self, path: Path) -> list[dict[str, Any]]:
         if not path.exists():
@@ -360,7 +432,10 @@ class IntelligenceService:
         debug_stream: bool = False,
     ) -> str:
         started = datetime.now(UTC)
-        endpoint = self.settings.ollama_base_url.rstrip("/") + "/api/generate"
+        primary_provider = self._normalize_provider(self.settings.llm_provider)
+        fallback_provider = self._normalize_provider(self.settings.llm_fallback_provider)
+        primary_model = model or (self.settings.groq_model if primary_provider == "groq" else self.settings.ollama_model)
+        fallback_model = self.settings.ollama_model if fallback_provider == "ollama" else self.settings.groq_model
         if not self.settings.intelligence_llm_enabled:
             err = "LLM layer is disabled by configuration."
             self._append_llm_log(
@@ -368,101 +443,117 @@ class IntelligenceService:
                     id=str(uuid4()),
                     timestamp=started,
                     symbol=symbol,
-                    endpoint=endpoint,
+                    endpoint="-",
                     call_type=call_type,
                     prompt=prompt,
                     status="fail",
                     error_message=err,
                     duration_ms=0,
                     parsed_output=parsed_output or {},
+                    provider=primary_provider,
+                    model=primary_model,
                 )
             )
             raise RuntimeError(err)
-        url = endpoint
-        payload = {
-            "model": model,
-            "prompt": prompt,
-            "stream": bool(debug_stream),
-            "keep_alive": self.settings.ollama_keep_alive,
-            "options": {
-                "temperature": self.settings.ollama_temperature,
-                "top_p": self.settings.ollama_top_p,
-                "repeat_penalty": self.settings.ollama_repeat_penalty,
-                "num_predict": self.settings.ollama_num_predict,
-                "num_ctx": self.settings.ollama_num_ctx,
-                "num_thread": self.settings.ollama_num_thread,
-            },
-        }
-        req = Request(
-            url=url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        last_exc: Exception | None = None
+        providers_to_try: list[tuple[str, str, bool]] = [(primary_provider, primary_model, False)]
+        if fallback_provider != primary_provider:
+            providers_to_try.append((fallback_provider, fallback_model, True))
         try:
-            with urlopen(req, timeout=timeout_seconds) as response:  # noqa: S310
-                if debug_stream:
-                    chunks: list[str] = []
-                    chunk_idx = 0
-                    while True:
-                        line = response.readline()
-                        if not line:
-                            break
-                        line_str = line.decode("utf-8").strip()
-                        if not line_str:
-                            continue
-                        evt = json.loads(line_str)
-                        token = str(evt.get("response", ""))
-                        if token:
-                            chunks.append(token)
-                            if symbol and run_id and (chunk_idx % 20 == 0):
-                                self._append_pipeline_event(
-                                    step_name="ollama_stream_chunk",
-                                    status="running",
-                                    run_id=run_id,
-                                    symbol=symbol,
-                                    message=f"chunks={chunk_idx+1} preview={''.join(chunks)[-60:]}",
-                                )
-                            chunk_idx += 1
-                    text = "".join(chunks).strip()
-                else:
-                    body = json.loads(response.read().decode("utf-8"))
-                    text = str(body.get("response", "")).strip()
-            if not text:
-                raise RuntimeError("Empty LLM response.")
-            duration_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
-            self._append_llm_log(
-                LLMDebugLog(
-                    id=str(uuid4()),
-                    timestamp=started,
-                    symbol=symbol,
-                    endpoint=endpoint,
-                    call_type=call_type,
-                    prompt=prompt,
-                    raw_response=text,
-                    parsed_output=parsed_output or {},
-                    status="success",
-                    duration_ms=duration_ms,
-                )
-            )
-            return text
+            for provider_name, provider_model, is_fallback in providers_to_try:
+                attempt_started = datetime.now(UTC)
+                try:
+                    if provider_name == "groq":
+                        result = self._providers["groq"].generate(
+                            prompt=prompt,
+                            model=provider_model,
+                            timeout_seconds=timeout_seconds,
+                            options={
+                                "temperature": self.settings.ollama_temperature,
+                                "num_predict": self.settings.ollama_num_predict,
+                            },
+                        )
+                        text, endpoint = result.raw_response, result.endpoint
+                        duration_ms = result.duration_ms
+                    else:
+                        if debug_stream:
+                            text, endpoint = self._ollama_generate_direct(
+                                prompt=prompt,
+                                model=provider_model,
+                                timeout_seconds=timeout_seconds,
+                                symbol=symbol,
+                                run_id=run_id,
+                                debug_stream=debug_stream,
+                            )
+                            duration_ms = int((datetime.now(UTC) - attempt_started).total_seconds() * 1000)
+                        else:
+                            result = self._providers["ollama"].generate(
+                                prompt=prompt,
+                                model=provider_model,
+                                timeout_seconds=timeout_seconds,
+                                options={
+                                    "temperature": self.settings.ollama_temperature,
+                                    "top_p": self.settings.ollama_top_p,
+                                    "repeat_penalty": self.settings.ollama_repeat_penalty,
+                                    "num_predict": self.settings.ollama_num_predict,
+                                    "num_ctx": self.settings.ollama_num_ctx,
+                                    "num_thread": self.settings.ollama_num_thread,
+                                },
+                            )
+                            text, endpoint = result.raw_response, result.endpoint
+                            duration_ms = result.duration_ms
+                    self._append_llm_log(
+                        LLMDebugLog(
+                            id=str(uuid4()),
+                            timestamp=started,
+                            symbol=symbol,
+                            endpoint=endpoint,
+                            call_type=call_type,
+                            prompt=prompt,
+                            raw_response=text,
+                            parsed_output=parsed_output or {},
+                            status="success",
+                            duration_ms=duration_ms,
+                            provider=provider_name,
+                            model=provider_model,
+                            fallback_used=is_fallback,
+                            fallback_provider=fallback_provider if is_fallback else None,
+                        )
+                    )
+                    if is_fallback and symbol:
+                        self._append_pipeline_event(
+                            step_name="llm_fallback_used",
+                            status="success",
+                            run_id=run_id,
+                            symbol=symbol,
+                            message=f"primary={primary_provider} fallback={fallback_provider}",
+                        )
+                    return text
+                except Exception as exc:
+                    last_exc = exc
+                    duration_ms = int((datetime.now(UTC) - attempt_started).total_seconds() * 1000)
+                    endpoint = self.settings.groq_base_url if provider_name == "groq" else self.settings.ollama_base_url
+                    self._append_llm_log(
+                        LLMDebugLog(
+                            id=str(uuid4()),
+                            timestamp=started,
+                            symbol=symbol,
+                            endpoint=endpoint,
+                            call_type=call_type,
+                            prompt=prompt,
+                            status="fail",
+                            error_message=str(exc),
+                            duration_ms=duration_ms,
+                            parsed_output=parsed_output or {},
+                            provider=provider_name,
+                            model=provider_model,
+                            fallback_used=is_fallback,
+                            fallback_provider=fallback_provider if is_fallback else None,
+                        )
+                    )
+            raise RuntimeError(str(last_exc) if last_exc else "LLM generation failed")
         except Exception as exc:
-            duration_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
-            self._append_llm_log(
-                LLMDebugLog(
-                    id=str(uuid4()),
-                    timestamp=started,
-                    symbol=symbol,
-                    endpoint=endpoint,
-                    call_type=call_type,
-                    prompt=prompt,
-                    status="fail",
-                    error_message=str(exc),
-                    duration_ms=duration_ms,
-                    parsed_output=parsed_output or {},
-                )
-            )
-            raise
+            raise exc
 
     def _context_prompt(self, row: SymbolResult, short_context_mode: bool) -> str:
         if short_context_mode:
@@ -776,23 +867,34 @@ class IntelligenceService:
                 )
 
         prompt = (
-            "You are reviewing a trading system.\n"
-            "Do NOT suggest trades.\n"
-            "Suggest only system improvements.\n"
-            "Analyze: which signals worked, which failed, missed opportunities, over-filtering vs under-filtering.\n"
-            f"Data window: last {req.days} days.\n"
-            f"Data: {json.dumps(perf_rows[:300])}\n\n"
-            "Return strict sections:\nFindings:\nMistakes:\nMissed patterns:\nRecommendations:\n"
+            "Return ONLY valid JSON. No markdown. No trade instructions.\n"
+            "Do not modify configs directly; recommendations only.\n"
+            "Schema:\n"
+            '{"findings":[],"mistakes":[],"missed_patterns":[],"recommendations":[]}\n'
+            f"Data window days: {req.days}\n"
+            f"Data: {json.dumps(perf_rows[:300])}\n"
         )
         try:
             text = self._ollama_generate(prompt=prompt, model=req.model, timeout_seconds=req.timeout_seconds, call_type="system_review")
+            parsed: dict[str, Any] = {}
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                left = text.find("{")
+                right = text.rfind("}")
+                if left >= 0 and right > left:
+                    parsed = json.loads(text[left : right + 1])
+            findings = "\n".join([str(x) for x in parsed.get("findings", [])]) if parsed else self._extract_section(text, "Findings") or text[:600]
+            mistakes = "\n".join([str(x) for x in parsed.get("mistakes", [])]) if parsed else self._extract_section(text, "Mistakes") or ""
+            missed = "\n".join([str(x) for x in parsed.get("missed_patterns", [])]) if parsed else self._extract_section(text, "Missed patterns") or ""
+            recommendations = "\n".join([str(x) for x in parsed.get("recommendations", [])]) if parsed else self._extract_section(text, "Recommendations") or ""
             review = SystemReview(
                 id=str(uuid4()),
                 period=f"last_{req.days}d",
-                findings=self._extract_section(text, "Findings") or text[:600],
-                mistakes=self._extract_section(text, "Mistakes") or "",
-                missed_patterns=self._extract_section(text, "Missed patterns") or "",
-                recommendations=self._extract_section(text, "Recommendations") or "",
+                findings=findings,
+                mistakes=mistakes,
+                missed_patterns=missed,
+                recommendations=recommendations,
                 model=req.model,
                 status="generated",
             )
@@ -855,33 +957,43 @@ class IntelligenceService:
 
     def get_llm_status(self, timeout_seconds: float = 2.0) -> LLMConnectionStatus:
         checked_at = datetime.now(UTC)
-        base_url = self.settings.ollama_base_url.rstrip("/")
-        url = base_url + "/api/tags"
-        req = Request(url=url, method="GET")
-        try:
-            with urlopen(req, timeout=timeout_seconds) as response:  # noqa: S310
-                if response.status < 200 or response.status >= 300:
-                    raise RuntimeError(f"Unexpected status {response.status}")
-                data = json.loads(response.read().decode("utf-8"))
-            installed = [str(item.get("name")) for item in data.get("models", []) if item.get("name")]
-            model_used = self.settings.ollama_model
-            return LLMConnectionStatus(
-                connected=True,
-                base_url=base_url,
-                checked_at=checked_at,
-                model_used=model_used,
-                model_available=model_used in installed if installed else None,
-                installed_models=installed[:100],
-            )
-        except Exception as exc:
-            return LLMConnectionStatus(
-                connected=False,
-                base_url=base_url,
-                checked_at=checked_at,
-                error=str(exc),
-                model_used=self.settings.ollama_model,
-                model_available=False,
-            )
+        primary_provider = self._normalize_provider(self.settings.llm_provider)
+        fallback_provider = self._normalize_provider(self.settings.llm_fallback_provider)
+        base_url = self.settings.groq_base_url.rstrip("/") if primary_provider == "groq" else self.settings.ollama_base_url.rstrip("/")
+        installed: list[str] = []
+        primary_connected = False
+        fallback_connected = False
+        model_available: bool | None = None
+        model_used = self.settings.groq_model if primary_provider == "groq" else self.settings.ollama_model
+        primary_model = self.settings.groq_model if primary_provider == "groq" else self.settings.ollama_model
+        fallback_model = self.settings.groq_model if fallback_provider == "groq" else self.settings.ollama_model
+        primary_health = self._providers[primary_provider].health_check(model=primary_model, timeout_seconds=timeout_seconds)
+        fallback_health = self._providers[fallback_provider].health_check(model=fallback_model, timeout_seconds=timeout_seconds)
+        primary_connected = primary_health.connected
+        fallback_connected = fallback_health.connected
+        installed = primary_health.installed_models
+        model_available = primary_health.model_available
+        err = primary_health.error
+        base_url = primary_health.endpoint
+
+        last_logs = self.get_llm_logs(limit=1)
+        last_duration = last_logs[0].duration_ms if last_logs else None
+        last_fallback = last_logs[0].fallback_used if last_logs else None
+        return LLMConnectionStatus(
+            connected=primary_connected or fallback_connected,
+            base_url=base_url,
+            checked_at=checked_at,
+            error=err,
+            model_used=model_used,
+            model_available=model_available,
+            installed_models=installed[:100],
+            primary_provider=primary_provider,
+            fallback_provider=fallback_provider,
+            primary_connected=primary_connected,
+            fallback_connected=fallback_connected,
+            last_response_duration_ms=last_duration,
+            last_fallback_used=last_fallback,
+        )
 
     def test_llm_response(self, req: LLMResponseTestRequest) -> LLMResponseTestResult:
         checked_at = datetime.now(UTC)

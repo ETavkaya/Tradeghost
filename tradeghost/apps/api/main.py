@@ -516,6 +516,8 @@ def generate_symbol_contexts(payload: SymbolContextBatchRequest) -> SymbolContex
                 "detail": "Symbol context generation failed",
                 "failed_stage": "symbol_context_batch",
                 "failed_symbol": None,
+                "llm_provider": settings.llm_provider,
+                "llm_fallback_provider": settings.llm_fallback_provider,
                 "ollama_endpoint": settings.ollama_base_url,
                 "model": payload.model,
                 "error_type": type(exc).__name__,

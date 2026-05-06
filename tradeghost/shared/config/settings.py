@@ -41,6 +41,11 @@ class Settings(BaseSettings):
 
     cache_dir: Path = Field(default=Path("./.cache"))
     logs_dir: Path = Field(default=Path("./logs"))
+    llm_provider: str = Field(default="groq")
+    llm_fallback_provider: str = Field(default="ollama")
+    groq_api_key: str = Field(default="")
+    groq_model: str = Field(default="openai/gpt-oss-20b")
+    groq_base_url: str = Field(default="https://api.groq.com/openai/v1")
     ollama_base_url: str = Field(default="http://localhost:11435")
     intelligence_llm_enabled: bool = Field(default=True)
     ollama_model: str = Field(default="llama3.2:3b")

@@ -56,12 +56,14 @@ export default function IntelligencePage() {
         const failedStage = detailObj.failed_stage ? ` failed_stage=${String(detailObj.failed_stage)}` : "";
         const failedSymbol = detailObj.failed_symbol ? ` failed_symbol=${String(detailObj.failed_symbol)}` : "";
         const model = detailObj.model ? ` model=${String(detailObj.model)}` : "";
+        const llmProvider = detailObj.llm_provider ? ` llm_provider=${String(detailObj.llm_provider)}` : "";
+        const llmFallbackProvider = detailObj.llm_fallback_provider ? ` llm_fallback_provider=${String(detailObj.llm_fallback_provider)}` : "";
         const errorType = detailObj.error_type ? ` error_type=${String(detailObj.error_type)}` : "";
         const errorMessage = detailObj.error_message ? ` error_message=${String(detailObj.error_message)}` : "";
         const endpoint = detailObj.endpoint ? ` endpoint=${String(detailObj.endpoint)}` : "";
         const method = detailObj.method ? ` method=${String(detailObj.method)}` : "";
         const backendError = detailObj.error ? ` error=${String(detailObj.error)}` : "";
-        return `${detail}.${status}${method}${endpoint}${backendError}${failedStage}${failedSymbol}${model}${errorType}${errorMessage}`;
+        return `${detail}.${status}${method}${endpoint}${backendError}${failedStage}${failedSymbol}${model}${llmProvider}${llmFallbackProvider}${errorType}${errorMessage}`;
       }
       return `${String(detailObj ?? `${stage} failed`)}.${status}`;
     } catch {
@@ -98,6 +100,7 @@ export default function IntelligencePage() {
   }, [showLLMConsole, loading]);
 
   const latestRun = dashboard?.runs?.[0] ?? null;
+  const activeModel = llmStatus?.model_used ?? "llama3.2:3b";
   const latestRunDate = latestRun?.date ?? null;
   const latestRunContextCount = latestRunDate
     ? (dashboard?.latest_contexts ?? []).filter((row) => row.date === latestRunDate && row.status === "generated").length
@@ -148,7 +151,7 @@ export default function IntelligencePage() {
         context_symbol_limit: contextSymbolLimit,
         max_concurrency: llmConcurrency,
         timeout_seconds: contextTimeout,
-        model: "llama3.2:3b",
+        model: activeModel,
         sequential_mode: true,
         short_context_mode: true,
         debug_stream: liveStreamDebug,
@@ -173,7 +176,7 @@ export default function IntelligencePage() {
     try {
       const response = await api.generateDailyBriefing({
         run_id: latestRun.id,
-        model: "llama3.2:3b",
+        model: activeModel,
         timeout_seconds: contextTimeout,
         short_briefing_mode: true,
       });
@@ -193,7 +196,7 @@ export default function IntelligencePage() {
     try {
       const response = await api.runSystemReview({
         days: reviewDays,
-        model: "llama3.2:3b",
+        model: activeModel,
         max_concurrency: llmConcurrency,
         timeout_seconds: contextTimeout,
       });
@@ -212,7 +215,7 @@ export default function IntelligencePage() {
     setLoading(true);
     try {
       const result = await api.testLLMResponse({
-        model: "llama3.2:3b",
+        model: activeModel,
         timeout_seconds: 30,
         threshold_seconds: 20,
       });
@@ -242,14 +245,17 @@ export default function IntelligencePage() {
           <span className={`rounded-md border px-2 py-1 ${backendConnected ? "border-green/60 text-green" : "border-red/60 text-red"}`}>
             Backend API: {backendConnected ? "Connected" : "Not reachable"}
           </span>
-          <span className={`rounded-md border px-2 py-1 ${llmStatus?.connected ? "border-green/60 text-green" : "border-red/60 text-red"}`}>
-            LLM/Ollama: {llmStatus?.connected ? "Connected" : "Not reachable"}
+          <span className={`rounded-md border px-2 py-1 ${llmStatus?.primary_connected ? "border-green/60 text-green" : "border-red/60 text-red"}`}>
+            Primary ({llmStatus?.primary_provider ?? "n/a"}): {llmStatus?.primary_connected ? "Connected" : "Not reachable"}
+          </span>
+          <span className={`rounded-md border px-2 py-1 ${llmStatus?.fallback_connected ? "border-green/60 text-green" : "border-red/60 text-red"}`}>
+            Fallback ({llmStatus?.fallback_provider ?? "n/a"}): {llmStatus?.fallback_connected ? "Connected" : "Not reachable"}
           </span>
           <button type="button" onClick={() => setShowLLMConsole((prev) => !prev)} className="rounded-md border border-stroke px-2 py-1 hover:text-cyan">
             {showLLMConsole ? "Hide LLM Console" : "Show LLM Console"}
           </button>
           <button type="button" onClick={runLLMResponseTest} disabled={loading || !backendConnected || !llmStatus?.connected} className="rounded-md border border-stroke px-2 py-1 hover:text-cyan disabled:opacity-60">
-            Test Ollama Response
+            Test LLM Response
           </button>
           <button type="button" onClick={load} className="rounded-md border border-stroke px-2 py-1 hover:text-cyan">Refresh</button>
         </div>
@@ -260,12 +266,15 @@ export default function IntelligencePage() {
           </p>
         ) : null}
         {llmStatus && !llmStatus.connected ? (
-          <p className="mt-2 text-xs text-red">LLM check endpoint: {llmStatus.base_url}. Error: {llmStatus.error ?? "unknown"}. Suggested fix: ensure Ollama is running and reachable from backend.</p>
+          <p className="mt-2 text-xs text-red">LLM check endpoint: {llmStatus.base_url}. Error: {llmStatus.error ?? "unknown"}. Suggested fix: ensure primary provider credentials/endpoint are valid or fallback provider is reachable.</p>
         ) : null}
         {llmStatus?.connected ? (
           <p className="mt-2 text-xs text-slate-300">
-            Ollama model: {llmStatus.model_used ?? "-"} | available: {llmStatus.model_available === null ? "unknown" : llmStatus.model_available ? "yes" : "no"}
+            Primary model: {llmStatus.model_used ?? "-"} | available: {llmStatus.model_available === null ? "unknown" : llmStatus.model_available ? "yes" : "no"} | last duration: {llmStatus.last_response_duration_ms ?? "-"} ms | last fallback: {llmStatus.last_fallback_used === null ? "-" : llmStatus.last_fallback_used ? "yes" : "no"}
           </p>
+        ) : null}
+        {llmStatus?.model_available === false ? (
+          <p className="mt-1 text-xs text-red">Model not found on primary provider. Pull/install or select an available model.</p>
         ) : null}
       </Panel>
 
@@ -377,7 +386,10 @@ export default function IntelligencePage() {
                   <th className="px-2 py-2">Time</th>
                   <th className="px-2 py-2">Symbol</th>
                   <th className="px-2 py-2">Type</th>
+                  <th className="px-2 py-2">Provider</th>
+                  <th className="px-2 py-2">Model</th>
                   <th className="px-2 py-2">Status</th>
+                  <th className="px-2 py-2">Fallback</th>
                   <th className="px-2 py-2">Duration ms</th>
                   <th className="px-2 py-2">Details</th>
                 </tr>
@@ -389,14 +401,18 @@ export default function IntelligencePage() {
                       <td className="px-2 py-2">{new Date(row.timestamp).toLocaleTimeString()}</td>
                       <td className="px-2 py-2">{row.symbol ?? "-"}</td>
                       <td className="px-2 py-2">{row.call_type}</td>
+                      <td className="px-2 py-2">{row.provider ?? "-"}</td>
+                      <td className="px-2 py-2">{row.model ?? "-"}</td>
                       <td className={`px-2 py-2 ${row.status === "fail" ? "text-red" : "text-green"}`}>{row.status}</td>
+                      <td className="px-2 py-2">{row.fallback_used ? `yes (${row.fallback_provider ?? "-"})` : "no"}</td>
                       <td className="px-2 py-2">{row.duration_ms}</td>
                       <td className="px-2 py-2"><button type="button" onClick={() => setExpandedLogIds((prev) => ({ ...prev, [row.id]: !prev[row.id] }))} className="rounded border border-stroke px-2 py-1 hover:text-cyan">{expandedLogIds[row.id] ? "Collapse" : "Expand"}</button></td>
                     </tr>
                     {expandedLogIds[row.id] ? (
                       <tr className="border-b border-stroke/40 bg-panelSoft/60">
-                        <td className="px-2 py-2 text-slate-300" colSpan={6}>
+                        <td className="px-2 py-2 text-slate-300" colSpan={9}>
                           {row.error_message ? <p className="mb-2 text-red">Error: {row.error_message}</p> : null}
+                          <p className="mb-2 text-slate-300">Endpoint: {row.endpoint}</p>
                           <p className="font-semibold text-slate-200">Prompt</p>
                           <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{row.prompt}</pre>
                           <p className="mt-2 font-semibold text-slate-200">Raw Response</p>

@@ -925,6 +925,10 @@ export type LLMDebugLog = {
   status: string;
   error_message: string | null;
   duration_ms: number;
+  provider: string | null;
+  model: string | null;
+  fallback_used: boolean;
+  fallback_provider: string | null;
 };
 
 export type LLMResponseTestResult = {

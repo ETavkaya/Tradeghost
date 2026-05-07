@@ -1048,6 +1048,19 @@ class SymbolResult(BaseModel):
     setup_type: str
     analysis_snapshot: dict[str, Any] = Field(default_factory=dict)
     backtest_summary: SymbolBacktestSummary = Field(default_factory=SymbolBacktestSummary)
+    why_selected: str = ""
+    structure_snapshot: dict[str, Any] = Field(default_factory=dict)
+    daily_change: dict[str, Any] = Field(default_factory=dict)
+    risk_flags: list[str] = Field(default_factory=list)
+    price_at_selection: float | None = None
+    selection_date: date | None = None
+    benchmark_symbol: str | None = None
+    return_1d: float | None = None
+    return_3d: float | None = None
+    return_7d: float | None = None
+    return_14d: float | None = None
+    max_drawdown_after_selection: float | None = None
+    max_runup_after_selection: float | None = None
 
 
 class DailyRun(BaseModel):
@@ -1193,6 +1206,25 @@ class SymbolContextBatchResponse(BaseModel):
     contexts: list[SymbolContext] = Field(default_factory=list)
 
 
+class ReviewReadiness(BaseModel):
+    runs_collected: int = 0
+    unique_days: int = 0
+    symbols_tracked: int = 0
+    days_until_28_day_review: int = 28
+    ready_for_28_day_review: bool = False
+    message: str = ""
+
+
+class DeterministicReviewStats(BaseModel):
+    best_category_by_7d: str | None = None
+    worst_category_by_7d: str | None = None
+    highest_false_positive_group: str | None = None
+    repeated_candidates: int = 0
+    strong_score_poor_return: int = 0
+    low_score_strong_return: int = 0
+    average_return_by_setup_type: dict[str, float] = Field(default_factory=dict)
+
+
 class IntelligenceDashboardResponse(BaseModel):
     runs: list[DailyRun] = Field(default_factory=list)
     latest_run_results: list[SymbolResult] = Field(default_factory=list)
@@ -1200,6 +1232,8 @@ class IntelligenceDashboardResponse(BaseModel):
     latest_briefing: DailyBriefing | None = None
     latest_review: SystemReview | None = None
     pipeline_events: list["PipelineDebugEvent"] = Field(default_factory=list)
+    review_readiness: ReviewReadiness = Field(default_factory=ReviewReadiness)
+    deterministic_review_stats: DeterministicReviewStats = Field(default_factory=DeterministicReviewStats)
 
 
 class LLMDebugLog(BaseModel):

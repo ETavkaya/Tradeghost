@@ -846,6 +846,19 @@ export type SymbolResult = {
   setup_type: string;
   analysis_snapshot: Record<string, unknown>;
   backtest_summary: SymbolBacktestSummary;
+  why_selected: string;
+  structure_snapshot: Record<string, unknown>;
+  daily_change: Record<string, unknown>;
+  risk_flags: string[];
+  price_at_selection: number | null;
+  selection_date: string | null;
+  benchmark_symbol: string | null;
+  return_1d: number | null;
+  return_3d: number | null;
+  return_7d: number | null;
+  return_14d: number | null;
+  max_drawdown_after_selection: number | null;
+  max_runup_after_selection: number | null;
 };
 
 export type SymbolContext = {
@@ -928,6 +941,23 @@ export type IntelligenceDashboardResponse = {
   latest_briefing: DailyBriefing | null;
   latest_review: SystemReview | null;
   pipeline_events: PipelineDebugEvent[];
+  review_readiness: {
+    runs_collected: number;
+    unique_days: number;
+    symbols_tracked: number;
+    days_until_28_day_review: number;
+    ready_for_28_day_review: boolean;
+    message: string;
+  };
+  deterministic_review_stats: {
+    best_category_by_7d: string | null;
+    worst_category_by_7d: string | null;
+    highest_false_positive_group: string | null;
+    repeated_candidates: number;
+    strong_score_poor_return: number;
+    low_score_strong_return: number;
+    average_return_by_setup_type: Record<string, number>;
+  };
 };
 
 export type LLMConnectionStatus = {

@@ -341,11 +341,12 @@ export default function IntelligencePage() {
       </Panel>
 
       {dashboard ? (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <StatCard label="Daily Runs" value={String(dashboard.runs.length)} />
           <StatCard label="Latest Symbols" value={String(dashboard.latest_run_results.length)} />
           <StatCard label="Contexts Loaded" value={String(dashboard.latest_contexts.length)} />
           <StatCard label="Latest Review" value={dashboard.latest_review?.period ?? "-"} />
+          <StatCard label="Review Readiness" value={dashboard.review_readiness?.ready_for_28_day_review ? "Ready" : `${dashboard.review_readiness?.days_until_28_day_review ?? 28}d left`} />
         </div>
       ) : null}
 
@@ -543,6 +544,9 @@ export default function IntelligencePage() {
                 <th className="px-2 py-2">Score / Category</th>
                 <th className="px-2 py-2">Final Score</th>
                 <th className="px-2 py-2">Multi-Category</th>
+                <th className="px-2 py-2">Why Selected</th>
+                <th className="px-2 py-2">Daily Change</th>
+                <th className="px-2 py-2">Forward Perf</th>
               </tr>
             </thead>
             <tbody>
@@ -554,10 +558,28 @@ export default function IntelligencePage() {
                   <td className="px-2 py-2">{Object.entries(row.score_by_category).map(([k, v]) => `${k}:${v.toFixed(1)}`).join(" | ")}</td>
                   <td className="px-2 py-2">{row.score.toFixed(2)} {row.priority_boost > 0 ? `(+${row.priority_boost.toFixed(1)} boost)` : ""}</td>
                   <td className="px-2 py-2">{row.multi_category ? <span className="rounded border border-cyan/60 px-2 py-1 text-cyan">multi-category</span> : "-"}</td>
+                  <td className="px-2 py-2 min-w-[320px]">{row.why_selected || "-"}</td>
+                  <td className="px-2 py-2 min-w-[260px]">{String(row.daily_change?.message ?? "No previous run comparison")}</td>
+                  <td className="px-2 py-2">
+                    1D:{row.return_1d ?? "pending"} | 3D:{row.return_3d ?? "pending"} | 7D:{row.return_7d ?? "pending"} | 14D:{row.return_14d ?? "pending"}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      </Panel>
+
+      <Panel>
+        <SectionTitle title="Review Readiness" subtitle="Deterministic review input health before 28-day review" />
+        <div className="text-xs text-slate-300 space-y-1">
+          <p>Runs collected: {dashboard?.review_readiness?.runs_collected ?? 0}</p>
+          <p>Unique days: {dashboard?.review_readiness?.unique_days ?? 0}</p>
+          <p>Symbols tracked: {dashboard?.review_readiness?.symbols_tracked ?? 0}</p>
+          <p>Days until 28-day review: {dashboard?.review_readiness?.days_until_28_day_review ?? 28}</p>
+          <p>Status: {dashboard?.review_readiness?.message ?? "-"}</p>
+          <p>Best category by 7D: {dashboard?.deterministic_review_stats?.best_category_by_7d ?? "-"}</p>
+          <p>Worst category by 7D: {dashboard?.deterministic_review_stats?.worst_category_by_7d ?? "-"}</p>
         </div>
       </Panel>
 

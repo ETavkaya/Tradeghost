@@ -33,12 +33,14 @@ from tradeghost.shared.models.schemas import (
     LLMConnectionStatus,
     LLMDebugLog,
     PipelineDebugEvent,
+    ReviewReadiness,
     ScannerRequest,
     SymbolBacktestSummary,
     SymbolContext,
     SymbolContextBatchRequest,
     SymbolContextBatchResponse,
     SymbolResult,
+    DeterministicReviewStats,
     SystemReview,
     SystemReviewRequest,
 )
@@ -352,6 +354,16 @@ class IntelligenceService:
             for idx, row in enumerate(ranked)
         ]
 
+        runs = self._read_runs()
+        previous_detail: DailyRunDetail | None = None
+        if runs:
+            try:
+                previous_detail = self._get_run_detail(runs[-1].id)
+            except FileNotFoundError:
+                previous_detail = None
+
+        ranked = self._apply_daily_change_tracking(ranked, previous_detail)
+
         run = DailyRun(
             id=str(uuid4()),
             date=date.today(),
@@ -365,7 +377,6 @@ class IntelligenceService:
             note="Deterministic category-balanced pipeline complete; no LLM calls were used.",
         )
 
-        runs = self._read_runs()
         runs.append(run)
         self._save_runs(runs)
 
@@ -400,6 +411,33 @@ class IntelligenceService:
             score_threshold=analysis.analysis_config.score_threshold,
             warmup_bars=analysis.analysis_config.warmup_bars,
         )
+        structure_snapshot = {
+            "trend_state": setup.trend_state,
+            "setup_type": setup.setup_type,
+            "extension_state": setup.extension_state,
+            "score_dynamics_state": analysis.entry_gate.score_dynamics_state,
+            "price_vs_ema20": round(location.distance_to_ema20_pct, 3),
+            "price_vs_ema50": round(location.distance_to_ema50_pct, 3),
+            "price_vs_ema100": round(location.distance_to_ema100_pct, 3),
+            "price_vs_ema200": round(location.distance_to_ema200_pct, 3),
+            "support_distance": round(location.support_distance_pct, 3),
+            "resistance_room": round(location.resistance_room_pct, 3),
+            "volume_ratio_20": analysis.entry_gate.volume_ratio_20,
+            "trigger_state": analysis.trigger.trigger_state,
+        }
+        risk_flags = self._build_risk_flags(analysis)
+        why_selected = self._build_why_selected_text(
+            symbol=symbol,
+            category_tags=category_tags,
+            setup_type=setup.setup_type,
+            trend_state=setup.trend_state,
+            score=float(scanner_score),
+            score_dynamics=analysis.entry_gate.score_dynamics_state,
+            location=location,
+            trigger_reason=analysis.trigger.trigger_reason,
+            main_risk=(risk_flags[0] if risk_flags else "normal monitoring risk"),
+        )
+
         return SymbolResult(
             symbol=symbol,
             market=analysis.market,
@@ -428,7 +466,109 @@ class IntelligenceService:
                 average_return=backtest.average_return,
                 max_drawdown=backtest.max_drawdown,
             ),
+            why_selected=why_selected,
+            structure_snapshot=structure_snapshot,
+            daily_change={"status": "new_candidate", "message": "New candidate"},
+            risk_flags=risk_flags,
+            price_at_selection=float(analysis.chart.current_price),
+            selection_date=date.today(),
+            benchmark_symbol="SPY" if market == "us" else "XU100.IS",
+            return_1d=None,
+            return_3d=None,
+            return_7d=None,
+            return_14d=None,
+            max_drawdown_after_selection=None,
+            max_runup_after_selection=None,
         )
+
+    def _build_risk_flags(self, analysis: Any) -> list[str]:
+        flags: list[str] = []
+        if analysis.location.overextended_flag:
+            flags.append("overextended")
+        if analysis.entry_gate.skip_reason:
+            flags.append(str(analysis.entry_gate.skip_reason))
+        if analysis.setup_interpretation.trend_state in {"damaged_trend", "weakening_trend"}:
+            flags.append("trend_weakening")
+        if analysis.entry_gate.volume_ratio_20 is not None and analysis.entry_gate.volume_ratio_20 < 1.0:
+            flags.append("weak_volume_confirmation")
+        return flags or ["normal_risk_profile"]
+
+    def _build_why_selected_text(
+        self,
+        *,
+        symbol: str,
+        category_tags: list[str],
+        setup_type: str,
+        trend_state: str,
+        score: float,
+        score_dynamics: str | None,
+        location: Any,
+        trigger_reason: str,
+        main_risk: str,
+    ) -> str:
+        categories = " + ".join(category_tags)
+        ema_structure = "above" if location.distance_to_ema200_pct >= 0 else "below"
+        dynamics = score_dynamics or "unknown"
+        return (
+            f"{symbol} selected because it appears in {categories}; setup={setup_type}; trend={trend_state}; "
+            f"score={score:.2f}; score_dynamics={dynamics}; price is {ema_structure} EMA200 "
+            f"({location.distance_to_ema200_pct:.2f}%); trigger={trigger_reason}; risk={main_risk}."
+        )
+
+    def _apply_daily_change_tracking(self, ranked: list[SymbolResult], previous_detail: DailyRunDetail | None) -> list[SymbolResult]:
+        if previous_detail is None:
+            return ranked
+        previous_map = {row.symbol: row for row in previous_detail.symbol_results}
+        updated: list[SymbolResult] = []
+        for row in ranked:
+            prev = previous_map.get(row.symbol)
+            if prev is None:
+                updated.append(
+                    row.model_copy(
+                        update={
+                            "daily_change": {
+                                "status": "new_candidate",
+                                "message": "New candidate",
+                            }
+                        }
+                    )
+                )
+                continue
+            prev_cats = sorted([str(x) for x in prev.category_tags])
+            curr_cats = sorted([str(x) for x in row.category_tags])
+            added = [x for x in curr_cats if x not in prev_cats]
+            removed = [x for x in prev_cats if x not in curr_cats]
+            rank_change = prev.merged_rank - row.merged_rank
+            score_delta = row.score - prev.score
+            message_parts = [
+                f"Rank {'improved' if rank_change > 0 else 'dropped' if rank_change < 0 else 'unchanged'} from {prev.merged_rank} to {row.merged_rank}",
+                f"Score changed {prev.score:.2f} -> {row.score:.2f} ({score_delta:+.2f})",
+            ]
+            if added:
+                message_parts.append(f"Added tags: {', '.join(added)}")
+            if removed:
+                message_parts.append(f"Removed tags: {', '.join(removed)}")
+            updated.append(
+                row.model_copy(
+                    update={
+                        "daily_change": {
+                            "status": "repeated_candidate",
+                            "previous_rank": prev.merged_rank,
+                            "current_rank": row.merged_rank,
+                            "rank_change": rank_change,
+                            "previous_score": prev.score,
+                            "current_score": row.score,
+                            "score_delta": score_delta,
+                            "previous_categories": prev_cats,
+                            "current_categories": curr_cats,
+                            "added_categories": added,
+                            "removed_categories": removed,
+                            "message": "; ".join(message_parts),
+                        }
+                    }
+                )
+            )
+        return updated
 
     def _ollama_generate(
         self,
@@ -839,9 +979,13 @@ class IntelligenceService:
         for row in rows_with_context:
             ctx = by_symbol.get(row.symbol)
             summary = ctx.summary if ctx else "No LLM context available."
+            daily_change = row.daily_change.get("message", "No previous run comparison")
+            structure = row.structure_snapshot
             prompt_parts.append(
                 f"- {row.symbol} | category={','.join([str(tag) for tag in row.category_tags])} | "
-                f"score={row.score:.2f} | trend={row.trend} | summary={summary}"
+                f"score={row.score:.2f} | setup={row.setup_type} | why_selected={row.why_selected} | "
+                f"structure_snapshot={json.dumps(structure)} | daily_change={daily_change} | "
+                f"risk_flags={','.join(row.risk_flags)} | llm_summary={summary}"
             )
         prompt = "\n".join(prompt_parts)
         try:
@@ -886,6 +1030,8 @@ class IntelligenceService:
             parsed = DailyRunDetail.model_validate(row)
             if parsed.run.date >= min_date:
                 result_rows.append(parsed)
+        readiness = self._compute_review_readiness()
+        deterministic_stats = self._compute_deterministic_review_stats(result_rows)
         if not result_rows:
             review = SystemReview(
                 id=str(uuid4()),
@@ -894,6 +1040,29 @@ class IntelligenceService:
                 mistakes="No data.",
                 missed_patterns="No data.",
                 recommendations="Run daily pipeline first.",
+                model=req.model,
+                status="generated",
+            )
+            rows = self._read_reviews()
+            rows.append(review)
+            self._save_reviews(rows)
+            return review
+
+        if not readiness.ready_for_28_day_review:
+            review = SystemReview(
+                id=str(uuid4()),
+                period=f"last_{req.days}d",
+                findings=(
+                    f"Review needs more historical runs. Current history: {readiness.unique_days} days. "
+                    "Target: 28 days."
+                ),
+                mistakes="Insufficient history for full confidence review.",
+                missed_patterns="Pending until more runs are collected.",
+                recommendations=(
+                    f"Continue daily runs. Days until 28-day review: {readiness.days_until_28_day_review}. "
+                    f"Deterministic stats so far: best_7d={deterministic_stats.best_category_by_7d}, "
+                    f"worst_7d={deterministic_stats.worst_category_by_7d}."
+                ),
                 model=req.model,
                 status="generated",
             )
@@ -926,6 +1095,7 @@ class IntelligenceService:
             "Schema:\n"
             '{"findings":[],"mistakes":[],"missed_patterns":[],"recommendations":[]}\n'
             f"Data window days: {req.days}\n"
+            f"Deterministic stats: {json.dumps(deterministic_stats.model_dump(mode='json'))}\n"
             f"Data: {json.dumps(perf_rows[:300])}\n"
         )
         try:
@@ -973,15 +1143,88 @@ class IntelligenceService:
         try:
             bundle = self.analysis_engine.data_service.get_market_data(symbol, market=market, period="1y")
             close = bundle.daily["close"].dropna().astype(float)
-            if len(close) < 8:
-                return {"1d": None, "3d": None, "7d": None}
+            if len(close) < 15:
+                return {"1d": None, "3d": None, "7d": None, "14d": None}
             return {
                 "1d": float((close.iloc[-1] / close.iloc[-2] - 1.0) * 100),
                 "3d": float((close.iloc[-1] / close.iloc[-4] - 1.0) * 100),
                 "7d": float((close.iloc[-1] / close.iloc[-8] - 1.0) * 100),
+                "14d": float((close.iloc[-1] / close.iloc[-15] - 1.0) * 100),
             }
         except Exception:
-            return {"1d": None, "3d": None, "7d": None}
+            return {"1d": None, "3d": None, "7d": None, "14d": None}
+
+    def _compute_review_readiness(self) -> ReviewReadiness:
+        runs = self._read_runs()
+        details = [DailyRunDetail.model_validate(row) for row in self._read_symbol_results()]
+        unique_days = len({run.date for run in runs})
+        symbols = {item.symbol for detail in details for item in detail.symbol_results}
+        days_until = max(0, 28 - unique_days)
+        ready = unique_days >= 28
+        msg = (
+            "Ready for 28-day review."
+            if ready
+            else f"Review needs more history. Current unique days: {unique_days}, target: 28."
+        )
+        return ReviewReadiness(
+            runs_collected=len(runs),
+            unique_days=unique_days,
+            symbols_tracked=len(symbols),
+            days_until_28_day_review=days_until,
+            ready_for_28_day_review=ready,
+            message=msg,
+        )
+
+    def _compute_deterministic_review_stats(self, details: list[DailyRunDetail]) -> DeterministicReviewStats:
+        if not details:
+            return DeterministicReviewStats()
+        rows: list[dict[str, Any]] = []
+        for detail in details:
+            for row in detail.symbol_results:
+                fwd = self._forward_returns(row.symbol, row.market.value)
+                rows.append(
+                    {
+                        "categories": [str(x) for x in row.category_tags],
+                        "setup_type": row.setup_type,
+                        "score": row.score,
+                        "ret7": fwd.get("7d"),
+                    }
+                )
+        cat_vals: dict[str, list[float]] = {}
+        setup_vals: dict[str, list[float]] = {}
+        repeated = 0
+        seen: set[str] = set()
+        strong_poor = 0
+        low_strong = 0
+        for row in rows:
+            ret7 = row["ret7"]
+            if ret7 is None:
+                continue
+            if row["score"] >= 80 and ret7 < 0:
+                strong_poor += 1
+            if row["score"] < 60 and ret7 > 0:
+                low_strong += 1
+            setup_vals.setdefault(str(row["setup_type"]), []).append(float(ret7))
+            for cat in row["categories"]:
+                cat_vals.setdefault(cat, []).append(float(ret7))
+            key = f"{row['setup_type']}|{','.join(sorted(row['categories']))}"
+            if key in seen:
+                repeated += 1
+            seen.add(key)
+        avg_cat = {k: (sum(v) / len(v)) for k, v in cat_vals.items() if v}
+        avg_setup = {k: round(sum(v) / len(v), 3) for k, v in setup_vals.items() if v}
+        best = max(avg_cat, key=avg_cat.get) if avg_cat else None
+        worst = min(avg_cat, key=avg_cat.get) if avg_cat else None
+        highest_false = worst
+        return DeterministicReviewStats(
+            best_category_by_7d=best,
+            worst_category_by_7d=worst,
+            highest_false_positive_group=highest_false,
+            repeated_candidates=repeated,
+            strong_score_poor_return=strong_poor,
+            low_score_strong_return=low_strong,
+            average_return_by_setup_type=avg_setup,
+        )
 
     def get_dashboard(self) -> IntelligenceDashboardResponse:
         self._finalize_stale_running_events()
@@ -996,6 +1239,7 @@ class IntelligenceService:
         contexts = self._read_contexts()
         briefings = self._read_briefings()
         reviews = self._read_reviews()
+        details = [DailyRunDetail.model_validate(row) for row in self._read_symbol_results()]
         return IntelligenceDashboardResponse(
             runs=sorted(runs, key=lambda row: row.timestamp, reverse=True),
             latest_run_results=latest_results,
@@ -1003,6 +1247,8 @@ class IntelligenceService:
             latest_briefing=briefings[-1] if briefings else None,
             latest_review=reviews[-1] if reviews else None,
             pipeline_events=sorted(self._slice_latest(self._read_pipeline_events(), limit=250), key=lambda row: row.timestamp, reverse=True),
+            review_readiness=self._compute_review_readiness(),
+            deterministic_review_stats=self._compute_deterministic_review_stats(details),
         )
 
     def get_run_report(self, run_id: str) -> IntelligenceRunReport:
@@ -1046,28 +1292,54 @@ class IntelligenceService:
 
     def export_run_report_markdown(self, run_id: str) -> IntelligenceRunReportExport:
         report = self.get_run_report(run_id)
+        readiness = self._compute_review_readiness()
         lines: list[str] = []
-        lines.append(f"# TradeGhost Intelligence Report - {report.run.date}")
+        lines.append(f"# TradeGhost Intelligence Journal - {report.run.date}")
         lines.append("")
+        lines.append("## 1. Run Summary")
         lines.append(f"- Run ID: `{report.run.id}`")
-        lines.append(f"- Symbols: `{report.run.symbols_count}`")
+        lines.append(f"- Date: `{report.run.date}`")
         lines.append(f"- Categories: `{', '.join([c.value if hasattr(c, 'value') else str(c) for c in report.run.scanner_categories])}`")
         lines.append(f"- Top N per category: `{report.run.top_n_per_category}`")
-        lines.append(f"- Raw before merge: `{report.run.raw_candidates_before_merge}`")
-        lines.append(f"- Final after merge: `{report.run.final_candidates_after_merge}`")
+        lines.append(f"- Raw candidates before merge: `{report.run.raw_candidates_before_merge}`")
+        lines.append(f"- Final candidates after merge: `{report.run.final_candidates_after_merge}`")
         lines.append("")
-        lines.append("## Candidates")
+        lines.append("## 2. Top Candidates")
         for row in report.symbol_results:
-            lines.append(f"- `{row.merged_rank}` {row.symbol} | score `{row.score:.2f}` | setup `{row.setup_type}` | tags `{', '.join([str(x) for x in row.category_tags])}`")
+            lines.append(f"### {row.merged_rank}. {row.symbol}")
+            lines.append(f"- Score: `{row.score:.2f}`")
+            lines.append(f"- Categories: `{', '.join([str(x) for x in row.category_tags])}`")
+            lines.append(f"- Setup Type: `{row.setup_type}`")
+            lines.append(f"- Why Selected: {row.why_selected}")
+            lines.append(f"- Structure Snapshot: `{json.dumps(row.structure_snapshot, default=str)}`")
+            lines.append(f"- Daily Change: `{json.dumps(row.daily_change, default=str)}`")
+            lines.append(f"- Risk Flags: `{', '.join(row.risk_flags)}`")
+            lines.append(f"- Forward Performance: 1D={row.return_1d if row.return_1d is not None else 'pending'}, 3D={row.return_3d if row.return_3d is not None else 'pending'}, 7D={row.return_7d if row.return_7d is not None else 'pending'}, 14D={row.return_14d if row.return_14d is not None else 'pending'}")
+            lines.append("")
         lines.append("")
-        lines.append("## Symbol Contexts")
+        lines.append("## 3. LLM Context")
         if not report.contexts:
             lines.append("- No symbol contexts.")
         for ctx in report.contexts:
-            lines.append(f"- `{ctx.symbol}` status `{ctx.status}` | summary: {ctx.summary or ctx.error or '-'}")
+            lines.append(f"### {ctx.symbol} ({ctx.status})")
+            lines.append(f"- Bull case: {ctx.bull_case or '-'}")
+            lines.append(f"- Bear case: {ctx.bear_case or '-'}")
+            lines.append(f"- Risks: {ctx.risks or '-'}")
+            lines.append(f"- Summary: {ctx.summary or ctx.error or '-'}")
         lines.append("")
-        lines.append("## Daily Briefing")
+        lines.append("## 4. Daily Briefing")
         lines.append(report.briefing.summary_text if report.briefing else "No briefing.")
+        lines.append("")
+        lines.append("## 5. Forward Performance")
+        lines.append("- Captured fields: `price_at_selection`, `selection_date`, `return_1d`, `return_3d`, `return_7d`, `return_14d`, `max_drawdown_after_selection`, `max_runup_after_selection`.")
+        lines.append("- Pending values remain `pending` until enough post-selection bars are available.")
+        lines.append("")
+        lines.append("## 6. Review Readiness")
+        lines.append(f"- Runs collected: `{readiness.runs_collected}`")
+        lines.append(f"- Unique days: `{readiness.unique_days}`")
+        lines.append(f"- Symbols tracked: `{readiness.symbols_tracked}`")
+        lines.append(f"- Days until 28-day review: `{readiness.days_until_28_day_review}`")
+        lines.append(f"- Status: `{readiness.message}`")
         lines.append("")
         lines.append("## System Review")
         if report.review:

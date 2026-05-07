@@ -32,6 +32,10 @@ from tradeghost.shared.models.schemas import (
     DailyBriefing,
     DailyBriefingRequest,
     DailyPipelineRequest,
+    IntelligenceReviewApproval,
+    IntelligenceReviewApprovalRequest,
+    IntelligenceRunReport,
+    IntelligenceRunReportExport,
     IntelligenceDashboardResponse,
     IntelligenceRunResponse,
     LLMConnectionStatus,
@@ -538,6 +542,36 @@ def generate_daily_briefing(payload: DailyBriefingRequest) -> DailyBriefing:
 def run_system_review(payload: SystemReviewRequest) -> SystemReview:
     try:
         return intelligence_service.run_system_review(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/report/{run_id}", response_model=IntelligenceRunReport)
+def get_intelligence_run_report(run_id: str) -> IntelligenceRunReport:
+    try:
+        return intelligence_service.get_run_report(run_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/report/{run_id}/export", response_model=IntelligenceRunReportExport)
+def export_intelligence_run_report(run_id: str) -> IntelligenceRunReportExport:
+    try:
+        return intelligence_service.export_run_report_markdown(run_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/report/approve", response_model=IntelligenceReviewApproval)
+def approve_intelligence_run_report(payload: IntelligenceReviewApprovalRequest) -> IntelligenceReviewApproval:
+    try:
+        return intelligence_service.approve_run_report(payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

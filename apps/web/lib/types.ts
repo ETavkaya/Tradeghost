@@ -883,6 +883,32 @@ export type SystemReview = {
   error: string | null;
 };
 
+export type IntelligenceReviewApproval = {
+  id: string;
+  run_id: string;
+  reviewer: string;
+  status: string;
+  notes: string;
+  created_at: string;
+};
+
+export type IntelligenceRunReport = {
+  run: DailyRun;
+  symbol_results: SymbolResult[];
+  contexts: SymbolContext[];
+  briefing: DailyBriefing | null;
+  review: SystemReview | null;
+  approval: IntelligenceReviewApproval | null;
+  llm_logs: LLMDebugLog[];
+  pipeline_events: PipelineDebugEvent[];
+};
+
+export type IntelligenceRunReportExport = {
+  run_id: string;
+  filename: string;
+  markdown: string;
+};
+
 export type IntelligenceRunResponse = {
   run: DailyRun;
   symbol_results: SymbolResult[];

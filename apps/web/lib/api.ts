@@ -12,6 +12,9 @@ import {
   AlertEvent,
   AlertProfileSuggestionResponse,
   DailyBriefing,
+  IntelligenceReviewApproval,
+  IntelligenceRunReport,
+  IntelligenceRunReportExport,
   IntelligenceDashboardResponse,
   IntelligenceRunResponse,
   LLMConnectionStatus,
@@ -239,6 +242,16 @@ export const api = {
     }),
   runSystemReview: (payload: Record<string, unknown>) =>
     fetchJson<SystemReview>("/api/intelligence/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
+  getIntelligenceRunReport: (runId: string) =>
+    fetchJson<IntelligenceRunReport>(`/api/intelligence/report/${encodeURIComponent(runId)}`),
+  exportIntelligenceRunReport: (runId: string) =>
+    fetchJson<IntelligenceRunReportExport>(`/api/intelligence/report/${encodeURIComponent(runId)}/export`),
+  approveIntelligenceRunReport: (payload: Record<string, unknown>) =>
+    fetchJson<IntelligenceReviewApproval>("/api/intelligence/report/approve", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)

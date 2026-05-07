@@ -23,6 +23,10 @@ from tradeghost.shared.models.schemas import (
     DailyRun,
     DailyRunDetail,
     IntelligenceDashboardResponse,
+    IntelligenceReviewApproval,
+    IntelligenceReviewApprovalRequest,
+    IntelligenceRunReport,
+    IntelligenceRunReportExport,
     IntelligenceRunResponse,
     LLMResponseTestRequest,
     LLMResponseTestResult,
@@ -55,6 +59,7 @@ class IntelligenceService:
         self.contexts_path = self.base_dir / "symbol_contexts.json"
         self.briefings_path = self.base_dir / "daily_briefings.json"
         self.reviews_path = self.base_dir / "system_reviews.json"
+        self.approvals_path = self.base_dir / "review_approvals.json"
         self.llm_logs_path = self.base_dir / "llm_calls.json"
         self.pipeline_logs_path = self.base_dir / "pipeline_events.json"
         self.analysis_engine = analysis_engine or AnalysisEngine()
@@ -187,6 +192,12 @@ class IntelligenceService:
 
     def _save_reviews(self, rows: list[SystemReview]) -> None:
         self._write_rows(self.reviews_path, [row.model_dump(mode="json") for row in rows])
+
+    def _read_approvals(self) -> list[IntelligenceReviewApproval]:
+        return [IntelligenceReviewApproval.model_validate(row) for row in self._read_rows(self.approvals_path)]
+
+    def _save_approvals(self, rows: list[IntelligenceReviewApproval]) -> None:
+        self._write_rows(self.approvals_path, [row.model_dump(mode="json") for row in rows])
 
     def _read_llm_logs(self) -> list[LLMDebugLog]:
         return [LLMDebugLog.model_validate(row) for row in self._read_rows(self.llm_logs_path)]
@@ -992,6 +1003,94 @@ class IntelligenceService:
             latest_briefing=briefings[-1] if briefings else None,
             latest_review=reviews[-1] if reviews else None,
             pipeline_events=sorted(self._slice_latest(self._read_pipeline_events(), limit=250), key=lambda row: row.timestamp, reverse=True),
+        )
+
+    def get_run_report(self, run_id: str) -> IntelligenceRunReport:
+        detail = self._get_run_detail(run_id)
+        contexts = [row for row in self._read_contexts() if row.run_id == run_id]
+        briefings = [row for row in self._read_briefings() if row.date == detail.run.date]
+        reviews = self._read_reviews()
+        approvals = [row for row in self._read_approvals() if row.run_id == run_id]
+        llm_logs = [row for row in self._read_llm_logs() if (row.symbol in {x.symbol for x in detail.symbol_results} or row.call_type in {"daily_briefing", "system_review"})]
+        pipeline_events = [row for row in self._read_pipeline_events() if row.run_id == run_id]
+        return IntelligenceRunReport(
+            run=detail.run,
+            symbol_results=detail.symbol_results,
+            contexts=sorted(contexts, key=lambda row: row.symbol),
+            briefing=briefings[-1] if briefings else None,
+            review=reviews[-1] if reviews else None,
+            approval=approvals[-1] if approvals else None,
+            llm_logs=sorted(llm_logs, key=lambda row: row.timestamp, reverse=True)[:300],
+            pipeline_events=sorted(pipeline_events, key=lambda row: row.timestamp, reverse=True),
+        )
+
+    def approve_run_report(self, req: IntelligenceReviewApprovalRequest) -> IntelligenceReviewApproval:
+        _ = self._get_run_detail(req.run_id)
+        approval = IntelligenceReviewApproval(
+            id=str(uuid4()),
+            run_id=req.run_id,
+            reviewer=req.reviewer.strip() or "operator",
+            status=req.status.strip() or "approved",
+            notes=req.notes.strip(),
+        )
+        rows = self._read_approvals()
+        rows.append(approval)
+        self._save_approvals(rows)
+        self._append_pipeline_event(
+            step_name="run_report_approval",
+            status="success",
+            run_id=req.run_id,
+            message=f"reviewer={approval.reviewer} status={approval.status}",
+        )
+        return approval
+
+    def export_run_report_markdown(self, run_id: str) -> IntelligenceRunReportExport:
+        report = self.get_run_report(run_id)
+        lines: list[str] = []
+        lines.append(f"# TradeGhost Intelligence Report - {report.run.date}")
+        lines.append("")
+        lines.append(f"- Run ID: `{report.run.id}`")
+        lines.append(f"- Symbols: `{report.run.symbols_count}`")
+        lines.append(f"- Categories: `{', '.join([c.value if hasattr(c, 'value') else str(c) for c in report.run.scanner_categories])}`")
+        lines.append(f"- Top N per category: `{report.run.top_n_per_category}`")
+        lines.append(f"- Raw before merge: `{report.run.raw_candidates_before_merge}`")
+        lines.append(f"- Final after merge: `{report.run.final_candidates_after_merge}`")
+        lines.append("")
+        lines.append("## Candidates")
+        for row in report.symbol_results:
+            lines.append(f"- `{row.merged_rank}` {row.symbol} | score `{row.score:.2f}` | setup `{row.setup_type}` | tags `{', '.join([str(x) for x in row.category_tags])}`")
+        lines.append("")
+        lines.append("## Symbol Contexts")
+        if not report.contexts:
+            lines.append("- No symbol contexts.")
+        for ctx in report.contexts:
+            lines.append(f"- `{ctx.symbol}` status `{ctx.status}` | summary: {ctx.summary or ctx.error or '-'}")
+        lines.append("")
+        lines.append("## Daily Briefing")
+        lines.append(report.briefing.summary_text if report.briefing else "No briefing.")
+        lines.append("")
+        lines.append("## System Review")
+        if report.review:
+            lines.append(f"- Findings: {report.review.findings}")
+            lines.append(f"- Mistakes: {report.review.mistakes}")
+            lines.append(f"- Missed Patterns: {report.review.missed_patterns}")
+            lines.append(f"- Recommendations: {report.review.recommendations}")
+        else:
+            lines.append("No review.")
+        lines.append("")
+        lines.append("## Approval")
+        if report.approval:
+            lines.append(f"- Status: `{report.approval.status}`")
+            lines.append(f"- Reviewer: `{report.approval.reviewer}`")
+            lines.append(f"- Notes: {report.approval.notes or '-'}")
+            lines.append(f"- Time: `{report.approval.created_at.isoformat()}`")
+        else:
+            lines.append("- Not approved yet.")
+        markdown = "\n".join(lines).strip() + "\n"
+        return IntelligenceRunReportExport(
+            run_id=run_id,
+            filename=f"tradeghost-intelligence-report-{report.run.date}-{run_id[:8]}.md",
+            markdown=markdown,
         )
 
     def get_llm_logs(self, limit: int = 200) -> list[LLMDebugLog]:

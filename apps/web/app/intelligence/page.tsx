@@ -4,6 +4,7 @@ import { Fragment, useEffect, useState } from "react";
 import { Panel, SectionTitle, StatCard } from "@/components/ui";
 import { api } from "@/lib/api";
 import {
+  IntelligenceRunReport,
   IntelligenceDashboardResponse,
   LLMDebugLog,
   LLMConnectionStatus,
@@ -47,6 +48,9 @@ export default function IntelligencePage() {
   const [pipelineEvents, setPipelineEvents] = useState<PipelineDebugEvent[]>([]);
   const [expandedLogIds, setExpandedLogIds] = useState<Record<string, boolean>>({});
   const [backendConnected, setBackendConnected] = useState(false);
+  const [runReport, setRunReport] = useState<IntelligenceRunReport | null>(null);
+  const [reviewer, setReviewer] = useState("operator");
+  const [approvalNotes, setApprovalNotes] = useState("");
 
   const formatError = (err: unknown, stage: string): string => {
     if (!(err instanceof Error)) return `${stage} failed.`;
@@ -101,6 +105,10 @@ export default function IntelligencePage() {
     }, 2500);
     return () => clearInterval(t);
   }, [showLLMConsole, loading]);
+
+  useEffect(() => {
+    void loadRunReport();
+  }, [dashboard?.runs?.[0]?.id]);
 
   const latestRun = dashboard?.runs?.[0] ?? null;
   const activeModel = llmStatus?.model_used ?? "llama3.2:3b";
@@ -240,6 +248,53 @@ export default function IntelligencePage() {
     }
   };
 
+  const loadRunReport = async () => {
+    if (!latestRun) return;
+    try {
+      const report = await api.getIntelligenceRunReport(latestRun.id);
+      setRunReport(report);
+    } catch {
+      setRunReport(null);
+    }
+  };
+
+  const exportRunReport = async () => {
+    if (!latestRun) return;
+    setError(null);
+    try {
+      const report = await api.exportIntelligenceRunReport(latestRun.id);
+      const blob = new Blob([report.markdown], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = report.filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setNotice(`Report exported: ${report.filename}`);
+    } catch (err) {
+      setError(formatError(err, "Export report"));
+    }
+  };
+
+  const approveReview = async () => {
+    if (!latestRun) return;
+    setError(null);
+    try {
+      await api.approveIntelligenceRunReport({
+        run_id: latestRun.id,
+        reviewer,
+        status: "approved",
+        notes: approvalNotes,
+      });
+      setNotice("Review approved and saved.");
+      await Promise.all([load(), loadRunReport()]);
+    } catch (err) {
+      setError(formatError(err, "Approve review"));
+    }
+  };
+
   const toggleCategory = (category: ScannerCategory) => {
     setCategories((prev) => (prev.includes(category) ? prev.filter((x) => x !== category) : [...prev, category]));
   };
@@ -340,6 +395,8 @@ export default function IntelligencePage() {
           <p className="text-xs text-slate-400">Summarises generated symbol contexts into one daily advisory report.</p>
           <button type="button" onClick={runReview} disabled={loading || !canRunReview} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Run System Review</button>
           <p className="text-xs text-slate-400">Reviews stored daily runs and forward performance over the selected period.</p>
+          <button type="button" onClick={exportRunReport} disabled={loading || !latestRun} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Export Report</button>
+          <p className="text-xs text-slate-400">Exports a markdown report for external review/approval tracking.</p>
         </div>
 
         {!canRunContexts ? <p className="mt-2 text-xs text-slate-400">Generate Symbol Contexts requires a completed Daily Run and reachable Ollama.</p> : null}
@@ -521,6 +578,21 @@ export default function IntelligencePage() {
         ) : (
           <p className="text-sm text-slate-300">No review generated yet.</p>
         )}
+      </Panel>
+
+      <Panel>
+        <SectionTitle title="Review Approval" subtitle="Approve/reject latest run after checking LLM outputs" />
+        <div className="grid gap-3 md:grid-cols-3 text-xs">
+          <label>Reviewer<input value={reviewer} onChange={(e) => setReviewer(e.target.value)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
+          <label className="md:col-span-2">Notes<input value={approvalNotes} onChange={(e) => setApprovalNotes(e.target.value)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" placeholder="Approval notes" /></label>
+        </div>
+        <div className="mt-3 flex gap-2">
+          <button type="button" onClick={approveReview} disabled={loading || !latestRun} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Approve Review</button>
+          <button type="button" onClick={loadRunReport} disabled={loading || !latestRun} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Refresh Report</button>
+        </div>
+        <p className="mt-2 text-xs text-slate-300">
+          Approval: {runReport?.approval ? `${runReport.approval.status} by ${runReport.approval.reviewer} at ${new Date(runReport.approval.created_at).toLocaleString()}` : "not approved yet"}
+        </p>
       </Panel>
     </main>
   );

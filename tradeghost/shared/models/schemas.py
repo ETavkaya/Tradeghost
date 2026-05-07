@@ -1148,6 +1148,39 @@ class SystemReviewRequest(BaseModel):
     timeout_seconds: float = Field(default=45.0, ge=5.0, le=300.0)
 
 
+class IntelligenceReviewApprovalRequest(BaseModel):
+    run_id: str
+    reviewer: str = "operator"
+    status: str = "approved"
+    notes: str = ""
+
+
+class IntelligenceReviewApproval(BaseModel):
+    id: str
+    run_id: str
+    reviewer: str
+    status: str
+    notes: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class IntelligenceRunReport(BaseModel):
+    run: DailyRun
+    symbol_results: list[SymbolResult] = Field(default_factory=list)
+    contexts: list[SymbolContext] = Field(default_factory=list)
+    briefing: DailyBriefing | None = None
+    review: SystemReview | None = None
+    approval: IntelligenceReviewApproval | None = None
+    llm_logs: list[LLMDebugLog] = Field(default_factory=list)
+    pipeline_events: list[PipelineDebugEvent] = Field(default_factory=list)
+
+
+class IntelligenceRunReportExport(BaseModel):
+    run_id: str
+    filename: str
+    markdown: str
+
+
 class IntelligenceRunResponse(BaseModel):
     run: DailyRun
     symbol_results: list[SymbolResult]

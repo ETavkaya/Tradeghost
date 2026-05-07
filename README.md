@@ -10,7 +10,6 @@ This MVP is intentionally focused on:
 - Product UI delivery via Next.js dashboard
 
 This version explicitly does **not** include:
-- LLM features
 - Broker execution
 - Live auto-trading
 
@@ -153,6 +152,17 @@ Default threshold:
 - `GET /health`
 - `GET /analyze-combined?ticker=TSLA&window=6m`
 - `POST /backtest-from-analysis`
+- Intelligence endpoints:
+  - `POST /intelligence/daily-pipeline`
+  - `POST /intelligence/symbol-contexts`
+  - `POST /intelligence/daily-briefing`
+  - `POST /intelligence/review`
+  - `GET /intelligence/report/{run_id}`
+  - `GET /intelligence/report/{run_id}/export`
+  - `POST /intelligence/report/approve`
+  - `GET /intelligence/llm/status`
+  - `GET /intelligence/llm/logs`
+  - `GET /intelligence/pipeline-events`
 - Legacy compatibility endpoints remain available:
   - `GET /analyze?ticker=TSLA`
   - `GET /score?ticker=TSLA`
@@ -163,7 +173,32 @@ Default threshold:
 
 - `Analysis`
 - `Backtest` (enabled after a successful analysis context is created)
+- `Intelligence` (deterministic daily pipeline + optional LLM context/review + report export/approval)
 - `Logic` (pipeline + mode + setup-status transparency page)
+
+## Intelligence Workflow
+
+TradeGhost Intelligence is split into two layers:
+
+1. Deterministic pipeline (always primary):
+- scanner by selected categories
+- top-N selection per category
+- merge + dedupe + multi-category boost
+- analysis snapshot + lightweight backtest summary
+
+2. Optional LLM layer (never opens trades / never changes config):
+- symbol context generation
+- daily briefing generation
+- system review generation
+
+### Report Export + Approval
+
+After a run, you can:
+- export a run report as markdown (`Export Report`)
+- review run-level LLM outputs and diagnostics
+- store explicit approval metadata (`Approve Review`) with reviewer + notes
+
+This makes review traceable for GPT/manual second-pass checks without changing deterministic engine behavior.
 
 ## Decision Log / Backtest Diagnostics
 

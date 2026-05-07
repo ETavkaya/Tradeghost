@@ -850,6 +850,7 @@ export type SymbolResult = {
 
 export type SymbolContext = {
   symbol: string;
+  run_id: string | null;
   date: string;
   bull_case: string;
   bear_case: string;

@@ -38,6 +38,9 @@ export default function IntelligencePage() {
   const [reviewDays, setReviewDays] = useState(28);
 
   const [showLLMConsole, setShowLLMConsole] = useState(false);
+  const [consoleTab, setConsoleTab] = useState<"pipeline" | "llm">("pipeline");
+  const [llmStatusFilter, setLlmStatusFilter] = useState<"all" | "success" | "fail">("all");
+  const [llmProviderFilter, setLlmProviderFilter] = useState<"all" | "groq" | "ollama">("all");
   const [llmStatus, setLLMStatus] = useState<LLMConnectionStatus | null>(null);
   const [llmTest, setLlmTest] = useState<LLMResponseTestResult | null>(null);
   const [llmLogs, setLLMLogs] = useState<LLMDebugLog[]>([]);
@@ -101,9 +104,8 @@ export default function IntelligencePage() {
 
   const latestRun = dashboard?.runs?.[0] ?? null;
   const activeModel = llmStatus?.model_used ?? "llama3.2:3b";
-  const latestRunDate = latestRun?.date ?? null;
-  const latestRunContextCount = latestRunDate
-    ? (dashboard?.latest_contexts ?? []).filter((row) => row.date === latestRunDate && row.status === "generated").length
+  const latestRunContextCount = latestRun
+    ? (dashboard?.latest_contexts ?? []).filter((row) => row.run_id === latestRun.id && row.status === "generated").length
     : 0;
 
   const canRunContexts = Boolean(latestRun) && Boolean(llmStatus?.connected);
@@ -112,6 +114,11 @@ export default function IntelligencePage() {
   const selectedCategoryCount = categories.length;
   const rawExpected = selectedCategoryCount * topNPerCategory;
   const autoFinalShortlistLimit = rawExpected;
+  const filteredLlmLogs = llmLogs.filter((row) => {
+    if (llmStatusFilter !== "all" && row.status !== llmStatusFilter) return false;
+    if (llmProviderFilter !== "all" && row.provider !== llmProviderFilter) return false;
+    return true;
+  });
 
   const runPipeline = async () => {
     setError(null);
@@ -351,82 +358,105 @@ export default function IntelligencePage() {
               Endpoint: {llmStatus.base_url} | Checked: {new Date(llmStatus.checked_at).toLocaleString()} | Status: {llmStatus.connected ? "connected" : `error: ${llmStatus.error ?? "unknown"}`}
             </p>
           ) : null}
-          <div className="mt-3 max-h-[260px] overflow-auto rounded-lg border border-stroke/70">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-stroke text-left text-slate-400">
-                  <th className="px-2 py-2">Time</th>
-                  <th className="px-2 py-2">Step</th>
-                  <th className="px-2 py-2">Status</th>
-                  <th className="px-2 py-2">Category</th>
-                  <th className="px-2 py-2">Symbol</th>
-                  <th className="px-2 py-2">Duration ms</th>
-                  <th className="px-2 py-2">Message</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pipelineEvents.map((row) => (
-                  <tr key={row.id} className={`border-b border-stroke/50 ${row.status === "failed" ? "bg-red/10" : ""}`}>
-                    <td className="px-2 py-2">{new Date(row.timestamp).toLocaleTimeString()}</td>
-                    <td className="px-2 py-2">{row.step_name}</td>
-                    <td className={`px-2 py-2 ${row.status === "failed" ? "text-red" : row.status === "success" ? "text-green" : "text-yellow-300"}`}>{row.status}</td>
-                    <td className="px-2 py-2">{row.category ?? "-"}</td>
-                    <td className="px-2 py-2">{row.symbol ?? "-"}</td>
-                    <td className="px-2 py-2">{row.duration_ms}</td>
-                    <td className="px-2 py-2">{row.error_message ?? row.message ?? "-"}</td>
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+            <button type="button" onClick={() => setConsoleTab("pipeline")} className={`rounded border px-2 py-1 ${consoleTab === "pipeline" ? "border-cyan/60 text-cyan" : "border-stroke text-slate-300"}`}>Pipeline Steps</button>
+            <button type="button" onClick={() => setConsoleTab("llm")} className={`rounded border px-2 py-1 ${consoleTab === "llm" ? "border-cyan/60 text-cyan" : "border-stroke text-slate-300"}`}>LLM Calls</button>
+            {consoleTab === "llm" ? (
+              <>
+                <select value={llmStatusFilter} onChange={(e) => setLlmStatusFilter(e.target.value as "all" | "success" | "fail")} className="h-8 rounded border border-stroke bg-bg px-2 text-xs">
+                  <option value="all">All Status</option>
+                  <option value="success">Success</option>
+                  <option value="fail">Fail</option>
+                </select>
+                <select value={llmProviderFilter} onChange={(e) => setLlmProviderFilter(e.target.value as "all" | "groq" | "ollama")} className="h-8 rounded border border-stroke bg-bg px-2 text-xs">
+                  <option value="all">All Providers</option>
+                  <option value="groq">Groq</option>
+                  <option value="ollama">Ollama</option>
+                </select>
+                <span className="text-slate-400">showing {filteredLlmLogs.length}/{llmLogs.length}</span>
+              </>
+            ) : null}
+          </div>
+
+          {consoleTab === "pipeline" ? (
+            <div className="mt-3 max-h-[460px] overflow-auto rounded-lg border border-stroke/70">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-stroke text-left text-slate-400">
+                    <th className="px-2 py-2">Time</th>
+                    <th className="px-2 py-2">Step</th>
+                    <th className="px-2 py-2">Status</th>
+                    <th className="px-2 py-2">Category</th>
+                    <th className="px-2 py-2">Symbol</th>
+                    <th className="px-2 py-2">Duration ms</th>
+                    <th className="px-2 py-2">Message</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="mt-3 max-h-[420px] overflow-auto rounded-lg border border-stroke/70">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-stroke text-left text-slate-400">
-                  <th className="px-2 py-2">Time</th>
-                  <th className="px-2 py-2">Symbol</th>
-                  <th className="px-2 py-2">Type</th>
-                  <th className="px-2 py-2">Provider</th>
-                  <th className="px-2 py-2">Model</th>
-                  <th className="px-2 py-2">Status</th>
-                  <th className="px-2 py-2">Fallback</th>
-                  <th className="px-2 py-2">Duration ms</th>
-                  <th className="px-2 py-2">Details</th>
-                </tr>
-              </thead>
-              <tbody>
-                {llmLogs.map((row) => (
-                  <Fragment key={row.id}>
-                    <tr className={`border-b border-stroke/50 ${row.status === "fail" ? "bg-red/10" : ""}`}>
+                </thead>
+                <tbody>
+                  {pipelineEvents.map((row) => (
+                    <tr key={row.id} className={`border-b border-stroke/50 ${row.status === "failed" ? "bg-red/10" : ""}`}>
                       <td className="px-2 py-2">{new Date(row.timestamp).toLocaleTimeString()}</td>
+                      <td className="px-2 py-2">{row.step_name}</td>
+                      <td className={`px-2 py-2 ${row.status === "failed" ? "text-red" : row.status === "success" ? "text-green" : "text-yellow-300"}`}>{row.status}</td>
+                      <td className="px-2 py-2">{row.category ?? "-"}</td>
                       <td className="px-2 py-2">{row.symbol ?? "-"}</td>
-                      <td className="px-2 py-2">{row.call_type}</td>
-                      <td className="px-2 py-2">{row.provider ?? "-"}</td>
-                      <td className="px-2 py-2">{row.model ?? "-"}</td>
-                      <td className={`px-2 py-2 ${row.status === "fail" ? "text-red" : "text-green"}`}>{row.status}</td>
-                      <td className="px-2 py-2">{row.fallback_used ? `yes (${row.fallback_provider ?? "-"})` : "no"}</td>
                       <td className="px-2 py-2">{row.duration_ms}</td>
-                      <td className="px-2 py-2"><button type="button" onClick={() => setExpandedLogIds((prev) => ({ ...prev, [row.id]: !prev[row.id] }))} className="rounded border border-stroke px-2 py-1 hover:text-cyan">{expandedLogIds[row.id] ? "Collapse" : "Expand"}</button></td>
+                      <td className="px-2 py-2">{row.error_message ?? row.message ?? "-"}</td>
                     </tr>
-                    {expandedLogIds[row.id] ? (
-                      <tr className="border-b border-stroke/40 bg-panelSoft/60">
-                        <td className="px-2 py-2 text-slate-300" colSpan={9}>
-                          {row.error_message ? <p className="mb-2 text-red">Error: {row.error_message}</p> : null}
-                          <p className="mb-2 text-slate-300">Endpoint: {row.endpoint}</p>
-                          <p className="font-semibold text-slate-200">Prompt</p>
-                          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{row.prompt}</pre>
-                          <p className="mt-2 font-semibold text-slate-200">Raw Response</p>
-                          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{row.raw_response ?? "-"}</pre>
-                          <p className="mt-2 font-semibold text-slate-200">Parsed/Used Output</p>
-                          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{JSON.stringify(row.parsed_output, null, 2)}</pre>
-                        </td>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="mt-3 max-h-[460px] overflow-auto rounded-lg border border-stroke/70">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-stroke text-left text-slate-400">
+                    <th className="px-2 py-2">Time</th>
+                    <th className="px-2 py-2">Symbol</th>
+                    <th className="px-2 py-2">Type</th>
+                    <th className="px-2 py-2">Provider</th>
+                    <th className="px-2 py-2">Model</th>
+                    <th className="px-2 py-2">Status</th>
+                    <th className="px-2 py-2">Fallback</th>
+                    <th className="px-2 py-2">Duration ms</th>
+                    <th className="px-2 py-2">Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredLlmLogs.map((row) => (
+                    <Fragment key={row.id}>
+                      <tr className={`border-b border-stroke/50 ${row.status === "fail" ? "bg-red/10" : ""}`}>
+                        <td className="px-2 py-2">{new Date(row.timestamp).toLocaleTimeString()}</td>
+                        <td className="px-2 py-2">{row.symbol ?? "-"}</td>
+                        <td className="px-2 py-2">{row.call_type}</td>
+                        <td className="px-2 py-2">{row.provider ?? "-"}</td>
+                        <td className="px-2 py-2">{row.model ?? "-"}</td>
+                        <td className={`px-2 py-2 ${row.status === "fail" ? "text-red" : "text-green"}`}>{row.status}</td>
+                        <td className="px-2 py-2">{row.fallback_used ? `yes (${row.fallback_provider ?? "-"})` : "no"}</td>
+                        <td className="px-2 py-2">{row.duration_ms}</td>
+                        <td className="px-2 py-2"><button type="button" onClick={() => setExpandedLogIds((prev) => ({ ...prev, [row.id]: !prev[row.id] }))} className="rounded border border-stroke px-2 py-1 hover:text-cyan">{expandedLogIds[row.id] ? "Collapse" : "Expand"}</button></td>
                       </tr>
-                    ) : null}
-                  </Fragment>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                      {expandedLogIds[row.id] ? (
+                        <tr className="border-b border-stroke/40 bg-panelSoft/60">
+                          <td className="px-2 py-2 text-slate-300" colSpan={9}>
+                            {row.error_message ? <p className="mb-2 text-red">Error: {row.error_message}</p> : null}
+                            <p className="mb-2 text-slate-300">Endpoint: {row.endpoint}</p>
+                            <p className="font-semibold text-slate-200">Prompt</p>
+                            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{row.prompt}</pre>
+                            <p className="mt-2 font-semibold text-slate-200">Raw Response</p>
+                            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{row.raw_response ?? "-"}</pre>
+                            <p className="mt-2 font-semibold text-slate-200">Parsed/Used Output</p>
+                            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{JSON.stringify(row.parsed_output, null, 2)}</pre>
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </Panel>
       ) : null}
 

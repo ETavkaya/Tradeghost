@@ -1070,6 +1070,7 @@ class DailyRunDetail(BaseModel):
 
 class SymbolContext(BaseModel):
     symbol: str
+    run_id: str | None = None
     date: date
     bull_case: str
     bear_case: str

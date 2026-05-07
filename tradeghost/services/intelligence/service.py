@@ -685,6 +685,7 @@ class IntelligenceService:
             )
             return SymbolContext(
                 symbol=row.symbol,
+                run_id=run_id,
                 date=date.today(),
                 bull_case=bull,
                 bear_case=bear,
@@ -704,6 +705,7 @@ class IntelligenceService:
             )
             return SymbolContext(
                 symbol=row.symbol,
+                run_id=run_id,
                 date=date.today(),
                 bull_case="",
                 bear_case="",
@@ -776,9 +778,36 @@ class IntelligenceService:
         )
 
     def generate_daily_briefing(self, req: DailyBriefingRequest) -> DailyBriefing:
+        briefing_started = datetime.now(UTC)
+        self._append_pipeline_event(
+            step_name="daily_briefing_started",
+            status="running",
+            run_id=req.run_id,
+            message=f"model={req.model} timeout={req.timeout_seconds}s",
+        )
         detail = self._get_run_detail(req.run_id)
-        by_symbol = {row.symbol: row for row in self._read_contexts() if row.date == detail.run.date}
+        by_symbol = {row.symbol: row for row in self._read_contexts() if row.run_id == req.run_id and row.status == "generated"}
         top_rows = sorted(detail.symbol_results, key=lambda row: row.score, reverse=True)[:10]
+        rows_with_context = [row for row in top_rows if row.symbol in by_symbol]
+        if not rows_with_context:
+            self._append_pipeline_event(
+                step_name="daily_briefing_completed",
+                status="failed",
+                run_id=req.run_id,
+                duration_ms=int((datetime.now(UTC) - briefing_started).total_seconds() * 1000),
+                error_message="no generated symbol contexts for this run_id",
+            )
+            briefing = DailyBriefing(
+                date=detail.run.date,
+                summary_text="Daily briefing skipped: no generated symbol contexts for this run.",
+                model=req.model,
+                status="failed",
+                error="no generated symbol contexts for run_id",
+            )
+            rows = self._read_briefings()
+            rows.append(briefing)
+            self._save_briefings(rows)
+            return briefing
         prompt_parts = [
             "You are preparing a deterministic market briefing.",
             "Do NOT give buy/sell advice.",
@@ -796,9 +825,9 @@ class IntelligenceService:
             )
         else:
             prompt_parts.append("Return three sections: Top opportunities, Key risks, Market tone summary.")
-        for row in top_rows:
+        for row in rows_with_context:
             ctx = by_symbol.get(row.symbol)
-            summary = ctx.summary if ctx and ctx.status == "generated" else "No LLM context available."
+            summary = ctx.summary if ctx else "No LLM context available."
             prompt_parts.append(
                 f"- {row.symbol} | category={','.join([str(tag) for tag in row.category_tags])} | "
                 f"score={row.score:.2f} | trend={row.trend} | summary={summary}"
@@ -812,6 +841,13 @@ class IntelligenceService:
                 call_type="daily_briefing",
             )
             briefing = DailyBriefing(date=detail.run.date, summary_text=text, model=req.model, status="generated")
+            self._append_pipeline_event(
+                step_name="daily_briefing_completed",
+                status="success",
+                run_id=req.run_id,
+                duration_ms=int((datetime.now(UTC) - briefing_started).total_seconds() * 1000),
+                message=f"symbols_used={len(rows_with_context)}",
+            )
         except (TimeoutError, URLError, RuntimeError, OSError, ValueError) as exc:
             briefing = DailyBriefing(
                 date=detail.run.date,
@@ -819,6 +855,13 @@ class IntelligenceService:
                 model=req.model,
                 status="failed",
                 error=str(exc),
+            )
+            self._append_pipeline_event(
+                step_name="daily_briefing_completed",
+                status="failed",
+                run_id=req.run_id,
+                duration_ms=int((datetime.now(UTC) - briefing_started).total_seconds() * 1000),
+                error_message=str(exc),
             )
         rows = self._read_briefings()
         rows.append(briefing)

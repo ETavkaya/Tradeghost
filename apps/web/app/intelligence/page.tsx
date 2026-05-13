@@ -49,6 +49,7 @@ export default function IntelligencePage() {
   const [llmLogs, setLLMLogs] = useState<LLMDebugLog[]>([]);
   const [pipelineEvents, setPipelineEvents] = useState<PipelineDebugEvent[]>([]);
   const [expandedLogIds, setExpandedLogIds] = useState<Record<string, boolean>>({});
+  const [expandedPipelineIds, setExpandedPipelineIds] = useState<Record<string, boolean>>({});
   const [backendConnected, setBackendConnected] = useState(false);
   const [runReport, setRunReport] = useState<IntelligenceRunReport | null>(null);
   const [reviewer, setReviewer] = useState("operator");
@@ -440,6 +441,24 @@ export default function IntelligencePage() {
       done ? "border-green/70 bg-green/20 text-green" : "border-stroke hover:text-cyan"
     }`;
 
+  const getRelatedLogForEvent = (event: PipelineDebugEvent): LLMDebugLog | null => {
+    const eventTs = new Date(event.timestamp).getTime();
+    const candidates = llmLogs.filter((log) => {
+      if (event.symbol && log.symbol && log.symbol !== event.symbol) return false;
+      const delta = Math.abs(new Date(log.timestamp).getTime() - eventTs);
+      if (delta > 45_000) return false;
+      if (event.step_name.includes("symbol_context") && !log.call_type.includes("symbol_context")) return false;
+      if (event.status === "failed" && log.status !== "fail") return false;
+      return true;
+    });
+    if (!candidates.length) return null;
+    return candidates.sort((a, b) => {
+      const da = Math.abs(new Date(a.timestamp).getTime() - eventTs);
+      const db = Math.abs(new Date(b.timestamp).getTime() - eventTs);
+      return da - db;
+    })[0];
+  };
+
   return (
     <main className="relative">
       <aside className="mb-4 xl:fixed xl:left-4 xl:top-44 xl:w-[208px] xl:z-20">
@@ -728,20 +747,59 @@ export default function IntelligencePage() {
                     <th className="px-2 py-2">Symbol</th>
                     <th className="px-2 py-2">Duration ms</th>
                     <th className="px-2 py-2">Message</th>
+                    <th className="px-2 py-2">Details</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {pipelineEvents.map((row) => (
-                    <tr key={row.id} className={`border-b border-stroke/50 ${row.status === "failed" ? "bg-red/10" : ""}`}>
-                      <td className="px-2 py-2">{new Date(row.timestamp).toLocaleTimeString()}</td>
-                      <td className="px-2 py-2">{row.step_name}</td>
-                      <td className={`px-2 py-2 ${row.status === "failed" ? "text-red" : row.status === "success" ? "text-green" : "text-yellow-300"}`}>{row.status}</td>
-                      <td className="px-2 py-2">{row.category ?? "-"}</td>
-                      <td className="px-2 py-2">{row.symbol ?? "-"}</td>
-                      <td className="px-2 py-2">{row.duration_ms}</td>
-                      <td className="px-2 py-2">{row.error_message ?? row.message ?? "-"}</td>
-                    </tr>
-                  ))}
+                  {pipelineEvents.map((row) => {
+                    const relatedLog = expandedPipelineIds[row.id] ? getRelatedLogForEvent(row) : null;
+                    return (
+                      <Fragment key={row.id}>
+                        <tr className={`border-b border-stroke/50 ${row.status === "failed" ? "bg-red/10" : ""}`}>
+                          <td className="px-2 py-2">{new Date(row.timestamp).toLocaleTimeString()}</td>
+                          <td className="px-2 py-2">{row.step_name}</td>
+                          <td className={`px-2 py-2 ${row.status === "failed" ? "text-red" : row.status === "success" ? "text-green" : "text-yellow-300"}`}>{row.status}</td>
+                          <td className="px-2 py-2">{row.category ?? "-"}</td>
+                          <td className="px-2 py-2">{row.symbol ?? "-"}</td>
+                          <td className="px-2 py-2">{row.duration_ms}</td>
+                          <td className="px-2 py-2">{row.error_message ?? row.message ?? "-"}</td>
+                          <td className="px-2 py-2">
+                            <button
+                              type="button"
+                              onClick={() => setExpandedPipelineIds((prev) => ({ ...prev, [row.id]: !prev[row.id] }))}
+                              className="rounded border border-stroke px-2 py-1 hover:text-cyan"
+                            >
+                              {expandedPipelineIds[row.id] ? "Collapse" : "Expand"}
+                            </button>
+                          </td>
+                        </tr>
+                        {expandedPipelineIds[row.id] ? (
+                          <tr className="border-b border-stroke/40 bg-panelSoft/60">
+                            <td className="px-2 py-2 text-slate-300" colSpan={8}>
+                              <p className="mb-1 text-slate-300">Full message</p>
+                              <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{row.error_message ?? row.message ?? "-"}</pre>
+                              {(row.error_message ?? "").includes("JSON") || (row.error_message ?? "").includes("Unterminated string") ? (
+                                <p className="mt-2 text-xs text-yellow-300">
+                                  Meaning: model output was not valid JSON text (usually an unclosed quote or malformed text fragment).
+                                </p>
+                              ) : null}
+                              {relatedLog ? (
+                                <div className="mt-3">
+                                  <p className="text-slate-200">Related LLM call: {relatedLog.provider ?? "-"} / {relatedLog.model ?? "-"}</p>
+                                  <p className="mt-1 text-slate-300">Prompt</p>
+                                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{relatedLog.prompt_preview ?? relatedLog.prompt}</pre>
+                                  <p className="mt-2 text-slate-300">Response</p>
+                                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{relatedLog.response_preview ?? relatedLog.raw_response ?? "-"}</pre>
+                                </div>
+                              ) : (
+                                <p className="mt-2 text-xs text-slate-400">No matching LLM log found for this pipeline event.</p>
+                              )}
+                            </td>
+                          </tr>
+                        ) : null}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

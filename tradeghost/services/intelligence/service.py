@@ -872,6 +872,35 @@ class IntelligenceService:
     def _estimate_tokens(self, prompt: str, response_text: str) -> int:
         return max(1, int((len(prompt) + len(response_text)) / 4))
 
+    @staticmethod
+    def _symbol_context_response_format() -> dict[str, Any]:
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "symbol_context_output",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "bull_case": {"type": "string"},
+                        "bear_case": {"type": "string"},
+                        "risk": {"type": "string"},
+                        "context": {"type": "string"},
+                        "confidence": {"type": "string"},
+                    },
+                    "required": ["bull_case", "bear_case", "risk", "context", "confidence"],
+                },
+            },
+        }
+
+    @staticmethod
+    def _explain_json_error(exc: json.JSONDecodeError) -> str:
+        return (
+            "Model returned broken JSON text (usually an unclosed quote or malformed comma). "
+            f"Raw parser error: {exc.msg} at line {exc.lineno}, column {exc.colno}."
+        )
+
     def _ollama_generate(
         self,
         *,
@@ -883,6 +912,7 @@ class IntelligenceService:
         parsed_output: dict[str, Any] | None = None,
         run_id: str | None = None,
         debug_stream: bool = False,
+        response_format: dict[str, Any] | None = None,
     ) -> str:
         started = datetime.now(UTC)
         primary_provider = self._normalize_provider(self.settings.llm_provider)
@@ -925,6 +955,7 @@ class IntelligenceService:
                                 options={
                                     "temperature": self.settings.ollama_temperature,
                                     "num_predict": self.settings.ollama_num_predict,
+                                    "response_format": response_format if response_format is not None else None,
                                 },
                             )
                             text, endpoint = result.raw_response, result.endpoint
@@ -1102,6 +1133,7 @@ class IntelligenceService:
                 symbol=row.symbol,
                 run_id=run_id,
                 debug_stream=debug_stream,
+                response_format=self._symbol_context_response_format() if short_context_mode else None,
             )
             bull = ""
             bear = ""
@@ -1115,9 +1147,13 @@ class IntelligenceService:
                     left = raw.find("{")
                     right = raw.rfind("}")
                     if left >= 0 and right > left:
-                        parsed_json = json.loads(raw[left : right + 1])
+                        try:
+                            parsed_json = json.loads(raw[left : right + 1])
+                        except json.JSONDecodeError as exc:
+                            raise RuntimeError(self._explain_json_error(exc)) from exc
                     else:
-                        raise
+                        exc = json.JSONDecodeError("No JSON object found in model output", raw, 0)
+                        raise RuntimeError(self._explain_json_error(exc)) from exc
                 bull = str(parsed_json.get("bull_case", "")).strip()
                 bear = str(parsed_json.get("bear_case", "")).strip()
                 risks = str(parsed_json.get("risk", parsed_json.get("risks", ""))).strip()

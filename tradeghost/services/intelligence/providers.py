@@ -58,6 +58,9 @@ class OpenAIProvider:
             "temperature": float(options.get("temperature", 0.1)),
             "max_tokens": int(options.get("num_predict", 120)),
         }
+        response_format = options.get("response_format")
+        if isinstance(response_format, dict) and response_format:
+            payload["response_format"] = response_format
         req = Request(
             url=endpoint,
             data=json.dumps(payload).encode("utf-8"),

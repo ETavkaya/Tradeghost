@@ -436,9 +436,9 @@ export default function IntelligencePage() {
     }`;
 
   return (
-    <main className="xl:grid xl:grid-cols-[240px_minmax(0,1fr)] xl:gap-4">
-      <aside className="mb-4 xl:mb-0">
-        <div className="xl:sticky xl:top-4 rounded-lg border border-stroke/70 bg-panel p-3">
+    <main className="relative">
+      <aside className="mb-4 xl:mb-0 xl:fixed xl:left-4 xl:top-[170px] xl:w-[240px] xl:z-30">
+        <div className="rounded-lg border border-stroke/70 bg-panel p-3">
           <p className="mb-2 text-xs font-semibold text-slate-300">Intelligence Menu</p>
           <div className="flex gap-2 overflow-x-auto xl:flex-col xl:overflow-visible">
             <button type="button" onClick={() => jumpTo("intelligence-layer")} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan whitespace-nowrap">Intelligence Layer</button>
@@ -452,7 +452,7 @@ export default function IntelligencePage() {
         </div>
       </aside>
 
-      <div className="space-y-4">
+      <div className="space-y-4 xl:pl-[268px]">
       <section id="intelligence-layer">
       <Panel>
         <SectionTitle title="Intelligence Layer" subtitle="Deterministic pipeline + optional LLM interpretation layer" />
@@ -597,9 +597,87 @@ export default function IntelligencePage() {
       </Panel>
       </section>
 
+      
+
+      <Panel>
+        <SectionTitle title="Daily Runs" subtitle="Deterministic scanner -> analysis -> lightweight backtest snapshots" />
+        <div className="max-h-[240px] overflow-auto rounded-lg border border-stroke/70">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 z-20 bg-bg"><tr className="border-b border-stroke text-left text-slate-400"><th className="px-2 py-2">Date</th><th className="px-2 py-2">Symbols</th><th className="px-2 py-2">Categories</th><th className="px-2 py-2">Top N / Cat</th><th className="px-2 py-2">Raw Before Merge</th><th className="px-2 py-2">Final After Merge</th><th className="px-2 py-2">Status</th></tr></thead>
+            <tbody>
+              {(dashboard?.runs ?? []).map((row) => (
+                <tr key={row.id} className="border-b border-stroke/50"><td className="px-2 py-2">{new Date(row.timestamp).toLocaleString()}</td><td className="px-2 py-2">{row.symbols_count}</td><td className="px-2 py-2">{row.scanner_categories.join(", ")}</td><td className="px-2 py-2">{row.top_n_per_category}</td><td className="px-2 py-2">{row.raw_candidates_before_merge}</td><td className="px-2 py-2">{row.final_candidates_after_merge}</td><td className="px-2 py-2">{row.status}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+
+      <section id="active-cohorts">
+      <Panel>
+        <SectionTitle title="Active Cohorts" subtitle="Follow-up Run tracks existing cohort symbols and forward performance" />
+        <div className="grid gap-3 text-xs">
+          <label>Selected Cohort
+            <select value={selectedCohortId} onChange={(e) => setSelectedCohortId(e.target.value)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm">
+              <option value="">Select cohort</option>
+              {(dashboard?.cohorts ?? []).map((row) => <option key={row.id} value={row.id}>{row.name} | {row.start_date} | {row.status}</option>)}
+            </select>
+          </label>
+          <div className="grid gap-3 xl:grid-cols-[280px_minmax(0,1fr)]">
+            <div className="rounded-lg border border-stroke/70 p-3">
+              <p className="mb-2 text-xs text-slate-400">Cohort Actions</p>
+              <div className="flex flex-col gap-2">
+                <button type="button" onClick={runCohortFollowup} disabled={loading || !canRunFollowup} className={actionButtonClass(followupDone || Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.followup))}>Run Follow-up for Selected Cohort</button>
+                <button type="button" onClick={() => runCohortContexts(false)} disabled={loading || !canRunCohortContexts} className={actionButtonClass(contextsDone || Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.contexts))}>Generate Cohort Symbol Contexts</button>
+                <button type="button" onClick={runCohortBriefing} disabled={loading || !canRunCohortBriefing} className={actionButtonClass(briefingDone || Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.briefing))}>Generate Cohort Briefing</button>
+                <button type="button" onClick={runCohortReview} disabled={loading || !canRunCohortReview} className={actionButtonClass(reviewDone)}>Review Selected Cohort</button>
+                <button type="button" onClick={exportCohortReport} disabled={loading || !selectedCohortId} className={actionButtonClass(exportDone)}>Export Cohort Report</button>
+                {showLLMConsole ? <button type="button" onClick={() => jumpTo("cohort-console")} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan">Jump to Console</button> : null}
+              </div>
+            </div>
+            <div className="mt-3 max-h-[340px] overflow-auto rounded-lg border border-stroke/70 xl:mt-0">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 z-20 bg-bg">
+                  <tr className="border-b border-stroke text-left text-slate-400">
+                    <th className="sticky left-0 z-10 bg-bg px-2 py-2">Symbol</th>
+                    <th className="px-2 py-2">Original Why Selected</th>
+                    <th className="px-2 py-2">Selected Score</th>
+                    <th className="px-2 py-2">Current Status</th>
+                    <th className="px-2 py-2">Forward Performance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(selectedCohortDetail?.candidates ?? []).map((row) => {
+                    const latest = (selectedCohortDetail?.snapshots ?? []).filter((x) => x.symbol === row.symbol).slice(-1)[0];
+                    return (
+                      <tr key={`${row.cohort_id}-${row.symbol}`} className="border-b border-stroke/50">
+                        <td className="sticky left-0 z-10 bg-bg px-2 py-2">{row.symbol}</td>
+                        <td className="px-2 py-2 min-w-[320px]">{row.selected_reason}</td>
+                        <td className="px-2 py-2">{row.selected_score.toFixed(2)}</td>
+                        <td className="px-2 py-2">{latest ? (latest.still_valid_candidate ? "valid" : `invalid (${latest.invalidation_reason ?? "n/a"})`) : "pending follow-up"}</td>
+                        <td className="px-2 py-2">1D:{latest?.return_1d ?? "pending"} 3D:{latest?.return_3d ?? "pending"} 7D:{latest?.return_7d ?? "pending"} 14D:{latest?.return_14d ?? "pending"} 28D:{latest?.return_28d ?? "pending"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        {cohortContextFailedSymbols.length > 0 ? (
+          <div className="mt-2 flex items-center gap-2 text-xs">
+            <span className="text-red">Failed symbols: {cohortContextFailedSymbols.join(", ")}</span>
+            <button type="button" onClick={() => runCohortContexts(true)} disabled={loading || !canRunCohortContexts} className="rounded border border-stroke px-2 py-1 hover:text-cyan disabled:opacity-60">Retry Failed Symbols</button>
+          </div>
+        ) : null}
+        {cohortReview ? <p className="mt-2 text-xs text-slate-300">{cohortReview.readiness_message}</p> : null}
+      </Panel>
+      </section>
+
       {showLLMConsole ? (
+        <section id="cohort-console">
         <Panel>
-          <SectionTitle title="Pipeline / LLM Console" subtitle="Live pipeline steps + Ollama request/response inspection" />
+          <SectionTitle title="Pipeline / LLM Console" subtitle="Placed near Active Cohorts for follow-up/context runs" />
           {llmStatus ? (
             <p className="text-xs text-slate-400">
               Endpoint: {llmStatus.base_url} | Checked: {new Date(llmStatus.checked_at).toLocaleString()} | Status: {llmStatus.connected ? "connected" : `error: ${llmStatus.error ?? "unknown"}`}
@@ -705,81 +783,8 @@ export default function IntelligencePage() {
             </div>
           )}
         </Panel>
+        </section>
       ) : null}
-
-      <Panel>
-        <SectionTitle title="Daily Runs" subtitle="Deterministic scanner -> analysis -> lightweight backtest snapshots" />
-        <div className="max-h-[240px] overflow-auto rounded-lg border border-stroke/70">
-          <table className="w-full text-xs">
-            <thead className="sticky top-0 z-20 bg-bg"><tr className="border-b border-stroke text-left text-slate-400"><th className="px-2 py-2">Date</th><th className="px-2 py-2">Symbols</th><th className="px-2 py-2">Categories</th><th className="px-2 py-2">Top N / Cat</th><th className="px-2 py-2">Raw Before Merge</th><th className="px-2 py-2">Final After Merge</th><th className="px-2 py-2">Status</th></tr></thead>
-            <tbody>
-              {(dashboard?.runs ?? []).map((row) => (
-                <tr key={row.id} className="border-b border-stroke/50"><td className="px-2 py-2">{new Date(row.timestamp).toLocaleString()}</td><td className="px-2 py-2">{row.symbols_count}</td><td className="px-2 py-2">{row.scanner_categories.join(", ")}</td><td className="px-2 py-2">{row.top_n_per_category}</td><td className="px-2 py-2">{row.raw_candidates_before_merge}</td><td className="px-2 py-2">{row.final_candidates_after_merge}</td><td className="px-2 py-2">{row.status}</td></tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Panel>
-
-      <section id="active-cohorts">
-      <Panel>
-        <SectionTitle title="Active Cohorts" subtitle="Follow-up Run tracks existing cohort symbols and forward performance" />
-        <div className="grid gap-3 text-xs">
-          <label>Selected Cohort
-            <select value={selectedCohortId} onChange={(e) => setSelectedCohortId(e.target.value)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm">
-              <option value="">Select cohort</option>
-              {(dashboard?.cohorts ?? []).map((row) => <option key={row.id} value={row.id}>{row.name} | {row.start_date} | {row.status}</option>)}
-            </select>
-          </label>
-          <div className="grid gap-3 xl:grid-cols-[280px_minmax(0,1fr)]">
-            <div className="rounded-lg border border-stroke/70 p-3">
-              <p className="mb-2 text-xs text-slate-400">Cohort Actions</p>
-              <div className="flex flex-col gap-2">
-                <button type="button" onClick={runCohortFollowup} disabled={loading || !canRunFollowup} className={actionButtonClass(followupDone || Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.followup))}>Run Follow-up for Selected Cohort</button>
-                <button type="button" onClick={() => runCohortContexts(false)} disabled={loading || !canRunCohortContexts} className={actionButtonClass(contextsDone || Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.contexts))}>Generate Cohort Symbol Contexts</button>
-                <button type="button" onClick={runCohortBriefing} disabled={loading || !canRunCohortBriefing} className={actionButtonClass(briefingDone || Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.briefing))}>Generate Cohort Briefing</button>
-                <button type="button" onClick={runCohortReview} disabled={loading || !canRunCohortReview} className={actionButtonClass(reviewDone)}>Review Selected Cohort</button>
-                <button type="button" onClick={exportCohortReport} disabled={loading || !selectedCohortId} className={actionButtonClass(exportDone)}>Export Cohort Report</button>
-              </div>
-            </div>
-            <div className="mt-3 max-h-[340px] overflow-auto rounded-lg border border-stroke/70 xl:mt-0">
-              <table className="w-full text-xs">
-                <thead className="sticky top-0 z-20 bg-bg">
-                  <tr className="border-b border-stroke text-left text-slate-400">
-                    <th className="sticky left-0 z-10 bg-bg px-2 py-2">Symbol</th>
-                    <th className="px-2 py-2">Original Why Selected</th>
-                    <th className="px-2 py-2">Selected Score</th>
-                    <th className="px-2 py-2">Current Status</th>
-                    <th className="px-2 py-2">Forward Performance</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(selectedCohortDetail?.candidates ?? []).map((row) => {
-                    const latest = (selectedCohortDetail?.snapshots ?? []).filter((x) => x.symbol === row.symbol).slice(-1)[0];
-                    return (
-                      <tr key={`${row.cohort_id}-${row.symbol}`} className="border-b border-stroke/50">
-                        <td className="sticky left-0 z-10 bg-bg px-2 py-2">{row.symbol}</td>
-                        <td className="px-2 py-2 min-w-[320px]">{row.selected_reason}</td>
-                        <td className="px-2 py-2">{row.selected_score.toFixed(2)}</td>
-                        <td className="px-2 py-2">{latest ? (latest.still_valid_candidate ? "valid" : `invalid (${latest.invalidation_reason ?? "n/a"})`) : "pending follow-up"}</td>
-                        <td className="px-2 py-2">1D:{latest?.return_1d ?? "pending"} 3D:{latest?.return_3d ?? "pending"} 7D:{latest?.return_7d ?? "pending"} 14D:{latest?.return_14d ?? "pending"} 28D:{latest?.return_28d ?? "pending"}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-        {cohortContextFailedSymbols.length > 0 ? (
-          <div className="mt-2 flex items-center gap-2 text-xs">
-            <span className="text-red">Failed symbols: {cohortContextFailedSymbols.join(", ")}</span>
-            <button type="button" onClick={() => runCohortContexts(true)} disabled={loading || !canRunCohortContexts} className="rounded border border-stroke px-2 py-1 hover:text-cyan disabled:opacity-60">Retry Failed Symbols</button>
-          </div>
-        ) : null}
-        {cohortReview ? <p className="mt-2 text-xs text-slate-300">{cohortReview.readiness_message}</p> : null}
-      </Panel>
-      </section>
 
       <section id="candidates">
       <Panel>

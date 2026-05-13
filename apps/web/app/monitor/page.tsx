@@ -381,20 +381,23 @@ export default function MonitorPage() {
         <p className="mt-2 text-xs text-slate-400">Bounded safeguards: explicit interval, max symbols per batch, runtime timeout, and partial run notes.</p>
       </Panel>
 
-      <div className="grid gap-4 lg:grid-cols-[300px_1fr]">
-        <Panel className="h-fit">
-          <SectionTitle title="Monitor Navigation" subtitle="Persistent tracking workspace" />
-          <div className="grid gap-2">
-            <button type="button" onClick={() => setView("watchlists")} className={`rounded-md border px-3 py-2 text-left text-xs ${view === "watchlists" ? "border-cyan text-cyan" : "border-stroke text-slate-300"}`}>Watchlists ({watchlists.length})</button>
-            <button type="button" onClick={() => setView("rules")} className={`rounded-md border px-3 py-2 text-left text-xs ${view === "rules" ? "border-cyan text-cyan" : "border-stroke text-slate-300"}`}>Alert Rules ({enabledRules.length} active)</button>
-            <button type="button" onClick={() => setView("logs")} className={`rounded-md border px-3 py-2 text-left text-xs ${view === "logs" ? "border-cyan text-cyan" : "border-stroke text-slate-300"}`}>Alert Logs ({alerts.length})</button>
-          </div>
-          <div className="mt-3 space-y-2 rounded-lg border border-stroke/70 p-2">
-            {watchlists.map((wl) => <button key={wl.id} type="button" onClick={() => { setSelectedWatchlistId(wl.id); setView("watchlists"); }} className={`w-full rounded-md border px-2 py-2 text-left text-xs ${selectedWatchlistId === wl.id ? "border-cyan text-cyan" : "border-stroke text-slate-300"}`}>{wl.name} ({wl.items.length})</button>)}
-          </div>
-        </Panel>
+      <div className="relative">
+        <aside className="mb-4 xl:fixed xl:left-4 xl:top-44 xl:w-[300px] xl:z-20">
+          <Panel className="h-fit max-h-[calc(100vh-12rem)] overflow-auto">
+            <SectionTitle title="Monitor Navigation" subtitle="Persistent tracking workspace" />
+            <div className="grid gap-2">
+              <button type="button" onClick={() => setView("watchlists")} className={`rounded-md border px-3 py-2 text-left text-xs ${view === "watchlists" ? "border-cyan text-cyan" : "border-stroke text-slate-300"}`}>Watchlists ({watchlists.length})</button>
+              <button type="button" onClick={() => setView("rules")} className={`rounded-md border px-3 py-2 text-left text-xs ${view === "rules" ? "border-cyan text-cyan" : "border-stroke text-slate-300"}`}>Alert Rules ({enabledRules.length} active)</button>
+              <button type="button" onClick={() => setView("logs")} className={`rounded-md border px-3 py-2 text-left text-xs ${view === "logs" ? "border-cyan text-cyan" : "border-stroke text-slate-300"}`}>Alert Logs ({alerts.length})</button>
+            </div>
+            <div className="mt-3 space-y-2 rounded-lg border border-stroke/70 p-2">
+              {watchlists.map((wl) => <button key={wl.id} type="button" onClick={() => { setSelectedWatchlistId(wl.id); setView("watchlists"); }} className={`w-full rounded-md border px-2 py-2 text-left text-xs ${selectedWatchlistId === wl.id ? "border-cyan text-cyan" : "border-stroke text-slate-300"}`}>{wl.name} ({wl.items.length})</button>)}
+            </div>
+          </Panel>
+        </aside>
 
-        <Panel>
+        <div className="min-w-0 space-y-4">
+        <Panel className="min-w-0">
           {view === "watchlists" ? (
             <>
               <SectionTitle title="Watchlist Detail" subtitle="Tracked symbols and monitoring metrics" />
@@ -444,6 +447,7 @@ export default function MonitorPage() {
             </>
           ) : null}
         </Panel>
+        </div>
       </div>
     </main>
   );

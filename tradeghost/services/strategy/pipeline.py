@@ -98,6 +98,8 @@ def run_analysis_pipeline(
             "setup_type": setup_interpretation.setup_type,
             "prior_breakout_failed": setup_interpretation.prior_breakout_failed,
             "reclaim_attempt_count": setup_interpretation.reclaim_attempt_count,
+            "breakout_level": setup_interpretation.breakout_level,
+            "evidence_score": setup_interpretation.evidence_score,
             "second_attempt_breakout_candidate": setup_interpretation.second_attempt_breakout_candidate,
             "reasoning_tags": setup_interpretation.reasoning_tags,
         },

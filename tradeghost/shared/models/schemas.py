@@ -182,6 +182,8 @@ class SetupInterpretation(BaseModel):
     setup_type: str = "pullback"
     prior_breakout_failed: bool = False
     reclaim_attempt_count: int = 0
+    breakout_level: float | None = None
+    evidence_score: int = 0
     second_attempt_breakout_candidate: bool = False
     setup_status: str
     reasoning_tags: list[str] = Field(default_factory=list)
@@ -1042,16 +1044,27 @@ class SymbolResult(BaseModel):
     merged_rank: int = 0
     multi_category: bool = False
     priority_boost: float = 0.0
+    base_score: float = 0.0
+    category_boost: float = 0.0
+    final_score_raw: float = 0.0
+    final_score_capped: float = 0.0
     score: float
     trend: str
     ema_distances: dict[str, float] = Field(default_factory=dict)
     setup_type: str
+    candidate_type: str = "watch_candidate"
+    entry_readiness: str = "watch"
+    main_opportunity_reason: str = ""
+    main_risk_reason: str = ""
+    confirm_entry_condition: str = ""
+    invalidation_condition: str = ""
     analysis_snapshot: dict[str, Any] = Field(default_factory=dict)
     backtest_summary: SymbolBacktestSummary = Field(default_factory=SymbolBacktestSummary)
     why_selected: str = ""
     structure_snapshot: dict[str, Any] = Field(default_factory=dict)
     daily_change: dict[str, Any] = Field(default_factory=dict)
     risk_flags: list[str] = Field(default_factory=list)
+    data_quality_flags: list[str] = Field(default_factory=list)
     price_at_selection: float | None = None
     selection_date: date | None = None
     benchmark_symbol: str | None = None
@@ -1167,13 +1180,24 @@ class CohortCandidate(BaseModel):
     selected_price: float | None = None
     selected_rank: int
     selected_score: float
+    selected_base_score: float = 0.0
+    selected_category_boost: float = 0.0
+    selected_final_score_raw: float = 0.0
+    selected_final_score_capped: float = 0.0
     selected_categories: list[ScannerCategory] = Field(default_factory=list)
     selected_setup_type: str = ""
+    selected_candidate_type: str = "watch_candidate"
+    selected_entry_readiness: str = "watch"
     selected_trend_state: str = ""
     selected_score_dynamics: str | None = None
     selected_reason: str = ""
+    selected_main_opportunity_reason: str = ""
+    selected_main_risk_reason: str = ""
+    selected_confirm_entry_condition: str = ""
+    selected_invalidation_condition: str = ""
     selected_structure_snapshot: dict[str, Any] = Field(default_factory=dict)
     selected_risk_flags: list[str] = Field(default_factory=list)
+    selected_data_quality_flags: list[str] = Field(default_factory=list)
     original_context: SymbolContext | None = None
 
 
@@ -1196,8 +1220,10 @@ class CohortDailySnapshot(BaseModel):
     return_28d: float | None = None
     max_runup_since_selection: float | None = None
     max_drawdown_since_selection: float | None = None
-    still_valid_candidate: bool = True
+    still_valid_candidate: bool | None = None
+    validity_state: str = "pending_validation"
     invalidation_reason: str | None = None
+    data_quality_flags: list[str] = Field(default_factory=list)
     updated_context: SymbolContext | None = None
 
 
@@ -1279,6 +1305,8 @@ class CohortReviewStats(BaseModel):
     missed_follow_through: int = 0
     stayed_valid: int = 0
     invalidated_quickly: int = 0
+    pending_validation_count: int = 0
+    insufficient_data: bool = False
     score_delta_vs_return_note: str = ""
 
 

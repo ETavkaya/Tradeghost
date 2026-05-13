@@ -840,16 +840,27 @@ export type SymbolResult = {
   merged_rank: number;
   multi_category: boolean;
   priority_boost: number;
+  base_score: number;
+  category_boost: number;
+  final_score_raw: number;
+  final_score_capped: number;
   score: number;
   trend: string;
   ema_distances: Record<string, number>;
   setup_type: string;
+  candidate_type: string;
+  entry_readiness: string;
+  main_opportunity_reason: string;
+  main_risk_reason: string;
+  confirm_entry_condition: string;
+  invalidation_condition: string;
   analysis_snapshot: Record<string, unknown>;
   backtest_summary: SymbolBacktestSummary;
   why_selected: string;
   structure_snapshot: Record<string, unknown>;
   daily_change: Record<string, unknown>;
   risk_flags: string[];
+  data_quality_flags: string[];
   price_at_selection: number | null;
   selection_date: string | null;
   benchmark_symbol: string | null;
@@ -954,13 +965,24 @@ export type CohortCandidate = {
   selected_price: number | null;
   selected_rank: number;
   selected_score: number;
+  selected_base_score: number;
+  selected_category_boost: number;
+  selected_final_score_raw: number;
+  selected_final_score_capped: number;
   selected_categories: ScannerCategory[];
   selected_setup_type: string;
+  selected_candidate_type: string;
+  selected_entry_readiness: string;
   selected_trend_state: string;
   selected_score_dynamics: string | null;
   selected_reason: string;
+  selected_main_opportunity_reason: string;
+  selected_main_risk_reason: string;
+  selected_confirm_entry_condition: string;
+  selected_invalidation_condition: string;
   selected_structure_snapshot: Record<string, unknown>;
   selected_risk_flags: string[];
+  selected_data_quality_flags: string[];
 };
 
 export type CohortDailySnapshot = {
@@ -982,8 +1004,10 @@ export type CohortDailySnapshot = {
   return_28d: number | null;
   max_runup_since_selection: number | null;
   max_drawdown_since_selection: number | null;
-  still_valid_candidate: boolean;
+  still_valid_candidate: boolean | null;
+  validity_state: string;
   invalidation_reason: string | null;
+  data_quality_flags: string[];
 };
 
 export type CohortDetail = {
@@ -1015,6 +1039,8 @@ export type CohortReviewResponse = {
     missed_follow_through: number;
     stayed_valid: number;
     invalidated_quickly: number;
+    pending_validation_count: number;
+    insufficient_data: boolean;
     score_delta_vs_return_note: string;
   };
   llm_summary: string | null;

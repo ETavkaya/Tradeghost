@@ -250,22 +250,50 @@ def compute_indicator_snapshot(
     if len(local_close) >= 30:
         attempt_indices: list[int] = []
         failed_count = 0
+        failed_attempt_indices: list[int] = []
+        breakout_level: float | None = None
         for i in range(20, len(local_close)):
             prior_high = float(local_high.iloc[max(0, i - 20):i].max())
             if local_close.iloc[i] > prior_high:
                 attempt_indices.append(i)
+                breakout_level = prior_high
                 future_end = min(len(local_close), i + 8)
                 # Failed breakout if price falls back below prior breakout level quickly.
                 if future_end > i + 1 and float(local_close.iloc[i + 1:future_end].min()) < prior_high:
                     failed_count += 1
+                    failed_attempt_indices.append(i)
         prior_failed = failed_count > 0
         reclaim_attempt_count = len(attempt_indices)
-        second_attempt_breakout = prior_failed and reclaim_attempt_count >= 2 and bool(local_close.iloc[-1] >= local_close.iloc[-2])
+        pullback_seen = False
+        reclaimed_now = False
+        recent_attempt = False
+        if breakout_level is not None:
+            if failed_attempt_indices:
+                start_idx = max(0, failed_attempt_indices[-1] + 1)
+                pullback_window = local_close.iloc[start_idx:]
+                if not pullback_window.empty:
+                    pullback_seen = bool(float(pullback_window.min()) <= float(breakout_level) * 0.985)
+            reclaimed_now = bool(float(local_close.iloc[-1]) >= float(breakout_level) * 0.997)
+        if attempt_indices:
+            recent_attempt = (len(local_close) - 1 - attempt_indices[-1]) <= 15
+        evidence_score = int(prior_failed) + int(reclaim_attempt_count >= 2) + int(pullback_seen) + int(reclaimed_now) + int(recent_attempt)
+        second_attempt_breakout = (
+            prior_failed
+            and reclaim_attempt_count >= 2
+            and reclaimed_now
+            and evidence_score >= 4
+        )
         snapshot["prior_breakout_failed"] = bool(prior_failed)
         snapshot["reclaim_attempt_count"] = int(reclaim_attempt_count)
+        snapshot["breakout_level"] = float(breakout_level) if breakout_level is not None else None
+        snapshot["second_attempt_evidence_score"] = int(evidence_score)
+        snapshot["second_attempt_pullback_seen"] = bool(pullback_seen)
         snapshot["second_attempt_breakout_candidate"] = bool(second_attempt_breakout)
     else:
         snapshot["prior_breakout_failed"] = False
         snapshot["reclaim_attempt_count"] = 0
+        snapshot["breakout_level"] = None
+        snapshot["second_attempt_evidence_score"] = 0
+        snapshot["second_attempt_pullback_seen"] = False
         snapshot["second_attempt_breakout_candidate"] = False
     return snapshot

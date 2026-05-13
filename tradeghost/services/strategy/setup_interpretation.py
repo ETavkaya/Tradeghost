@@ -27,7 +27,17 @@ def classify_setup(
     transition_codes = {"ema200_reclaim_transition", "early_trend_rebuild", "post_regime_reclaim_watchlist"}
     prior_breakout_failed = bool(snapshot.get("prior_breakout_failed", False))
     reclaim_attempt_count = int(snapshot.get("reclaim_attempt_count", 0))
+    breakout_level_raw = snapshot.get("breakout_level")
+    breakout_level = float(breakout_level_raw) if breakout_level_raw is not None else None
+    evidence_score = int(snapshot.get("second_attempt_evidence_score", 0))
     second_attempt_breakout = bool(snapshot.get("second_attempt_breakout_candidate", False))
+    second_attempt_breakout = bool(
+        second_attempt_breakout
+        and prior_breakout_failed
+        and reclaim_attempt_count >= 2
+        and evidence_score >= 4
+        and trigger.trigger_state in {"pending", "confirmed"}
+    )
 
     if regime.regime_reason_code == "ema200_reclaim_transition":
         trend_state = "early_trend_transition"
@@ -100,6 +110,8 @@ def classify_setup(
         tags.append("ema200_reclaim_transition")
     if second_attempt_breakout:
         tags.append("second_attempt_breakout")
+    elif prior_breakout_failed and reclaim_attempt_count >= 2:
+        tags.append("second_attempt_breakout_weak_evidence")
     if prior_breakout_failed:
         tags.append("prior_breakout_failed")
 
@@ -110,6 +122,12 @@ def classify_setup(
         setup_type = "momentum_continuation"
     elif trend_state in {"early_trend_rebuild", "early_trend_transition"} and pullback_state in {"at_ema100", "at_ema50"}:
         setup_type = "value_rebuild"
+    elif setup_status in {"watchlist", "early_trend_transition"} and trend_state in {"bullish_trend", "weakening_trend"}:
+        setup_type = "momentum_watch"
+    elif setup_status in {"watchlist", "early_trend_transition"} and trend_state in {"early_trend_rebuild", "early_trend_transition"}:
+        setup_type = "value_rebuild_watch"
+    elif setup_status in {"watchlist", "early_trend_transition"} and trend_state in {"damaged_trend", "sideways"}:
+        setup_type = "trend_watch"
     elif setup_status in {"watchlist", "early_trend_transition"}:
         setup_type = "build_up"
 
@@ -123,6 +141,8 @@ def classify_setup(
         setup_type=setup_type,
         prior_breakout_failed=prior_breakout_failed,
         reclaim_attempt_count=reclaim_attempt_count,
+        breakout_level=breakout_level,
+        evidence_score=evidence_score,
         second_attempt_breakout_candidate=second_attempt_breakout,
         setup_status=setup_status,
         reasoning_tags=tags,

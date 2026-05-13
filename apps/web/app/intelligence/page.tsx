@@ -653,12 +653,22 @@ export default function IntelligencePage() {
                 <tbody>
                   {(selectedCohortDetail?.candidates ?? []).map((row) => {
                     const latest = (selectedCohortDetail?.snapshots ?? []).filter((x) => x.symbol === row.symbol).slice(-1)[0];
+                    const validity = latest?.validity_state
+                      ?? (latest?.still_valid_candidate === true ? "valid" : latest?.still_valid_candidate === false ? "invalid" : "pending_validation");
                     return (
                       <tr key={`${row.cohort_id}-${row.symbol}`} className="border-b border-stroke/50">
                         <td className="sticky left-0 z-10 bg-bg px-2 py-2">{row.symbol}</td>
                         <td className="px-2 py-2 min-w-[320px]">{row.selected_reason}</td>
                         <td className="px-2 py-2">{row.selected_score.toFixed(2)}</td>
-                        <td className="px-2 py-2">{latest ? (latest.still_valid_candidate ? "valid" : `invalid (${latest.invalidation_reason ?? "n/a"})`) : "pending follow-up"}</td>
+                        <td className="px-2 py-2">
+                          {!latest
+                            ? "pending follow-up"
+                            : validity === "pending_validation"
+                              ? "pending validation"
+                              : validity === "valid"
+                                ? "valid"
+                                : `invalid (${latest.invalidation_reason ?? "n/a"})`}
+                        </td>
                         <td className="px-2 py-2">1D:{latest?.return_1d ?? "pending"} 3D:{latest?.return_3d ?? "pending"} 7D:{latest?.return_7d ?? "pending"} 14D:{latest?.return_14d ?? "pending"} 28D:{latest?.return_28d ?? "pending"}</td>
                       </tr>
                     );

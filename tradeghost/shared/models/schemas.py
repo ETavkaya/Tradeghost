@@ -1084,6 +1084,8 @@ class DailyRunDetail(BaseModel):
 class SymbolContext(BaseModel):
     symbol: str
     run_id: str | None = None
+    cohort_id: str | None = None
+    selected_at: datetime | None = None
     date: date
     bull_case: str
     bear_case: str
@@ -1096,6 +1098,8 @@ class SymbolContext(BaseModel):
 
 class DailyBriefing(BaseModel):
     date: date
+    run_id: str | None = None
+    cohort_id: str | None = None
     summary_text: str
     model: str = "llama3.2:3b"
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -1226,6 +1230,25 @@ class CohortFollowupRequest(BaseModel):
     timeout_seconds: float = Field(default=120.0, ge=5.0, le=300.0)
 
 
+class CohortSymbolContextRequest(BaseModel):
+    cohort_id: str
+    context_symbol_limit: int = Field(default=10, ge=1, le=200)
+    max_concurrency: int = Field(default=1, ge=1, le=8)
+    timeout_seconds: float = Field(default=120.0, ge=5.0, le=300.0)
+    model: str = "llama3.2:3b"
+    sequential_mode: bool = True
+    short_context_mode: bool = True
+    debug_stream: bool = False
+    symbols: list[str] = Field(default_factory=list)
+
+
+class CohortBriefingRequest(BaseModel):
+    cohort_id: str
+    model: str = "llama3.2:3b"
+    timeout_seconds: float = Field(default=300.0, ge=5.0, le=300.0)
+    short_briefing_mode: bool = True
+
+
 class CohortReviewRequest(BaseModel):
     cohort_id: str | None = None
     days_required: int = Field(default=28, ge=7, le=365)
@@ -1337,6 +1360,7 @@ class SymbolContextBatchResponse(BaseModel):
     generated: int
     failed: int
     contexts: list[SymbolContext] = Field(default_factory=list)
+    failed_symbols: list[str] = Field(default_factory=list)
 
 
 class ReviewReadiness(BaseModel):

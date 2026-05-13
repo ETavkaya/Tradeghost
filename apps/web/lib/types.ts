@@ -864,6 +864,8 @@ export type SymbolResult = {
 export type SymbolContext = {
   symbol: string;
   run_id: string | null;
+  cohort_id: string | null;
+  selected_at: string | null;
   date: string;
   bull_case: string;
   bear_case: string;
@@ -876,6 +878,8 @@ export type SymbolContext = {
 
 export type DailyBriefing = {
   date: string;
+  run_id: string | null;
+  cohort_id: string | null;
   summary_text: string;
   model: string;
   generated_at: string;
@@ -1021,6 +1025,7 @@ export type SymbolContextBatchResponse = {
   generated: number;
   failed: number;
   contexts: SymbolContext[];
+  failed_symbols: string[];
 };
 
 export type IntelligenceDashboardResponse = {

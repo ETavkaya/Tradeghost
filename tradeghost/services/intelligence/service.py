@@ -24,6 +24,8 @@ from tradeghost.shared.models.schemas import (
     CohortDetail,
     CohortFollowupRequest,
     CohortFollowupResponse,
+    CohortSymbolContextRequest,
+    CohortBriefingRequest,
     CohortReviewRequest,
     CohortReviewResponse,
     CohortReviewStats,
@@ -1065,7 +1067,114 @@ class IntelligenceService:
             generated=len(contexts) - failed,
             failed=failed,
             contexts=sorted(contexts, key=lambda row: row.symbol),
+            failed_symbols=sorted([row.symbol for row in contexts if row.status != "generated"]),
         )
+
+    def generate_cohort_symbol_contexts(self, req: CohortSymbolContextRequest) -> SymbolContextBatchResponse:
+        detail = self.get_cohort_detail(req.cohort_id)
+        candidates = detail.candidates
+        if req.symbols:
+            selected = {s.upper() for s in req.symbols}
+            candidates = [row for row in candidates if row.symbol.upper() in selected]
+        candidates = candidates[: req.context_symbol_limit]
+        contexts: list[SymbolContext] = []
+        workers = 1 if req.sequential_mode else req.max_concurrency
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = []
+            for cand in candidates:
+                symbol_result = SymbolResult(
+                    symbol=cand.symbol,
+                    market=cand.market,
+                    category_tags=cand.selected_categories,
+                    score_by_category={},
+                    merged_rank=cand.selected_rank,
+                    multi_category=len(cand.selected_categories) > 1,
+                    priority_boost=0.0,
+                    score=cand.selected_score,
+                    trend=cand.selected_trend_state,
+                    ema_distances={},
+                    setup_type=cand.selected_setup_type,
+                    why_selected=cand.selected_reason,
+                    structure_snapshot=cand.selected_structure_snapshot,
+                    risk_flags=cand.selected_risk_flags,
+                )
+                futures.append(
+                    executor.submit(
+                        self._generate_single_symbol_context,
+                        symbol_result,
+                        model=req.model,
+                        timeout_seconds=req.timeout_seconds,
+                        short_context_mode=req.short_context_mode,
+                        run_id=req.cohort_id,
+                        debug_stream=req.debug_stream,
+                    )
+                )
+            for future, cand in zip(futures, candidates):
+                try:
+                    row = future.result()
+                except Exception as exc:  # pragma: no cover
+                    row = SymbolContext(
+                        symbol=cand.symbol,
+                        run_id=None,
+                        cohort_id=req.cohort_id,
+                        selected_at=cand.selected_at,
+                        date=date.today(),
+                        bull_case="",
+                        bear_case="",
+                        risks="",
+                        summary="",
+                        model=req.model,
+                        status="failed",
+                        error=str(exc),
+                    )
+                row = row.model_copy(update={"cohort_id": req.cohort_id, "selected_at": cand.selected_at, "run_id": None})
+                contexts.append(row)
+                stored = self._read_contexts()
+                stored.append(row)
+                self._save_contexts(stored)
+        failed = sum(1 for row in contexts if row.status != "generated")
+        return SymbolContextBatchResponse(
+            run_id=req.cohort_id,
+            generated=len(contexts) - failed,
+            failed=failed,
+            contexts=sorted(contexts, key=lambda row: row.symbol),
+            failed_symbols=sorted([row.symbol for row in contexts if row.status != "generated"]),
+        )
+
+    def generate_cohort_briefing(self, req: CohortBriefingRequest) -> DailyBriefing:
+        detail = self.get_cohort_detail(req.cohort_id)
+        by_symbol = {row.symbol: row for row in self._read_contexts() if row.cohort_id == req.cohort_id and row.status == "generated"}
+        if not by_symbol:
+            return DailyBriefing(
+                date=date.today(),
+                cohort_id=req.cohort_id,
+                summary_text="Cohort briefing skipped: no generated cohort symbol contexts.",
+                model=req.model,
+                status="failed",
+                error="no generated symbol contexts for cohort_id",
+            )
+        prompt_parts = [
+            "Use deterministic facts only. No buy/sell advice. Keep concise.",
+            "Sections: Top opportunities, Key risks, Notable cohort changes.",
+        ]
+        for cand in detail.candidates:
+            ctx = by_symbol.get(cand.symbol)
+            if not ctx:
+                continue
+            latest = [s for s in detail.snapshots if s.symbol == cand.symbol]
+            snap = latest[-1] if latest else None
+            prompt_parts.append(
+                f"- {cand.symbol} | why_selected={cand.selected_reason} | setup={cand.selected_setup_type} | "
+                f"score={cand.selected_score:.2f} | followup_7d={snap.return_7d if snap else 'pending'} | "
+                f"valid={snap.still_valid_candidate if snap else 'pending'} | risks={','.join(cand.selected_risk_flags)} | "
+                f"llm_summary={ctx.summary}"
+            )
+        text = self._ollama_generate(prompt="\n".join(prompt_parts), model=req.model, timeout_seconds=req.timeout_seconds, call_type="cohort_briefing")
+        briefing = DailyBriefing(date=date.today(), cohort_id=req.cohort_id, summary_text=text, model=req.model, status="generated")
+        rows = self._read_briefings()
+        rows.append(briefing)
+        self._save_briefings(rows)
+        return briefing
 
     def generate_daily_briefing(self, req: DailyBriefingRequest) -> DailyBriefing:
         briefing_started = datetime.now(UTC)

@@ -34,6 +34,8 @@ from tradeghost.shared.models.schemas import (
     CohortDetail,
     CohortFollowupRequest,
     CohortFollowupResponse,
+    CohortSymbolContextRequest,
+    CohortBriefingRequest,
     CohortReviewRequest,
     CohortReviewResponse,
     DiscoveryCreateCohortRequest,
@@ -548,6 +550,35 @@ def run_intelligence_cohort_followup(payload: CohortFollowupRequest) -> CohortFo
         return intelligence_service.run_cohort_followup(payload)
     except FileNotFoundError as exc:  # pragma: no cover
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/cohorts/symbol-contexts", response_model=SymbolContextBatchResponse)
+def generate_cohort_symbol_contexts(payload: CohortSymbolContextRequest) -> SymbolContextBatchResponse:
+    try:
+        return intelligence_service.generate_cohort_symbol_contexts(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "detail": "Cohort symbol context generation completed with failures." if "failed" in str(exc).lower() else "Cohort symbol context generation failed",
+                "failed_stage": "cohort_symbol_context_batch",
+                "failed_symbol": None,
+                "llm_provider": settings.llm_provider,
+                "llm_fallback_provider": settings.llm_fallback_provider,
+                "ollama_endpoint": settings.ollama_base_url,
+                "model": payload.model,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            },
+        ) from exc
+
+
+@app.post("/intelligence/cohorts/briefing", response_model=DailyBriefing)
+def generate_cohort_briefing(payload: CohortBriefingRequest) -> DailyBriefing:
+    try:
+        return intelligence_service.generate_cohort_briefing(payload)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

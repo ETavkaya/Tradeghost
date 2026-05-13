@@ -58,6 +58,8 @@ export default function IntelligencePage() {
   const [selectedCohortId, setSelectedCohortId] = useState<string>("");
   const [selectedCohortDetail, setSelectedCohortDetail] = useState<CohortDetail | null>(null);
   const [cohortReview, setCohortReview] = useState<CohortReviewResponse | null>(null);
+  const [cohortContextFailedSymbols, setCohortContextFailedSymbols] = useState<string[]>([]);
+  const [showLegacyActions, setShowLegacyActions] = useState(false);
 
   const formatError = (err: unknown, stage: string): string => {
     if (!(err instanceof Error)) return `${stage} failed.`;
@@ -138,12 +140,14 @@ export default function IntelligencePage() {
 
   const latestRun = dashboard?.runs?.[0] ?? null;
   const activeModel = llmStatus?.model_used ?? "llama3.2:3b";
-  const latestRunContextCount = latestRun
-    ? (dashboard?.latest_contexts ?? []).filter((row) => row.run_id === latestRun.id && row.status === "generated").length
-    : 0;
-
-  const canRunContexts = Boolean(latestRun) && Boolean(llmStatus?.connected);
-  const canRunBriefing = Boolean(latestRun) && latestRunContextCount > 0 && Boolean(llmStatus?.connected);
+  const cohortContexts = (dashboard?.latest_contexts ?? []).filter((row) => row.cohort_id === selectedCohortId);
+  const generatedCohortContextCount = cohortContexts.filter((row) => row.status === "generated").length;
+  const latestCohortSnapshotCount = selectedCohortDetail?.snapshots?.length ?? 0;
+  const canCreateCohort = Boolean(market && duration && categories.length > 0);
+  const canRunFollowup = Boolean(selectedCohortId);
+  const canRunCohortContexts = Boolean(selectedCohortId) && Boolean(llmStatus?.connected);
+  const canRunCohortBriefing = Boolean(selectedCohortId) && generatedCohortContextCount > 0 && Boolean(llmStatus?.connected);
+  const canRunCohortReview = Boolean(selectedCohortId) && latestCohortSnapshotCount > 0;
   const canRunReview = (dashboard?.runs.length ?? 0) > 0;
   const selectedCategoryCount = categories.length;
   const rawExpected = selectedCategoryCount * topNPerCategory;
@@ -257,17 +261,17 @@ export default function IntelligencePage() {
     }
   };
 
-  const runContexts = async () => {
-    if (!latestRun) {
-      setError("Run daily pipeline first.");
+  const runCohortContexts = async (retryFailedOnly = false) => {
+    if (!selectedCohortId) {
+      setError("Select cohort first.");
       return;
     }
     setError(null);
     setNotice(null);
     setLoading(true);
     try {
-      const response = await api.generateSymbolContexts({
-        run_id: latestRun.id,
+      const response = await api.generateCohortSymbolContexts({
+        cohort_id: selectedCohortId,
         context_symbol_limit: contextSymbolLimit,
         max_concurrency: llmConcurrency,
         timeout_seconds: contextTimeout,
@@ -275,35 +279,37 @@ export default function IntelligencePage() {
         sequential_mode: true,
         short_context_mode: true,
         debug_stream: liveStreamDebug,
+        symbols: retryFailedOnly ? cohortContextFailedSymbols : [],
       });
-      setNotice(`Symbol context completed: generated ${response.generated}, failed ${response.failed}.`);
+      setCohortContextFailedSymbols(response.failed_symbols ?? []);
+      setNotice(`Cohort contexts completed: generated ${response.generated}, failed ${response.failed}.${response.failed > 0 ? ` failed symbols: ${response.failed_symbols.join(", ")}` : ""}`);
       await load();
     } catch (err) {
-      setError(formatError(err, "Generate Symbol Contexts"));
+      setError(formatError(err, "Generate Cohort Symbol Contexts"));
     } finally {
       setLoading(false);
     }
   };
 
-  const runBriefing = async () => {
-    if (!latestRun) {
-      setError("Run daily pipeline first.");
+  const runCohortBriefing = async () => {
+    if (!selectedCohortId) {
+      setError("Select cohort first.");
       return;
     }
     setError(null);
     setNotice(null);
     setLoading(true);
     try {
-      const response = await api.generateDailyBriefing({
-        run_id: latestRun.id,
+      const response = await api.generateCohortBriefing({
+        cohort_id: selectedCohortId,
         model: activeModel,
         timeout_seconds: contextTimeout,
         short_briefing_mode: true,
       });
-      setNotice(`Daily briefing ${response.status === "generated" ? "generated" : "failed"}.`);
+      setNotice(`Cohort briefing ${response.status === "generated" ? "generated" : "failed"}.`);
       await load();
     } catch (err) {
-      setError(formatError(err, "Generate Daily Briefing"));
+      setError(formatError(err, "Generate Cohort Briefing"));
     } finally {
       setLoading(false);
     }
@@ -456,6 +462,32 @@ export default function IntelligencePage() {
       ) : null}
 
       <Panel>
+        <SectionTitle title="Workflow Steps" subtitle="Cohort-first workflow: deterministic path stays usable even if LLM fails" />
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4 text-xs">
+          <div className="rounded-lg border border-stroke/70 p-3">
+            <p className="font-semibold">Step 1: Create Candidate Cohort</p>
+            <p className="mt-1 text-slate-400">Finds new symbols and freezes why-selected snapshots.</p>
+            <p className="mt-2">Status: {canCreateCohort ? "ready" : "blocked"}</p>
+          </div>
+          <div className="rounded-lg border border-stroke/70 p-3">
+            <p className="font-semibold">Step 2: Run Follow-up</p>
+            <p className="mt-1 text-slate-400">Tracks same symbols only with score/price/performance updates.</p>
+            <p className="mt-2">Status: {canRunFollowup ? (latestCohortSnapshotCount > 0 ? "completed" : "ready") : "blocked"} {canRunFollowup ? "" : "(select cohort)"}</p>
+          </div>
+          <div className="rounded-lg border border-stroke/70 p-3">
+            <p className="font-semibold">Step 3: Generate Contexts (Optional)</p>
+            <p className="mt-1 text-slate-400">LLM commentary for cohort symbols only.</p>
+            <p className="mt-2">Status: {canRunCohortContexts ? (generatedCohortContextCount > 0 ? "completed" : "ready") : "blocked"} {canRunCohortContexts ? "" : "(LLM/cohort required)"}</p>
+          </div>
+          <div className="rounded-lg border border-stroke/70 p-3">
+            <p className="font-semibold">Step 4: Review Cohort</p>
+            <p className="mt-1 text-slate-400">Evaluates whether original selections worked.</p>
+            <p className="mt-2">Status: {canRunCohortReview ? "ready" : "blocked"} {canRunCohortReview ? "" : "(follow-up required)"}</p>
+          </div>
+        </div>
+      </Panel>
+
+      <Panel>
         <SectionTitle title="Discovery" subtitle="Discovery Run finds new candidates and creates an immutable Candidate Cohort snapshot" />
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 text-xs text-slate-300">
           <label>Market<select value={market} onChange={(e) => setMarket(e.target.value as MarketCode)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm"><option value="us">US</option><option value="bist">BIST</option></select></label>
@@ -497,23 +529,22 @@ export default function IntelligencePage() {
         ) : null}
 
         <div className="mt-3 grid gap-2 md:grid-cols-2">
-          <button type="button" onClick={createDiscoveryCohort} disabled={loading || !backendConnected} className="h-10 rounded-lg bg-cyan px-3 text-sm font-semibold text-bg disabled:opacity-60">{loading ? "Running..." : "Run Discovery / Create Cohort"}</button>
+          <button type="button" onClick={createDiscoveryCohort} disabled={loading || !backendConnected || !canCreateCohort} className="h-10 rounded-lg bg-cyan px-3 text-sm font-semibold text-bg disabled:opacity-60">{loading ? "Running..." : "Create New Candidate Cohort"}</button>
           <p className="text-xs text-slate-400">Runs scanner category-by-category, merges candidates, and stores immutable cohort candidate snapshots.</p>
-          <button type="button" onClick={runPipeline} disabled={loading || !backendConnected} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Legacy Daily Pipeline</button>
-          <p className="text-xs text-slate-400">Legacy path retained for compatibility, but review should use cohort follow-up.</p>
-          <button type="button" onClick={runContexts} disabled={loading || !canRunContexts} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Generate Symbol Contexts</button>
-          <p className="text-xs text-slate-400">Sends latest daily candidates to Ollama and generates bull/bear/risk summaries.</p>
-          <button type="button" onClick={runBriefing} disabled={loading || !canRunBriefing} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Generate Daily Briefing</button>
-          <p className="text-xs text-slate-400">Summarises generated symbol contexts into one daily advisory report.</p>
-          <button type="button" onClick={runReview} disabled={loading || !canRunReview} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Run System Review</button>
-          <p className="text-xs text-slate-400">Reviews stored daily runs and forward performance over the selected period.</p>
-          <button type="button" onClick={exportRunReport} disabled={loading || !latestRun} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Export Report</button>
-          <p className="text-xs text-slate-400">Exports a markdown report for external review/approval tracking.</p>
+          <button type="button" onClick={() => setShowLegacyActions((prev) => !prev)} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan">{showLegacyActions ? "Hide Legacy Actions" : "Show Legacy Actions"}</button>
+          <p className="text-xs text-slate-400">Legacy actions are available but hidden from the main cohort workflow.</p>
         </div>
 
-        {!canRunContexts ? <p className="mt-2 text-xs text-slate-400">Generate Symbol Contexts requires a completed Daily Run and reachable Ollama.</p> : null}
-        {!canRunBriefing ? <p className="mt-2 text-xs text-slate-400">Generate Daily Briefing requires generated symbol contexts for latest run and reachable Ollama.</p> : null}
-        {!canRunReview ? <p className="mt-2 text-xs text-slate-400">Run System Review requires stored historical runs.</p> : null}
+        {showLegacyActions ? (
+          <div className="mt-3 grid gap-2 md:grid-cols-2 rounded-lg border border-stroke/70 p-3">
+            <button type="button" onClick={runPipeline} disabled={loading || !backendConnected} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Legacy Daily Pipeline</button>
+            <p className="text-xs text-slate-400">Legacy run-level discovery path.</p>
+            <button type="button" onClick={runReview} disabled={loading || !canRunReview} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Run System Review (Legacy)</button>
+            <p className="text-xs text-slate-400">Legacy daily-run review.</p>
+            <button type="button" onClick={exportRunReport} disabled={loading || !latestRun} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Export Daily Run Report (Legacy)</button>
+            <p className="text-xs text-slate-400">Exports legacy run report format.</p>
+          </div>
+        ) : null}
 
         {notice ? <p className="mt-3 text-xs text-green">{notice}</p> : null}
         {error ? <p className="mt-3 text-xs text-red">{error}</p> : null}
@@ -653,17 +684,25 @@ export default function IntelligencePage() {
             </select>
           </label>
           <div className="flex items-end gap-2">
-            <button type="button" onClick={runCohortFollowup} disabled={loading || !selectedCohortId} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Run Follow-up</button>
+            <button type="button" onClick={runCohortFollowup} disabled={loading || !canRunFollowup} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Run Follow-up for Selected Cohort</button>
+            <button type="button" onClick={() => runCohortContexts(false)} disabled={loading || !canRunCohortContexts} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Generate Cohort Symbol Contexts</button>
+            <button type="button" onClick={runCohortBriefing} disabled={loading || !canRunCohortBriefing} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Generate Cohort Briefing</button>
             <button type="button" onClick={exportCohortReport} disabled={loading || !selectedCohortId} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Export Cohort Report</button>
-            <button type="button" onClick={runCohortReview} disabled={loading || !selectedCohortId} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Run Cohort Review</button>
+            <button type="button" onClick={runCohortReview} disabled={loading || !canRunCohortReview} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Review Selected Cohort</button>
           </div>
         </div>
+        {cohortContextFailedSymbols.length > 0 ? (
+          <div className="mt-2 flex items-center gap-2 text-xs">
+            <span className="text-red">Failed symbols: {cohortContextFailedSymbols.join(", ")}</span>
+            <button type="button" onClick={() => runCohortContexts(true)} disabled={loading || !canRunCohortContexts} className="rounded border border-stroke px-2 py-1 hover:text-cyan disabled:opacity-60">Retry Failed Symbols</button>
+          </div>
+        ) : null}
         {cohortReview ? <p className="mt-2 text-xs text-slate-300">{cohortReview.readiness_message}</p> : null}
         <div className="mt-3 max-h-[340px] overflow-auto rounded-lg border border-stroke/70">
           <table className="w-full text-xs">
             <thead className="sticky top-0 z-20 bg-bg">
               <tr className="border-b border-stroke text-left text-slate-400">
-                <th className="px-2 py-2">Symbol</th>
+                <th className="sticky left-0 z-10 bg-bg px-2 py-2">Symbol</th>
                 <th className="px-2 py-2">Original Why Selected</th>
                 <th className="px-2 py-2">Selected Score</th>
                 <th className="px-2 py-2">Current Status</th>
@@ -675,7 +714,7 @@ export default function IntelligencePage() {
                 const latest = (selectedCohortDetail?.snapshots ?? []).filter((x) => x.symbol === row.symbol).slice(-1)[0];
                 return (
                   <tr key={`${row.cohort_id}-${row.symbol}`} className="border-b border-stroke/50">
-                    <td className="px-2 py-2">{row.symbol}</td>
+                    <td className="sticky left-0 z-10 bg-bg px-2 py-2">{row.symbol}</td>
                     <td className="px-2 py-2 min-w-[320px]">{row.selected_reason}</td>
                     <td className="px-2 py-2">{row.selected_score.toFixed(2)}</td>
                     <td className="px-2 py-2">{latest ? (latest.still_valid_candidate ? "valid" : `invalid (${latest.invalidation_reason ?? "n/a"})`) : "pending follow-up"}</td>

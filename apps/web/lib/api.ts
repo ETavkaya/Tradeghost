@@ -255,6 +255,18 @@ export const api = {
     }),
   exportCohortReport: (cohortId: string) =>
     fetchJson<IntelligenceRunReportExport>(`/api/intelligence/cohorts/${encodeURIComponent(cohortId)}/export`),
+  generateCohortSymbolContexts: (payload: Record<string, unknown>) =>
+    fetchJson<SymbolContextBatchResponse>("/api/intelligence/cohorts/symbol-contexts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
+  generateCohortBriefing: (payload: Record<string, unknown>) =>
+    fetchJson<DailyBriefing>("/api/intelligence/cohorts/briefing", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
   generateSymbolContexts: (payload: Record<string, unknown>) =>
     fetchJson<SymbolContextBatchResponse>("/api/intelligence/symbol-contexts", {
       method: "POST",

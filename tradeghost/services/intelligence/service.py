@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from tradeghost.services.analysis_engine import AnalysisEngine
 from tradeghost.services.backtest.engine import BacktestEngine
-from tradeghost.services.intelligence.providers import GroqProvider, LLMProvider, OllamaProvider
+from tradeghost.services.intelligence.providers import LLMProvider, OllamaProvider, OpenAIProvider
 from tradeghost.services.scanner.engine import ScannerEngine
 from tradeghost.shared.config.settings import get_settings
 from tradeghost.shared.models.schemas import (
@@ -87,13 +87,13 @@ class IntelligenceService:
         self._llm_logs_lock = Lock()
         self._pipeline_logs_lock = Lock()
         self._providers: dict[str, LLMProvider] = {
-            "groq": GroqProvider(self.settings),
+            "openai": OpenAIProvider(self.settings),
             "ollama": OllamaProvider(self.settings),
         }
 
     def _normalize_provider(self, provider: str | None) -> str:
-        value = (provider or "ollama").strip().lower()
-        return value if value in {"ollama", "groq"} else "ollama"
+        value = (provider or "openai").strip().lower()
+        return value if value in {"ollama", "openai"} else "openai"
 
     def _ollama_generate_direct(
         self,
@@ -711,6 +711,9 @@ class IntelligenceService:
             )
         return updated
 
+    def _estimate_tokens(self, prompt: str, response_text: str) -> int:
+        return max(1, int((len(prompt) + len(response_text)) / 4))
+
     def _ollama_generate(
         self,
         *,
@@ -726,8 +729,8 @@ class IntelligenceService:
         started = datetime.now(UTC)
         primary_provider = self._normalize_provider(self.settings.llm_provider)
         fallback_provider = self._normalize_provider(self.settings.llm_fallback_provider)
-        primary_model = model or (self.settings.groq_model if primary_provider == "groq" else self.settings.ollama_model)
-        fallback_model = self.settings.ollama_model if fallback_provider == "ollama" else self.settings.groq_model
+        primary_model = model or (self.settings.openai_model if primary_provider == "openai" else self.settings.ollama_model)
+        fallback_model = self.settings.ollama_model if fallback_provider == "ollama" else self.settings.openai_model
         if not self.settings.intelligence_llm_enabled:
             err = "LLM layer is disabled by configuration."
             self._append_llm_log(
@@ -754,95 +757,107 @@ class IntelligenceService:
         try:
             for provider_name, provider_model, is_fallback in providers_to_try:
                 attempt_started = datetime.now(UTC)
-                try:
-                    if provider_name == "groq":
-                        result = self._providers["groq"].generate(
-                            prompt=prompt,
-                            model=provider_model,
-                            timeout_seconds=timeout_seconds,
-                            options={
-                                "temperature": self.settings.ollama_temperature,
-                                "num_predict": self.settings.ollama_num_predict,
-                            },
-                        )
-                        text, endpoint = result.raw_response, result.endpoint
-                        duration_ms = result.duration_ms
-                    else:
-                        if debug_stream:
-                            text, endpoint = self._ollama_generate_direct(
-                                prompt=prompt,
-                                model=provider_model,
-                                timeout_seconds=timeout_seconds,
-                                symbol=symbol,
-                                run_id=run_id,
-                                debug_stream=debug_stream,
-                            )
-                            duration_ms = int((datetime.now(UTC) - attempt_started).total_seconds() * 1000)
-                        else:
-                            result = self._providers["ollama"].generate(
+                for attempt_idx in range(2):
+                    try:
+                        if provider_name == "openai":
+                            result = self._providers["openai"].generate(
                                 prompt=prompt,
                                 model=provider_model,
                                 timeout_seconds=timeout_seconds,
                                 options={
                                     "temperature": self.settings.ollama_temperature,
-                                    "top_p": self.settings.ollama_top_p,
-                                    "repeat_penalty": self.settings.ollama_repeat_penalty,
                                     "num_predict": self.settings.ollama_num_predict,
-                                    "num_ctx": self.settings.ollama_num_ctx,
-                                    "num_thread": self.settings.ollama_num_thread,
                                 },
                             )
                             text, endpoint = result.raw_response, result.endpoint
                             duration_ms = result.duration_ms
-                    self._append_llm_log(
-                        LLMDebugLog(
-                            id=str(uuid4()),
-                            timestamp=started,
-                            symbol=symbol,
-                            endpoint=endpoint,
-                            call_type=call_type,
-                            prompt=prompt,
-                            raw_response=text,
-                            parsed_output=parsed_output or {},
-                            status="success",
-                            duration_ms=duration_ms,
-                            provider=provider_name,
-                            model=provider_model,
-                            fallback_used=is_fallback,
-                            fallback_provider=fallback_provider if is_fallback else None,
+                            token_estimate = result.token_estimate or self._estimate_tokens(prompt, text)
+                        else:
+                            if debug_stream:
+                                text, endpoint = self._ollama_generate_direct(
+                                    prompt=prompt,
+                                    model=provider_model,
+                                    timeout_seconds=timeout_seconds,
+                                    symbol=symbol,
+                                    run_id=run_id,
+                                    debug_stream=debug_stream,
+                                )
+                                duration_ms = int((datetime.now(UTC) - attempt_started).total_seconds() * 1000)
+                                token_estimate = self._estimate_tokens(prompt, text)
+                            else:
+                                result = self._providers["ollama"].generate(
+                                    prompt=prompt,
+                                    model=provider_model,
+                                    timeout_seconds=timeout_seconds,
+                                    options={
+                                        "temperature": self.settings.ollama_temperature,
+                                        "top_p": self.settings.ollama_top_p,
+                                        "repeat_penalty": self.settings.ollama_repeat_penalty,
+                                        "num_predict": self.settings.ollama_num_predict,
+                                        "num_ctx": self.settings.ollama_num_ctx,
+                                        "num_thread": self.settings.ollama_num_thread,
+                                    },
+                                )
+                                text, endpoint = result.raw_response, result.endpoint
+                                duration_ms = result.duration_ms
+                                token_estimate = result.token_estimate or self._estimate_tokens(prompt, text)
+                        self._append_llm_log(
+                            LLMDebugLog(
+                                id=str(uuid4()),
+                                timestamp=started,
+                                symbol=symbol,
+                                endpoint=endpoint,
+                                call_type=call_type,
+                                prompt=prompt,
+                                raw_response=text,
+                                parsed_output=parsed_output or {},
+                                status="success",
+                                duration_ms=duration_ms,
+                                provider=provider_name,
+                                model=provider_model,
+                                fallback_used=is_fallback,
+                                fallback_provider=fallback_provider if is_fallback else None,
+                                token_estimate=token_estimate,
+                                prompt_preview=prompt[:300],
+                                response_preview=text[:300],
+                            )
                         )
-                    )
-                    if is_fallback and symbol:
-                        self._append_pipeline_event(
-                            step_name="llm_fallback_used",
-                            status="success",
-                            run_id=run_id,
-                            symbol=symbol,
-                            message=f"primary={primary_provider} fallback={fallback_provider}",
+                        if is_fallback and symbol:
+                            self._append_pipeline_event(
+                                step_name="llm_fallback_used",
+                                status="success",
+                                run_id=run_id,
+                                symbol=symbol,
+                                message=f"primary={primary_provider} fallback={fallback_provider}",
+                            )
+                        return text
+                    except Exception as exc:
+                        last_exc = exc
+                        duration_ms = int((datetime.now(UTC) - attempt_started).total_seconds() * 1000)
+                        endpoint = self.settings.openai_base_url if provider_name == "openai" else self.settings.ollama_base_url
+                        self._append_llm_log(
+                            LLMDebugLog(
+                                id=str(uuid4()),
+                                timestamp=started,
+                                symbol=symbol,
+                                endpoint=endpoint,
+                                call_type=call_type,
+                                prompt=prompt,
+                                status="fail",
+                                error_message=str(exc),
+                                duration_ms=duration_ms,
+                                parsed_output=parsed_output or {},
+                                provider=provider_name,
+                                model=provider_model,
+                                fallback_used=is_fallback,
+                                fallback_provider=fallback_provider if is_fallback else None,
+                                token_estimate=0,
+                                prompt_preview=prompt[:300],
+                            )
                         )
-                    return text
-                except Exception as exc:
-                    last_exc = exc
-                    duration_ms = int((datetime.now(UTC) - attempt_started).total_seconds() * 1000)
-                    endpoint = self.settings.groq_base_url if provider_name == "groq" else self.settings.ollama_base_url
-                    self._append_llm_log(
-                        LLMDebugLog(
-                            id=str(uuid4()),
-                            timestamp=started,
-                            symbol=symbol,
-                            endpoint=endpoint,
-                            call_type=call_type,
-                            prompt=prompt,
-                            status="fail",
-                            error_message=str(exc),
-                            duration_ms=duration_ms,
-                            parsed_output=parsed_output or {},
-                            provider=provider_name,
-                            model=provider_model,
-                            fallback_used=is_fallback,
-                            fallback_provider=fallback_provider if is_fallback else None,
-                        )
-                    )
+                        if attempt_idx == 0:
+                            continue
+                        break
             raise RuntimeError(str(last_exc) if last_exc else "LLM generation failed")
         except Exception as exc:
             raise exc
@@ -850,13 +865,14 @@ class IntelligenceService:
     def _context_prompt(self, row: SymbolResult, short_context_mode: bool) -> str:
         if short_context_mode:
             return (
-                "Return ONLY valid JSON. No markdown. No investment advice. Keep each field under 25 words.\n"
+                "Return ONLY valid JSON. No markdown. No investment advice. Keep each field <=20 words.\n"
                 "Fields:\n"
                 "{\n"
                 '  "bull_case": "...",\n'
                 '  "bear_case": "...",\n'
-                '  "risks": "...",\n'
-                '  "summary": "..."\n'
+                '  "risk": "...",\n'
+                '  "context": "...",\n'
+                '  "confidence": "..."\n'
                 "}\n\n"
                 "Input:\n"
                 f"symbol={row.symbol}\n"
@@ -864,6 +880,7 @@ class IntelligenceService:
                 f"score={row.score:.2f}\n"
                 f"trend={row.trend}\n"
                 f"setup_type={row.setup_type}\n"
+                f"risk_flags={','.join(row.risk_flags)}\n"
                 f"ema20={row.ema_distances.get('ema20', 0.0):.2f}\n"
                 f"ema50={row.ema_distances.get('ema50', 0.0):.2f}\n"
                 f"ema100={row.ema_distances.get('ema100', 0.0):.2f}\n"
@@ -941,8 +958,8 @@ class IntelligenceService:
                         raise
                 bull = str(parsed_json.get("bull_case", "")).strip()
                 bear = str(parsed_json.get("bear_case", "")).strip()
-                risks = str(parsed_json.get("risks", "")).strip()
-                summary = str(parsed_json.get("summary", "")).strip()
+                risks = str(parsed_json.get("risk", parsed_json.get("risks", ""))).strip()
+                summary = str(parsed_json.get("context", parsed_json.get("summary", ""))).strip()
             else:
                 bull = self._extract_section(raw, "Bull case") or "No clear bull-case context returned."
                 bear = self._extract_section(raw, "Bear case") or "No clear bear-case context returned."
@@ -953,7 +970,7 @@ class IntelligenceService:
                     id=str(uuid4()),
                     timestamp=datetime.now(UTC),
                     symbol=row.symbol,
-                    endpoint=self.settings.ollama_base_url.rstrip("/") + "/api/generate",
+                    endpoint="-",
                     call_type="symbol_context_parsed",
                     prompt="(parsed output)",
                     raw_response=raw,
@@ -1784,14 +1801,14 @@ class IntelligenceService:
         checked_at = datetime.now(UTC)
         primary_provider = self._normalize_provider(self.settings.llm_provider)
         fallback_provider = self._normalize_provider(self.settings.llm_fallback_provider)
-        base_url = self.settings.groq_base_url.rstrip("/") if primary_provider == "groq" else self.settings.ollama_base_url.rstrip("/")
+        base_url = self.settings.openai_base_url.rstrip("/") if primary_provider == "openai" else self.settings.ollama_base_url.rstrip("/")
         installed: list[str] = []
         primary_connected = False
         fallback_connected = False
         model_available: bool | None = None
-        model_used = self.settings.groq_model if primary_provider == "groq" else self.settings.ollama_model
-        primary_model = self.settings.groq_model if primary_provider == "groq" else self.settings.ollama_model
-        fallback_model = self.settings.groq_model if fallback_provider == "groq" else self.settings.ollama_model
+        model_used = self.settings.openai_model if primary_provider == "openai" else self.settings.ollama_model
+        primary_model = self.settings.openai_model if primary_provider == "openai" else self.settings.ollama_model
+        fallback_model = self.settings.openai_model if fallback_provider == "openai" else self.settings.ollama_model
         primary_health = self._providers[primary_provider].health_check(model=primary_model, timeout_seconds=timeout_seconds)
         fallback_health = self._providers[fallback_provider].health_check(model=fallback_model, timeout_seconds=timeout_seconds)
         primary_connected = primary_health.connected
@@ -1814,6 +1831,8 @@ class IntelligenceService:
             installed_models=installed[:100],
             primary_provider=primary_provider,
             fallback_provider=fallback_provider,
+            primary_model=primary_model,
+            fallback_model=fallback_model,
             primary_connected=primary_connected,
             fallback_connected=fallback_connected,
             last_response_duration_ms=last_duration,
@@ -1822,7 +1841,8 @@ class IntelligenceService:
 
     def test_llm_response(self, req: LLMResponseTestRequest) -> LLMResponseTestResult:
         checked_at = datetime.now(UTC)
-        endpoint = self.settings.ollama_base_url.rstrip("/") + "/api/generate"
+        primary_provider = self._normalize_provider(self.settings.llm_provider)
+        endpoint = self.settings.openai_base_url.rstrip("/") if primary_provider == "openai" else self.settings.ollama_base_url.rstrip("/")
         started = datetime.now(UTC)
         try:
             text = self._ollama_generate(

@@ -1066,6 +1066,8 @@ export type LLMConnectionStatus = {
   installed_models: string[];
   primary_provider: string | null;
   fallback_provider: string | null;
+  primary_model: string | null;
+  fallback_model: string | null;
   primary_connected: boolean | null;
   fallback_connected: boolean | null;
   last_response_duration_ms: number | null;
@@ -1088,6 +1090,9 @@ export type LLMDebugLog = {
   model: string | null;
   fallback_used: boolean;
   fallback_provider: string | null;
+  token_estimate: number;
+  prompt_preview: string | null;
+  response_preview: string | null;
 };
 
 export type LLMResponseTestResult = {

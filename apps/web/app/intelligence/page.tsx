@@ -43,7 +43,7 @@ export default function IntelligencePage() {
   const [showLLMConsole, setShowLLMConsole] = useState(false);
   const [consoleTab, setConsoleTab] = useState<"pipeline" | "llm">("pipeline");
   const [llmStatusFilter, setLlmStatusFilter] = useState<"all" | "success" | "fail">("all");
-  const [llmProviderFilter, setLlmProviderFilter] = useState<"all" | "groq" | "ollama">("all");
+  const [llmProviderFilter, setLlmProviderFilter] = useState<"all" | "openai" | "ollama">("all");
   const [llmStatus, setLLMStatus] = useState<LLMConnectionStatus | null>(null);
   const [llmTest, setLlmTest] = useState<LLMResponseTestResult | null>(null);
   const [llmLogs, setLLMLogs] = useState<LLMDebugLog[]>([]);
@@ -442,8 +442,8 @@ export default function IntelligencePage() {
 
   return (
     <main className="relative">
-      <aside className="mb-4 xl:absolute xl:-left-[228px] xl:top-0 xl:w-[208px] xl:z-20">
-        <div className="rounded-lg border border-stroke/70 bg-panel p-3 xl:sticky xl:top-4">
+      <aside className="mb-4 xl:fixed xl:left-4 xl:top-44 xl:w-[208px] xl:z-20">
+        <div className="max-h-[calc(100vh-12rem)] overflow-auto rounded-lg border border-stroke/70 bg-panel p-3">
           <p className="mb-2 text-xs font-semibold text-slate-300">Intelligence Menu</p>
           <div className="flex gap-2 overflow-x-auto xl:flex-col xl:overflow-visible">
             <button type="button" onClick={() => jumpTo("intelligence-layer")} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan whitespace-nowrap">Intelligence Layer</button>
@@ -466,10 +466,10 @@ export default function IntelligencePage() {
             Backend API: {backendConnected ? "Connected" : "Not reachable"}
           </span>
           <span className={`rounded-md border px-2 py-1 ${llmStatus?.primary_connected ? "border-green/60 text-green" : "border-red/60 text-red"}`}>
-            Primary ({llmStatus?.primary_provider ?? "n/a"}): {llmStatus?.primary_connected ? "Connected" : "Not reachable"}
+            Primary Provider: {(llmStatus?.primary_provider ?? "n/a").toUpperCase()} | Model: {llmStatus?.model_used ?? "-"} | Status: {llmStatus?.primary_connected ? "Connected" : "Not reachable"}
           </span>
           <span className={`rounded-md border px-2 py-1 ${llmStatus?.fallback_connected ? "border-green/60 text-green" : "border-red/60 text-red"}`}>
-            Fallback ({llmStatus?.fallback_provider ?? "n/a"}): {llmStatus?.fallback_connected ? "Connected" : "Not reachable"}
+            Fallback Provider: {(llmStatus?.fallback_provider ?? "n/a").toUpperCase()} | Model: {llmStatus?.fallback_model ?? "-"} | Status: {llmStatus?.fallback_connected ? "Connected" : "Not reachable"}
           </span>
           <button type="button" onClick={() => setShowLLMConsole((prev) => !prev)} className="rounded-md border border-stroke px-2 py-1 hover:text-cyan">
             {showLLMConsole ? "Hide LLM Console" : "Show LLM Console"}
@@ -561,7 +561,7 @@ export default function IntelligencePage() {
           Discovery Run selects new symbols. Follow-up Run tracks the same cohort symbols only.
         </p>
         <p className="mt-1 text-xs text-slate-400">
-          Debug mode sends symbols to Ollama one by one using short JSON context prompt mode.
+          Debug mode uses sequential short JSON prompts for reliable provider/fallback tracing.
         </p>
         <button type="button" onClick={() => setShowAdvanced((prev) => !prev)} className="mt-3 rounded-md border border-stroke px-2 py-1 text-xs hover:text-cyan">
           {showAdvanced ? "Hide Advanced Settings" : "Show Advanced Settings"}
@@ -696,9 +696,9 @@ export default function IntelligencePage() {
                   <option value="success">Success</option>
                   <option value="fail">Fail</option>
                 </select>
-                <select value={llmProviderFilter} onChange={(e) => setLlmProviderFilter(e.target.value as "all" | "groq" | "ollama")} className="h-8 rounded border border-stroke bg-bg px-2 text-xs">
+                <select value={llmProviderFilter} onChange={(e) => setLlmProviderFilter(e.target.value as "all" | "openai" | "ollama")} className="h-8 rounded border border-stroke bg-bg px-2 text-xs">
                   <option value="all">All Providers</option>
-                  <option value="groq">Groq</option>
+                  <option value="openai">OpenAI</option>
                   <option value="ollama">Ollama</option>
                 </select>
                 <span className="text-slate-400">showing {filteredLlmLogs.length}/{llmLogs.length}</span>
@@ -748,6 +748,7 @@ export default function IntelligencePage() {
                     <th className="px-2 py-2">Status</th>
                     <th className="px-2 py-2">Fallback</th>
                     <th className="px-2 py-2">Duration ms</th>
+                    <th className="px-2 py-2">Tokens Est.</th>
                     <th className="px-2 py-2">Details</th>
                   </tr>
                 </thead>
@@ -763,17 +764,18 @@ export default function IntelligencePage() {
                         <td className={`px-2 py-2 ${row.status === "fail" ? "text-red" : "text-green"}`}>{row.status}</td>
                         <td className="px-2 py-2">{row.fallback_used ? `yes (${row.fallback_provider ?? "-"})` : "no"}</td>
                         <td className="px-2 py-2">{row.duration_ms}</td>
+                        <td className="px-2 py-2">{row.token_estimate ?? 0}</td>
                         <td className="px-2 py-2"><button type="button" onClick={() => setExpandedLogIds((prev) => ({ ...prev, [row.id]: !prev[row.id] }))} className="rounded border border-stroke px-2 py-1 hover:text-cyan">{expandedLogIds[row.id] ? "Collapse" : "Expand"}</button></td>
                       </tr>
                       {expandedLogIds[row.id] ? (
                         <tr className="border-b border-stroke/40 bg-panelSoft/60">
-                          <td className="px-2 py-2 text-slate-300" colSpan={9}>
+                          <td className="px-2 py-2 text-slate-300" colSpan={10}>
                             {row.error_message ? <p className="mb-2 text-red">Error: {row.error_message}</p> : null}
                             <p className="mb-2 text-slate-300">Endpoint: {row.endpoint}</p>
-                            <p className="font-semibold text-slate-200">Prompt</p>
-                            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{row.prompt}</pre>
-                            <p className="mt-2 font-semibold text-slate-200">Raw Response</p>
-                            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{row.raw_response ?? "-"}</pre>
+                            <p className="font-semibold text-slate-200">Prompt Preview</p>
+                            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{row.prompt_preview ?? row.prompt.slice(0, 300)}</pre>
+                            <p className="mt-2 font-semibold text-slate-200">Response Preview</p>
+                            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{row.response_preview ?? (row.raw_response ? row.raw_response.slice(0, 300) : "-")}</pre>
                             <p className="mt-2 font-semibold text-slate-200">Parsed/Used Output</p>
                             <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{JSON.stringify(row.parsed_output, null, 2)}</pre>
                           </td>
@@ -801,7 +803,7 @@ export default function IntelligencePage() {
                 <th className="px-2 py-2">Category Source</th>
                 <th className="px-2 py-2">Score / Category</th>
                 <th className="px-2 py-2">Final Score</th>
-                <th className="px-2 py-2">Multi-Category</th>
+                <th className="px-2 py-2 whitespace-nowrap">Multi-Category</th>
                 <th className="px-2 py-2">Why Selected</th>
                 <th className="px-2 py-2">Daily Change</th>
                 <th className="px-2 py-2">Forward Perf</th>
@@ -815,7 +817,7 @@ export default function IntelligencePage() {
                   <td className="px-2 py-2">{row.category_tags.join(", ")}</td>
                   <td className="px-2 py-2">{Object.entries(row.score_by_category).map(([k, v]) => `${k}:${v.toFixed(1)}`).join(" | ")}</td>
                   <td className="px-2 py-2">{row.score.toFixed(2)} {row.priority_boost > 0 ? `(+${row.priority_boost.toFixed(1)} boost)` : ""}</td>
-                  <td className="px-2 py-2">{row.multi_category ? <span className="rounded border border-cyan/60 px-2 py-1 text-cyan">multi-category</span> : "-"}</td>
+                  <td className="px-2 py-2 whitespace-nowrap">{row.multi_category ? <span className="inline-flex shrink-0 whitespace-nowrap rounded border border-cyan/60 px-2 py-1 text-cyan">multi-category</span> : "-"}</td>
                   <td className="px-2 py-2 min-w-[320px]">{row.why_selected || "-"}</td>
                   <td className="px-2 py-2 min-w-[260px]">{String(row.daily_change?.message ?? "No previous run comparison")}</td>
                   <td className="px-2 py-2">

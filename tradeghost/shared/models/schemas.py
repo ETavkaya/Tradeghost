@@ -1411,6 +1411,9 @@ class LLMDebugLog(BaseModel):
     model: str | None = None
     fallback_used: bool = False
     fallback_provider: str | None = None
+    token_estimate: int = 0
+    prompt_preview: str | None = None
+    response_preview: str | None = None
 
 
 class LLMConnectionStatus(BaseModel):
@@ -1423,6 +1426,8 @@ class LLMConnectionStatus(BaseModel):
     installed_models: list[str] = Field(default_factory=list)
     primary_provider: str | None = None
     fallback_provider: str | None = None
+    primary_model: str | None = None
+    fallback_model: str | None = None
     primary_connected: bool | None = None
     fallback_connected: bool | None = None
     last_response_duration_ms: int | None = None
@@ -1443,7 +1448,7 @@ class PipelineDebugEvent(BaseModel):
 
 
 class LLMResponseTestRequest(BaseModel):
-    model: str = "llama3.2:3b"
+    model: str = "gpt-4.1-mini"
     timeout_seconds: float = Field(default=25.0, ge=5.0, le=180.0)
     threshold_seconds: float = Field(default=20.0, ge=1.0, le=180.0)
 

@@ -567,7 +567,7 @@ def generate_cohort_symbol_contexts(payload: CohortSymbolContextRequest) -> Symb
                 "failed_symbol": None,
                 "llm_provider": settings.llm_provider,
                 "llm_fallback_provider": settings.llm_fallback_provider,
-                "ollama_endpoint": settings.ollama_base_url,
+                "primary_endpoint": settings.openai_base_url if settings.llm_provider.lower() == "openai" else settings.ollama_base_url,
                 "model": payload.model,
                 "error_type": type(exc).__name__,
                 "error_message": str(exc),

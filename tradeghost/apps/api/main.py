@@ -30,6 +30,13 @@ from tradeghost.shared.models.schemas import (
     BacktestSnapshotCreateRequest,
     CombinedAnalysisResponse,
     DailyBriefing,
+    CandidateCohort,
+    CohortDetail,
+    CohortFollowupRequest,
+    CohortFollowupResponse,
+    CohortReviewRequest,
+    CohortReviewResponse,
+    DiscoveryCreateCohortRequest,
     DailyBriefingRequest,
     DailyPipelineRequest,
     IntelligenceReviewApproval,
@@ -505,6 +512,60 @@ def run_due_monitoring(payload: MonitoringRunDueRequest) -> MonitoringRunSummary
 def run_daily_pipeline(payload: DailyPipelineRequest) -> IntelligenceRunResponse:
     try:
         return intelligence_service.run_daily_pipeline(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/discovery/create-cohort", response_model=CohortDetail)
+def run_discovery_create_cohort(payload: DiscoveryCreateCohortRequest) -> CohortDetail:
+    try:
+        return intelligence_service.run_discovery_create_cohort(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/cohorts", response_model=list[CandidateCohort])
+def list_intelligence_cohorts() -> list[CandidateCohort]:
+    try:
+        return intelligence_service.list_cohorts()
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/cohorts/{cohort_id}", response_model=CohortDetail)
+def get_intelligence_cohort_detail(cohort_id: str) -> CohortDetail:
+    try:
+        return intelligence_service.get_cohort_detail(cohort_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/cohorts/follow-up", response_model=CohortFollowupResponse)
+def run_intelligence_cohort_followup(payload: CohortFollowupRequest) -> CohortFollowupResponse:
+    try:
+        return intelligence_service.run_cohort_followup(payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/cohorts/review", response_model=CohortReviewResponse)
+def run_intelligence_cohort_review(payload: CohortReviewRequest) -> CohortReviewResponse:
+    try:
+        return intelligence_service.run_cohort_review(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/cohorts/{cohort_id}/export", response_model=IntelligenceRunReportExport)
+def export_intelligence_cohort_report(cohort_id: str) -> IntelligenceRunReportExport:
+    try:
+        return intelligence_service.export_cohort_report_markdown(cohort_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

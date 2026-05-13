@@ -2,6 +2,28 @@
 
 TradeGhost is a production-style, deterministic, rule-based swing trading analysis engine for US equities.
 
+## Session Bootstrap (Read First)
+
+To avoid losing context across VS Code / Codex restarts, treat these files as the project memory source of truth:
+
+1. `README.md` (this file): architecture, workflow, constraints, and operating model
+2. `docs/agent_handoff.md`: active mission, latest implemented state, decisions, blockers, and next steps
+
+### Required startup behavior for new sessions
+
+- Read `README.md` and `docs/agent_handoff.md` before making changes.
+- Continue from the latest handoff state instead of re-discovering scope from scratch.
+- If handoff and code disagree, trust code/runtime facts and update handoff immediately.
+
+### Required update behavior after meaningful work
+
+Update `docs/agent_handoff.md` at the end of each meaningful implementation step with:
+- what was requested
+- what changed (files + behavior)
+- decisions/constraints
+- current status
+- next 1-3 concrete steps
+
 This MVP is intentionally focused on:
 - Analysis and scoring
 - Strategy planning

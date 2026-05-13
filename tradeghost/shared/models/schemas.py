@@ -1136,6 +1136,139 @@ class DailyPipelineRequest(BaseModel):
     scanner_max_runtime_seconds: float = Field(default=18.0, ge=3.0, le=45.0)
 
 
+class CandidateCohortStatus(str, Enum):
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    ARCHIVED = "archived"
+
+
+class CandidateCohort(BaseModel):
+    id: str
+    name: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    start_date: date
+    market: MarketCode
+    analysis_window: ScannerDuration = ScannerDuration.ONE_YEAR
+    selected_categories: list[ScannerCategory] = Field(default_factory=list)
+    top_n_per_category: int = 5
+    status: CandidateCohortStatus = CandidateCohortStatus.ACTIVE
+    notes: str = ""
+
+
+class CohortCandidate(BaseModel):
+    cohort_id: str
+    symbol: str
+    market: MarketCode
+    selected_at: datetime
+    selected_price: float | None = None
+    selected_rank: int
+    selected_score: float
+    selected_categories: list[ScannerCategory] = Field(default_factory=list)
+    selected_setup_type: str = ""
+    selected_trend_state: str = ""
+    selected_score_dynamics: str | None = None
+    selected_reason: str = ""
+    selected_structure_snapshot: dict[str, Any] = Field(default_factory=dict)
+    selected_risk_flags: list[str] = Field(default_factory=list)
+    original_context: SymbolContext | None = None
+
+
+class CohortDailySnapshot(BaseModel):
+    cohort_id: str
+    symbol: str
+    snapshot_date: date
+    current_price: float | None = None
+    current_score: float | None = None
+    current_rank_if_discovered_today: int | None = None
+    current_categories: list[ScannerCategory] = Field(default_factory=list)
+    current_setup_type: str | None = None
+    current_trend_state: str | None = None
+    current_score_dynamics: str | None = None
+    price_change_since_selection: float | None = None
+    return_1d: float | None = None
+    return_3d: float | None = None
+    return_7d: float | None = None
+    return_14d: float | None = None
+    return_28d: float | None = None
+    max_runup_since_selection: float | None = None
+    max_drawdown_since_selection: float | None = None
+    still_valid_candidate: bool = True
+    invalidation_reason: str | None = None
+    updated_context: SymbolContext | None = None
+
+
+class DiscoveryCreateCohortRequest(BaseModel):
+    name: str
+    notes: str = ""
+    market: MarketCode = MarketCode.US
+    duration: ScannerDuration = ScannerDuration.ONE_YEAR
+    categories: list[ScannerCategory] = Field(
+        default_factory=lambda: [
+            ScannerCategory.TREND_MODE,
+            ScannerCategory.BUILD_UP,
+            ScannerCategory.MOMENTUM_MODE,
+            ScannerCategory.VALUE_REBUILD,
+            ScannerCategory.OVEREXTENDED,
+        ]
+    )
+    top_n_per_category: int = Field(default=5, ge=1, le=20)
+    max_candidates: int = Field(default=30, ge=5, le=100)
+    max_universe_symbols: int = Field(default=60, ge=10, le=500)
+    scanner_max_results: int = Field(default=30, ge=5, le=100)
+    scanner_universe_scope: ScannerUniverseScope = ScannerUniverseScope.CAPPED
+    scanner_max_runtime_seconds: float = Field(default=18.0, ge=3.0, le=45.0)
+
+
+class CohortFollowupRequest(BaseModel):
+    cohort_id: str
+    include_updated_context: bool = False
+    context_model: str = "llama3.2:3b"
+    timeout_seconds: float = Field(default=120.0, ge=5.0, le=300.0)
+
+
+class CohortReviewRequest(BaseModel):
+    cohort_id: str | None = None
+    days_required: int = Field(default=28, ge=7, le=365)
+    model: str = "llama3.2:3b"
+    timeout_seconds: float = Field(default=45.0, ge=5.0, le=300.0)
+
+
+class CohortDetail(BaseModel):
+    cohort: CandidateCohort
+    candidates: list[CohortCandidate] = Field(default_factory=list)
+    snapshots: list[CohortDailySnapshot] = Field(default_factory=list)
+
+
+class CohortFollowupResponse(BaseModel):
+    cohort_id: str
+    snapshot_date: date
+    snapshots: list[CohortDailySnapshot] = Field(default_factory=list)
+
+
+class CohortReviewStats(BaseModel):
+    average_return_by_category: dict[str, float] = Field(default_factory=dict)
+    best_candidate: str | None = None
+    worst_candidate: str | None = None
+    best_category: str | None = None
+    worst_category: str | None = None
+    multi_category_avg_return_7d: float | None = None
+    false_positives: int = 0
+    missed_follow_through: int = 0
+    stayed_valid: int = 0
+    invalidated_quickly: int = 0
+    score_delta_vs_return_note: str = ""
+
+
+class CohortReviewResponse(BaseModel):
+    cohort_id: str | None = None
+    readiness_message: str
+    days_collected: int
+    days_required: int
+    days_remaining: int
+    deterministic_stats: CohortReviewStats = Field(default_factory=CohortReviewStats)
+    llm_summary: str | None = None
+
+
 class SymbolContextBatchRequest(BaseModel):
     run_id: str
     context_symbol_limit: int = Field(default=3, ge=1, le=100)
@@ -1232,6 +1365,8 @@ class IntelligenceDashboardResponse(BaseModel):
     latest_briefing: DailyBriefing | None = None
     latest_review: SystemReview | None = None
     pipeline_events: list["PipelineDebugEvent"] = Field(default_factory=list)
+    cohorts: list[CandidateCohort] = Field(default_factory=list)
+    cohort_details: list[CohortDetail] = Field(default_factory=list)
     review_readiness: ReviewReadiness = Field(default_factory=ReviewReadiness)
     deterministic_review_stats: DeterministicReviewStats = Field(default_factory=DeterministicReviewStats)
 

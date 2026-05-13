@@ -12,6 +12,10 @@ import {
   AlertEvent,
   AlertProfileSuggestionResponse,
   DailyBriefing,
+  CandidateCohort,
+  CohortDetail,
+  CohortFollowupResponse,
+  CohortReviewResponse,
   IntelligenceReviewApproval,
   IntelligenceRunReport,
   IntelligenceRunReportExport,
@@ -228,6 +232,29 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)
     }),
+  createDiscoveryCohort: (payload: Record<string, unknown>) =>
+    fetchJson<CohortDetail>("/api/intelligence/discovery/create-cohort", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
+  listCohorts: () => fetchJson<CandidateCohort[]>("/api/intelligence/cohorts"),
+  getCohortDetail: (cohortId: string) =>
+    fetchJson<CohortDetail>(`/api/intelligence/cohorts/${encodeURIComponent(cohortId)}`),
+  runCohortFollowup: (payload: Record<string, unknown>) =>
+    fetchJson<CohortFollowupResponse>("/api/intelligence/cohorts/follow-up", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
+  runCohortReview: (payload: Record<string, unknown>) =>
+    fetchJson<CohortReviewResponse>("/api/intelligence/cohorts/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
+  exportCohortReport: (cohortId: string) =>
+    fetchJson<IntelligenceRunReportExport>(`/api/intelligence/cohorts/${encodeURIComponent(cohortId)}/export`),
   generateSymbolContexts: (payload: Record<string, unknown>) =>
     fetchJson<SymbolContextBatchResponse>("/api/intelligence/symbol-contexts", {
       method: "POST",

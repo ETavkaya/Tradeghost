@@ -17,8 +17,19 @@ from tradeghost.services.intelligence.providers import GroqProvider, LLMProvider
 from tradeghost.services.scanner.engine import ScannerEngine
 from tradeghost.shared.config.settings import get_settings
 from tradeghost.shared.models.schemas import (
+    CandidateCohort,
+    CandidateCohortStatus,
+    CohortCandidate,
+    CohortDailySnapshot,
+    CohortDetail,
+    CohortFollowupRequest,
+    CohortFollowupResponse,
+    CohortReviewRequest,
+    CohortReviewResponse,
+    CohortReviewStats,
     DailyBriefing,
     DailyBriefingRequest,
+    DiscoveryCreateCohortRequest,
     DailyPipelineRequest,
     DailyRun,
     DailyRunDetail,
@@ -62,6 +73,9 @@ class IntelligenceService:
         self.briefings_path = self.base_dir / "daily_briefings.json"
         self.reviews_path = self.base_dir / "system_reviews.json"
         self.approvals_path = self.base_dir / "review_approvals.json"
+        self.cohorts_path = self.base_dir / "candidate_cohorts.json"
+        self.cohort_candidates_path = self.base_dir / "cohort_candidates.json"
+        self.cohort_snapshots_path = self.base_dir / "cohort_daily_snapshots.json"
         self.llm_logs_path = self.base_dir / "llm_calls.json"
         self.pipeline_logs_path = self.base_dir / "pipeline_events.json"
         self.analysis_engine = analysis_engine or AnalysisEngine()
@@ -200,6 +214,131 @@ class IntelligenceService:
 
     def _save_approvals(self, rows: list[IntelligenceReviewApproval]) -> None:
         self._write_rows(self.approvals_path, [row.model_dump(mode="json") for row in rows])
+
+    def _read_cohorts(self) -> list[CandidateCohort]:
+        return [CandidateCohort.model_validate(row) for row in self._read_rows(self.cohorts_path)]
+
+    def _save_cohorts(self, rows: list[CandidateCohort]) -> None:
+        self._write_rows(self.cohorts_path, [row.model_dump(mode="json") for row in rows])
+
+    def _read_cohort_candidates(self) -> list[CohortCandidate]:
+        return [CohortCandidate.model_validate(row) for row in self._read_rows(self.cohort_candidates_path)]
+
+    def _save_cohort_candidates(self, rows: list[CohortCandidate]) -> None:
+        self._write_rows(self.cohort_candidates_path, [row.model_dump(mode="json") for row in rows])
+
+    def _read_cohort_snapshots(self) -> list[CohortDailySnapshot]:
+        return [CohortDailySnapshot.model_validate(row) for row in self._read_rows(self.cohort_snapshots_path)]
+
+    def _save_cohort_snapshots(self, rows: list[CohortDailySnapshot]) -> None:
+        self._write_rows(self.cohort_snapshots_path, [row.model_dump(mode="json") for row in rows])
+
+    def list_cohorts(self) -> list[CandidateCohort]:
+        return sorted(self._read_cohorts(), key=lambda row: row.created_at, reverse=True)
+
+    def get_cohort_detail(self, cohort_id: str) -> CohortDetail:
+        cohorts = self._read_cohorts()
+        cohort = next((row for row in cohorts if row.id == cohort_id), None)
+        if cohort is None:
+            raise FileNotFoundError(f"Cohort not found: {cohort_id}")
+        candidates = [row for row in self._read_cohort_candidates() if row.cohort_id == cohort_id]
+        snapshots = [row for row in self._read_cohort_snapshots() if row.cohort_id == cohort_id]
+        return CohortDetail(cohort=cohort, candidates=sorted(candidates, key=lambda row: row.selected_rank), snapshots=sorted(snapshots, key=lambda row: (row.snapshot_date, row.symbol)))
+
+    def run_discovery_create_cohort(self, req: DiscoveryCreateCohortRequest) -> CohortDetail:
+        discovery = self.run_daily_pipeline(
+            DailyPipelineRequest(
+                market=req.market,
+                duration=req.duration,
+                categories=req.categories,
+                max_candidates=req.max_candidates,
+                top_n_per_category=req.top_n_per_category,
+                max_universe_symbols=req.max_universe_symbols,
+                scanner_max_results=req.scanner_max_results,
+                scanner_universe_scope=req.scanner_universe_scope,
+                scanner_max_runtime_seconds=req.scanner_max_runtime_seconds,
+            )
+        )
+        cohort = CandidateCohort(
+            id=str(uuid4()),
+            name=req.name.strip() or f"cohort-{date.today().isoformat()}",
+            start_date=discovery.run.date,
+            market=req.market,
+            analysis_window=req.duration,
+            selected_categories=req.categories,
+            top_n_per_category=req.top_n_per_category,
+            status=CandidateCohortStatus.ACTIVE,
+            notes=req.notes.strip(),
+        )
+        cohorts = self._read_cohorts()
+        cohorts.append(cohort)
+        self._save_cohorts(cohorts)
+
+        cohort_candidates = self._read_cohort_candidates()
+        for row in discovery.symbol_results:
+            cohort_candidates.append(
+                CohortCandidate(
+                    cohort_id=cohort.id,
+                    symbol=row.symbol,
+                    market=row.market,
+                    selected_at=datetime.now(UTC),
+                    selected_price=row.price_at_selection,
+                    selected_rank=row.merged_rank,
+                    selected_score=row.score,
+                    selected_categories=[x.value if hasattr(x, "value") else x for x in row.category_tags],
+                    selected_setup_type=row.setup_type,
+                    selected_trend_state=row.trend,
+                    selected_score_dynamics=str(row.structure_snapshot.get("score_dynamics_state")) if row.structure_snapshot.get("score_dynamics_state") is not None else None,
+                    selected_reason=row.why_selected,
+                    selected_structure_snapshot=row.structure_snapshot,
+                    selected_risk_flags=row.risk_flags,
+                )
+            )
+        self._save_cohort_candidates(cohort_candidates)
+        return self.get_cohort_detail(cohort.id)
+
+    def run_cohort_followup(self, req: CohortFollowupRequest) -> CohortFollowupResponse:
+        detail = self.get_cohort_detail(req.cohort_id)
+        snapshots = self._read_cohort_snapshots()
+        today = date.today()
+        new_snapshots: list[CohortDailySnapshot] = []
+        for cand in detail.candidates:
+            analysis = self.analysis_engine.analyze_combined(
+                ticker=cand.symbol,
+                market=cand.market.value,
+                window="1y",
+                strategy_mode="balanced",
+            )
+            close = float(analysis.chart.current_price)
+            selected_price = cand.selected_price
+            perf = self._forward_returns_from_selection(cand.symbol, cand.market.value, cand.selected_at.date(), selected_price)
+            invalidation_reason = None if analysis.entry_gate.final_entry_decision else (analysis.entry_gate.skip_reason or "no_longer_valid")
+            snap = CohortDailySnapshot(
+                cohort_id=req.cohort_id,
+                symbol=cand.symbol,
+                snapshot_date=today,
+                current_price=close,
+                current_score=float(analysis.quantedge.final_score),
+                current_categories=[],
+                current_setup_type=analysis.setup_interpretation.setup_type,
+                current_trend_state=analysis.setup_interpretation.trend_state,
+                current_score_dynamics=analysis.entry_gate.score_dynamics_state,
+                price_change_since_selection=((close / selected_price - 1.0) * 100.0) if selected_price and selected_price > 0 else None,
+                return_1d=perf.get("1d"),
+                return_3d=perf.get("3d"),
+                return_7d=perf.get("7d"),
+                return_14d=perf.get("14d"),
+                return_28d=perf.get("28d"),
+                max_runup_since_selection=perf.get("max_runup"),
+                max_drawdown_since_selection=perf.get("max_drawdown"),
+                still_valid_candidate=bool(analysis.entry_gate.final_entry_decision),
+                invalidation_reason=invalidation_reason,
+            )
+            snapshots = [row for row in snapshots if not (row.cohort_id == req.cohort_id and row.symbol == cand.symbol and row.snapshot_date == today)]
+            snapshots.append(snap)
+            new_snapshots.append(snap)
+        self._save_cohort_snapshots(snapshots)
+        return CohortFollowupResponse(cohort_id=req.cohort_id, snapshot_date=today, snapshots=sorted(new_snapshots, key=lambda row: row.symbol))
 
     def _read_llm_logs(self) -> list[LLMDebugLog]:
         return [LLMDebugLog.model_validate(row) for row in self._read_rows(self.llm_logs_path)]
@@ -1154,6 +1293,125 @@ class IntelligenceService:
         except Exception:
             return {"1d": None, "3d": None, "7d": None, "14d": None}
 
+    def _forward_returns_from_selection(
+        self,
+        symbol: str,
+        market: str,
+        selection_date: date,
+        selected_price: float | None,
+    ) -> dict[str, float | None]:
+        try:
+            bundle = self.analysis_engine.data_service.get_market_data(symbol, market=market, period="1y")
+            close = bundle.daily["close"].dropna().astype(float)
+            if close.empty:
+                return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None}
+            if selected_price is None or selected_price <= 0:
+                selected_price = float(close.iloc[0])
+            from_idx = 0
+            for idx, ts in enumerate(close.index):
+                if ts.date() >= selection_date:
+                    from_idx = idx
+                    break
+            series = close.iloc[from_idx:]
+            if series.empty:
+                return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None}
+            def ret_at(days: int) -> float | None:
+                if len(series) <= days:
+                    return None
+                return float((series.iloc[days] / selected_price - 1.0) * 100.0)
+            runup = float((series.max() / selected_price - 1.0) * 100.0)
+            drawdown = float((series.min() / selected_price - 1.0) * 100.0)
+            return {
+                "1d": ret_at(1),
+                "3d": ret_at(3),
+                "7d": ret_at(7),
+                "14d": ret_at(14),
+                "28d": ret_at(28),
+                "max_runup": runup,
+                "max_drawdown": drawdown,
+            }
+        except Exception:
+            return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None}
+
+    def run_cohort_review(self, req: CohortReviewRequest) -> CohortReviewResponse:
+        cohorts = self._read_cohorts()
+        target_ids = [req.cohort_id] if req.cohort_id else [row.id for row in cohorts if row.status == CandidateCohortStatus.ACTIVE]
+        candidate_rows = [row for row in self._read_cohort_candidates() if row.cohort_id in target_ids]
+        snapshot_rows = [row for row in self._read_cohort_snapshots() if row.cohort_id in target_ids]
+        unique_days = len({row.snapshot_date for row in snapshot_rows})
+        days_remaining = max(0, req.days_required - unique_days)
+        readiness = (
+            f"Review ready. Current history: {unique_days} days. Target: {req.days_required} days."
+            if days_remaining == 0
+            else f"Review needs more historical runs. Current history: {unique_days} days. Target: {req.days_required} days."
+        )
+        by_symbol_latest: dict[str, CohortDailySnapshot] = {}
+        for row in sorted(snapshot_rows, key=lambda x: (x.snapshot_date, x.symbol)):
+            by_symbol_latest[row.symbol] = row
+        returns_by_cat: dict[str, list[float]] = {}
+        score_ret_pairs: list[tuple[float, float]] = []
+        false_positives = 0
+        missed_follow = 0
+        stayed_valid = 0
+        invalidated_quickly = 0
+        best_symbol = None
+        worst_symbol = None
+        best_ret = -9999.0
+        worst_ret = 9999.0
+        multi_cat_returns: list[float] = []
+        for cand in candidate_rows:
+            latest = by_symbol_latest.get(cand.symbol)
+            ret7 = latest.return_7d if latest else None
+            if ret7 is not None:
+                for cat in cand.selected_categories:
+                    key = cat.value if hasattr(cat, "value") else str(cat)
+                    returns_by_cat.setdefault(key, []).append(float(ret7))
+                score_ret_pairs.append((cand.selected_score, float(ret7)))
+                if len(cand.selected_categories) > 1:
+                    multi_cat_returns.append(float(ret7))
+                if ret7 > best_ret:
+                    best_ret, best_symbol = ret7, cand.symbol
+                if ret7 < worst_ret:
+                    worst_ret, worst_symbol = ret7, cand.symbol
+            if latest and not latest.still_valid_candidate and (latest.return_7d is None or latest.return_7d < 0):
+                false_positives += 1
+            if latest and latest.still_valid_candidate:
+                stayed_valid += 1
+            if latest and not latest.still_valid_candidate:
+                invalidated_quickly += 1
+            if latest and latest.return_7d is not None and latest.return_7d < -3:
+                missed_follow += 1
+        avg_by_cat = {k: round(sum(v) / len(v), 3) for k, v in returns_by_cat.items() if v}
+        best_cat = max(avg_by_cat, key=avg_by_cat.get) if avg_by_cat else None
+        worst_cat = min(avg_by_cat, key=avg_by_cat.get) if avg_by_cat else None
+        note = "insufficient data"
+        if score_ret_pairs:
+            up = sum(1 for score, ret in score_ret_pairs if score >= 75 and ret > 0)
+            down = len(score_ret_pairs) - up
+            note = f"high-score positive-follow-through={up}, otherwise={down}"
+        stats = CohortReviewStats(
+            average_return_by_category=avg_by_cat,
+            best_candidate=best_symbol,
+            worst_candidate=worst_symbol,
+            best_category=best_cat,
+            worst_category=worst_cat,
+            multi_category_avg_return_7d=(round(sum(multi_cat_returns) / len(multi_cat_returns), 3) if multi_cat_returns else None),
+            false_positives=false_positives,
+            missed_follow_through=missed_follow,
+            stayed_valid=stayed_valid,
+            invalidated_quickly=invalidated_quickly,
+            score_delta_vs_return_note=note,
+        )
+        return CohortReviewResponse(
+            cohort_id=req.cohort_id,
+            readiness_message=readiness,
+            days_collected=unique_days,
+            days_required=req.days_required,
+            days_remaining=days_remaining,
+            deterministic_stats=stats,
+            llm_summary=None,
+        )
+
     def _compute_review_readiness(self) -> ReviewReadiness:
         runs = self._read_runs()
         details = [DailyRunDetail.model_validate(row) for row in self._read_symbol_results()]
@@ -1240,6 +1498,8 @@ class IntelligenceService:
         briefings = self._read_briefings()
         reviews = self._read_reviews()
         details = [DailyRunDetail.model_validate(row) for row in self._read_symbol_results()]
+        cohorts = sorted(self._read_cohorts(), key=lambda row: row.created_at, reverse=True)
+        cohort_details = [self.get_cohort_detail(row.id) for row in cohorts[:8]]
         return IntelligenceDashboardResponse(
             runs=sorted(runs, key=lambda row: row.timestamp, reverse=True),
             latest_run_results=latest_results,
@@ -1247,6 +1507,8 @@ class IntelligenceService:
             latest_briefing=briefings[-1] if briefings else None,
             latest_review=reviews[-1] if reviews else None,
             pipeline_events=sorted(self._slice_latest(self._read_pipeline_events(), limit=250), key=lambda row: row.timestamp, reverse=True),
+            cohorts=cohorts,
+            cohort_details=cohort_details,
             review_readiness=self._compute_review_readiness(),
             deterministic_review_stats=self._compute_deterministic_review_stats(details),
         )
@@ -1363,6 +1625,46 @@ class IntelligenceService:
             run_id=run_id,
             filename=f"tradeghost-intelligence-report-{report.run.date}-{run_id[:8]}.md",
             markdown=markdown,
+        )
+
+    def export_cohort_report_markdown(self, cohort_id: str) -> IntelligenceRunReportExport:
+        detail = self.get_cohort_detail(cohort_id)
+        review = self.run_cohort_review(CohortReviewRequest(cohort_id=cohort_id))
+        lines: list[str] = []
+        lines.append(f"# TradeGhost Candidate Cohort Report - {detail.cohort.name}")
+        lines.append("")
+        lines.append("## A) Discovery Cohort Report")
+        lines.append(f"- Cohort ID: `{detail.cohort.id}`")
+        lines.append(f"- Start date: `{detail.cohort.start_date}`")
+        lines.append(f"- Market: `{detail.cohort.market.value}`")
+        lines.append(f"- Analysis window: `{detail.cohort.analysis_window.value}`")
+        lines.append(f"- Categories: `{', '.join([c.value if hasattr(c, 'value') else str(c) for c in detail.cohort.selected_categories])}`")
+        for row in detail.candidates:
+            lines.append(f"### {row.selected_rank}. {row.symbol}")
+            lines.append(f"- Original why selected: {row.selected_reason}")
+            lines.append(f"- Structure snapshot: `{json.dumps(row.selected_structure_snapshot, default=str)}`")
+            lines.append(f"- Risk flags: `{', '.join(row.selected_risk_flags) if row.selected_risk_flags else '-'}`")
+        lines.append("")
+        lines.append("## B) Cohort Follow-up Report")
+        lines.append(f"- Current date: `{date.today()}`")
+        for row in detail.snapshots[-len(detail.candidates) :]:
+            lines.append(
+                f"- {row.symbol}: 1D={row.return_1d if row.return_1d is not None else 'pending'}, "
+                f"3D={row.return_3d if row.return_3d is not None else 'pending'}, "
+                f"7D={row.return_7d if row.return_7d is not None else 'pending'}, "
+                f"14D={row.return_14d if row.return_14d is not None else 'pending'}, "
+                f"28D={row.return_28d if row.return_28d is not None else 'pending'} "
+                f"valid={row.still_valid_candidate}"
+            )
+        lines.append("")
+        lines.append("## C) 28-Day Review Report")
+        lines.append(f"- Readiness: {review.readiness_message}")
+        lines.append(f"- Deterministic stats: `{json.dumps(review.deterministic_stats.model_dump(mode='json'), default=str)}`")
+        lines.append(f"- LLM summary: {review.llm_summary or 'not generated'}")
+        return IntelligenceRunReportExport(
+            run_id=cohort_id,
+            filename=f"tradeghost-cohort-report-{detail.cohort.start_date}-{cohort_id[:8]}.md",
+            markdown="\n".join(lines).strip() + "\n",
         )
 
     def get_llm_logs(self, limit: int = 200) -> list[LLMDebugLog]:

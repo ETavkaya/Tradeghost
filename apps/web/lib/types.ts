@@ -927,6 +927,95 @@ export type IntelligenceRunResponse = {
   symbol_results: SymbolResult[];
 };
 
+export type CandidateCohortStatus = "active" | "completed" | "archived";
+
+export type CandidateCohort = {
+  id: string;
+  name: string;
+  created_at: string;
+  start_date: string;
+  market: MarketCode;
+  analysis_window: ScannerDuration;
+  selected_categories: ScannerCategory[];
+  top_n_per_category: number;
+  status: CandidateCohortStatus;
+  notes: string;
+};
+
+export type CohortCandidate = {
+  cohort_id: string;
+  symbol: string;
+  market: MarketCode;
+  selected_at: string;
+  selected_price: number | null;
+  selected_rank: number;
+  selected_score: number;
+  selected_categories: ScannerCategory[];
+  selected_setup_type: string;
+  selected_trend_state: string;
+  selected_score_dynamics: string | null;
+  selected_reason: string;
+  selected_structure_snapshot: Record<string, unknown>;
+  selected_risk_flags: string[];
+};
+
+export type CohortDailySnapshot = {
+  cohort_id: string;
+  symbol: string;
+  snapshot_date: string;
+  current_price: number | null;
+  current_score: number | null;
+  current_rank_if_discovered_today: number | null;
+  current_categories: ScannerCategory[];
+  current_setup_type: string | null;
+  current_trend_state: string | null;
+  current_score_dynamics: string | null;
+  price_change_since_selection: number | null;
+  return_1d: number | null;
+  return_3d: number | null;
+  return_7d: number | null;
+  return_14d: number | null;
+  return_28d: number | null;
+  max_runup_since_selection: number | null;
+  max_drawdown_since_selection: number | null;
+  still_valid_candidate: boolean;
+  invalidation_reason: string | null;
+};
+
+export type CohortDetail = {
+  cohort: CandidateCohort;
+  candidates: CohortCandidate[];
+  snapshots: CohortDailySnapshot[];
+};
+
+export type CohortFollowupResponse = {
+  cohort_id: string;
+  snapshot_date: string;
+  snapshots: CohortDailySnapshot[];
+};
+
+export type CohortReviewResponse = {
+  cohort_id: string | null;
+  readiness_message: string;
+  days_collected: number;
+  days_required: number;
+  days_remaining: number;
+  deterministic_stats: {
+    average_return_by_category: Record<string, number>;
+    best_candidate: string | null;
+    worst_candidate: string | null;
+    best_category: string | null;
+    worst_category: string | null;
+    multi_category_avg_return_7d: number | null;
+    false_positives: number;
+    missed_follow_through: number;
+    stayed_valid: number;
+    invalidated_quickly: number;
+    score_delta_vs_return_note: string;
+  };
+  llm_summary: string | null;
+};
+
 export type SymbolContextBatchResponse = {
   run_id: string;
   generated: number;
@@ -941,6 +1030,8 @@ export type IntelligenceDashboardResponse = {
   latest_briefing: DailyBriefing | null;
   latest_review: SystemReview | null;
   pipeline_events: PipelineDebugEvent[];
+  cohorts: CandidateCohort[];
+  cohort_details: CohortDetail[];
   review_readiness: {
     runs_collected: number;
     unique_days: number;

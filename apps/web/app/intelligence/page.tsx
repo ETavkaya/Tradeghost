@@ -4,6 +4,8 @@ import { Fragment, useEffect, useState } from "react";
 import { Panel, SectionTitle, StatCard } from "@/components/ui";
 import { api } from "@/lib/api";
 import {
+  CohortDetail,
+  CohortReviewResponse,
   IntelligenceRunReport,
   IntelligenceDashboardResponse,
   LLMDebugLog,
@@ -51,6 +53,11 @@ export default function IntelligencePage() {
   const [runReport, setRunReport] = useState<IntelligenceRunReport | null>(null);
   const [reviewer, setReviewer] = useState("operator");
   const [approvalNotes, setApprovalNotes] = useState("");
+  const [cohortName, setCohortName] = useState("Momentum Milestone");
+  const [cohortNotes, setCohortNotes] = useState("");
+  const [selectedCohortId, setSelectedCohortId] = useState<string>("");
+  const [selectedCohortDetail, setSelectedCohortDetail] = useState<CohortDetail | null>(null);
+  const [cohortReview, setCohortReview] = useState<CohortReviewResponse | null>(null);
 
   const formatError = (err: unknown, stage: string): string => {
     if (!(err instanceof Error)) return `${stage} failed.`;
@@ -110,6 +117,25 @@ export default function IntelligencePage() {
     void loadRunReport();
   }, [dashboard?.runs?.[0]?.id]);
 
+  useEffect(() => {
+    const first = dashboard?.cohorts?.[0]?.id ?? "";
+    if (!selectedCohortId && first) setSelectedCohortId(first);
+  }, [dashboard?.cohorts, selectedCohortId]);
+
+  useEffect(() => {
+    if (!selectedCohortId) {
+      setSelectedCohortDetail(null);
+      return;
+    }
+    void (async () => {
+      try {
+        setSelectedCohortDetail(await api.getCohortDetail(selectedCohortId));
+      } catch {
+        setSelectedCohortDetail(null);
+      }
+    })();
+  }, [selectedCohortId, dashboard?.cohorts?.length]);
+
   const latestRun = dashboard?.runs?.[0] ?? null;
   const activeModel = llmStatus?.model_used ?? "llama3.2:3b";
   const latestRunContextCount = latestRun
@@ -149,6 +175,85 @@ export default function IntelligencePage() {
       setError(formatError(err, "Daily pipeline"));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const createDiscoveryCohort = async () => {
+    setError(null);
+    setNotice(null);
+    setLoading(true);
+    try {
+      const detail = await api.createDiscoveryCohort({
+        name: cohortName,
+        notes: cohortNotes,
+        market,
+        duration,
+        categories,
+        max_universe_symbols: maxUniverseSymbols,
+        top_n_per_category: topNPerCategory,
+        max_candidates: autoFinalShortlistLimit,
+        scanner_max_results: scannerResultCap,
+        scanner_universe_scope: debugCappedUniverse ? "capped_universe" : scope,
+      });
+      setSelectedCohortId(detail.cohort.id);
+      setNotice(`Discovery Run completed and cohort created: ${detail.cohort.name}.`);
+      await load();
+    } catch (err) {
+      setError(formatError(err, "Create Cohort"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runCohortFollowup = async () => {
+    if (!selectedCohortId) return;
+    setError(null);
+    setNotice(null);
+    setLoading(true);
+    try {
+      const response = await api.runCohortFollowup({ cohort_id: selectedCohortId });
+      setNotice(`Follow-up Run completed for ${response.cohort_id} with ${response.snapshots.length} snapshots.`);
+      await load();
+    } catch (err) {
+      setError(formatError(err, "Run Cohort Follow-up"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runCohortReview = async () => {
+    if (!selectedCohortId) return;
+    setError(null);
+    setNotice(null);
+    setLoading(true);
+    try {
+      const response = await api.runCohortReview({ cohort_id: selectedCohortId, days_required: 28, model: activeModel, timeout_seconds: contextTimeout });
+      setCohortReview(response);
+      setNotice(response.readiness_message);
+    } catch (err) {
+      setError(formatError(err, "Run Cohort Review"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const exportCohortReport = async () => {
+    if (!selectedCohortId) return;
+    setError(null);
+    try {
+      const report = await api.exportCohortReport(selectedCohortId);
+      const blob = new Blob([report.markdown], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = report.filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setNotice(`Cohort report exported: ${report.filename}`);
+    } catch (err) {
+      setError(formatError(err, "Export cohort report"));
     }
   };
 
@@ -351,7 +456,7 @@ export default function IntelligencePage() {
       ) : null}
 
       <Panel>
-        <SectionTitle title="Run Controls" subtitle="Clear parameters for deterministic + LLM phases" />
+        <SectionTitle title="Discovery" subtitle="Discovery Run finds new candidates and creates an immutable Candidate Cohort snapshot" />
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 text-xs text-slate-300">
           <label>Market<select value={market} onChange={(e) => setMarket(e.target.value as MarketCode)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm"><option value="us">US</option><option value="bist">BIST</option></select></label>
           <label>Analysis Window<select value={duration} onChange={(e) => setDuration(e.target.value as ScannerDuration)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm"><option value="1y">1Y</option><option value="2y">2Y</option><option value="3y">3Y</option></select></label>
@@ -365,8 +470,12 @@ export default function IntelligencePage() {
             <button key={cat} type="button" onClick={() => toggleCategory(cat)} className={`rounded-md border px-2 py-1 ${categories.includes(cat) ? "border-cyan/60 text-cyan" : "border-stroke text-slate-300"}`}>{cat}</button>
           ))}
         </div>
+        <div className="mt-3 grid gap-3 md:grid-cols-2 text-xs text-slate-300">
+          <label>Cohort Name<input value={cohortName} onChange={(e) => setCohortName(e.target.value)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
+          <label>Cohort Notes<input value={cohortNotes} onChange={(e) => setCohortNotes(e.target.value)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
+        </div>
         <p className="mt-2 text-xs text-slate-400">
-          Daily Intelligence runs each selected category separately, selects Top N per category, merges duplicates, then optionally sends final candidates to Ollama for context.
+          Discovery Run selects new symbols. Follow-up Run tracks the same cohort symbols only.
         </p>
         <p className="mt-1 text-xs text-slate-400">
           Debug mode sends symbols to Ollama one by one using short JSON context prompt mode.
@@ -388,8 +497,10 @@ export default function IntelligencePage() {
         ) : null}
 
         <div className="mt-3 grid gap-2 md:grid-cols-2">
-          <button type="button" onClick={runPipeline} disabled={loading || !backendConnected} className="h-10 rounded-lg bg-cyan px-3 text-sm font-semibold text-bg disabled:opacity-60">{loading ? "Running..." : "Run Daily Pipeline"}</button>
-          <p className="text-xs text-slate-400">Runs deterministic scanner, analysis snapshots, and lightweight backtest summaries. Does not require LLM.</p>
+          <button type="button" onClick={createDiscoveryCohort} disabled={loading || !backendConnected} className="h-10 rounded-lg bg-cyan px-3 text-sm font-semibold text-bg disabled:opacity-60">{loading ? "Running..." : "Run Discovery / Create Cohort"}</button>
+          <p className="text-xs text-slate-400">Runs scanner category-by-category, merges candidates, and stores immutable cohort candidate snapshots.</p>
+          <button type="button" onClick={runPipeline} disabled={loading || !backendConnected} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Legacy Daily Pipeline</button>
+          <p className="text-xs text-slate-400">Legacy path retained for compatibility, but review should use cohort follow-up.</p>
           <button type="button" onClick={runContexts} disabled={loading || !canRunContexts} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Generate Symbol Contexts</button>
           <p className="text-xs text-slate-400">Sends latest daily candidates to Ollama and generates bull/bear/risk summaries.</p>
           <button type="button" onClick={runBriefing} disabled={loading || !canRunBriefing} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Generate Daily Briefing</button>
@@ -439,7 +550,7 @@ export default function IntelligencePage() {
           {consoleTab === "pipeline" ? (
             <div className="mt-3 max-h-[460px] overflow-auto rounded-lg border border-stroke/70">
               <table className="w-full text-xs">
-                <thead>
+                <thead className="sticky top-0 z-20 bg-bg">
                   <tr className="border-b border-stroke text-left text-slate-400">
                     <th className="px-2 py-2">Time</th>
                     <th className="px-2 py-2">Step</th>
@@ -468,7 +579,7 @@ export default function IntelligencePage() {
           ) : (
             <div className="mt-3 max-h-[460px] overflow-auto rounded-lg border border-stroke/70">
               <table className="w-full text-xs">
-                <thead>
+                <thead className="sticky top-0 z-20 bg-bg">
                   <tr className="border-b border-stroke text-left text-slate-400">
                     <th className="px-2 py-2">Time</th>
                     <th className="px-2 py-2">Symbol</th>
@@ -522,7 +633,7 @@ export default function IntelligencePage() {
         <SectionTitle title="Daily Runs" subtitle="Deterministic scanner -> analysis -> lightweight backtest snapshots" />
         <div className="max-h-[240px] overflow-auto rounded-lg border border-stroke/70">
           <table className="w-full text-xs">
-            <thead><tr className="border-b border-stroke text-left text-slate-400"><th className="px-2 py-2">Date</th><th className="px-2 py-2">Symbols</th><th className="px-2 py-2">Categories</th><th className="px-2 py-2">Top N / Cat</th><th className="px-2 py-2">Raw Before Merge</th><th className="px-2 py-2">Final After Merge</th><th className="px-2 py-2">Status</th></tr></thead>
+            <thead className="sticky top-0 z-20 bg-bg"><tr className="border-b border-stroke text-left text-slate-400"><th className="px-2 py-2">Date</th><th className="px-2 py-2">Symbols</th><th className="px-2 py-2">Categories</th><th className="px-2 py-2">Top N / Cat</th><th className="px-2 py-2">Raw Before Merge</th><th className="px-2 py-2">Final After Merge</th><th className="px-2 py-2">Status</th></tr></thead>
             <tbody>
               {(dashboard?.runs ?? []).map((row) => (
                 <tr key={row.id} className="border-b border-stroke/50"><td className="px-2 py-2">{new Date(row.timestamp).toLocaleString()}</td><td className="px-2 py-2">{row.symbols_count}</td><td className="px-2 py-2">{row.scanner_categories.join(", ")}</td><td className="px-2 py-2">{row.top_n_per_category}</td><td className="px-2 py-2">{row.raw_candidates_before_merge}</td><td className="px-2 py-2">{row.final_candidates_after_merge}</td><td className="px-2 py-2">{row.status}</td></tr>
@@ -533,10 +644,55 @@ export default function IntelligencePage() {
       </Panel>
 
       <Panel>
+        <SectionTitle title="Active Cohorts" subtitle="Follow-up Run tracks existing cohort symbols and forward performance" />
+        <div className="grid gap-3 md:grid-cols-3 text-xs">
+          <label className="md:col-span-2">Selected Cohort
+            <select value={selectedCohortId} onChange={(e) => setSelectedCohortId(e.target.value)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm">
+              <option value="">Select cohort</option>
+              {(dashboard?.cohorts ?? []).map((row) => <option key={row.id} value={row.id}>{row.name} | {row.start_date} | {row.status}</option>)}
+            </select>
+          </label>
+          <div className="flex items-end gap-2">
+            <button type="button" onClick={runCohortFollowup} disabled={loading || !selectedCohortId} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Run Follow-up</button>
+            <button type="button" onClick={exportCohortReport} disabled={loading || !selectedCohortId} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Export Cohort Report</button>
+            <button type="button" onClick={runCohortReview} disabled={loading || !selectedCohortId} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Run Cohort Review</button>
+          </div>
+        </div>
+        {cohortReview ? <p className="mt-2 text-xs text-slate-300">{cohortReview.readiness_message}</p> : null}
+        <div className="mt-3 max-h-[340px] overflow-auto rounded-lg border border-stroke/70">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 z-20 bg-bg">
+              <tr className="border-b border-stroke text-left text-slate-400">
+                <th className="px-2 py-2">Symbol</th>
+                <th className="px-2 py-2">Original Why Selected</th>
+                <th className="px-2 py-2">Selected Score</th>
+                <th className="px-2 py-2">Current Status</th>
+                <th className="px-2 py-2">Forward Performance</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(selectedCohortDetail?.candidates ?? []).map((row) => {
+                const latest = (selectedCohortDetail?.snapshots ?? []).filter((x) => x.symbol === row.symbol).slice(-1)[0];
+                return (
+                  <tr key={`${row.cohort_id}-${row.symbol}`} className="border-b border-stroke/50">
+                    <td className="px-2 py-2">{row.symbol}</td>
+                    <td className="px-2 py-2 min-w-[320px]">{row.selected_reason}</td>
+                    <td className="px-2 py-2">{row.selected_score.toFixed(2)}</td>
+                    <td className="px-2 py-2">{latest ? (latest.still_valid_candidate ? "valid" : `invalid (${latest.invalidation_reason ?? "n/a"})`) : "pending follow-up"}</td>
+                    <td className="px-2 py-2">1D:{latest?.return_1d ?? "pending"} 3D:{latest?.return_3d ?? "pending"} 7D:{latest?.return_7d ?? "pending"} 14D:{latest?.return_14d ?? "pending"} 28D:{latest?.return_28d ?? "pending"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+
+      <Panel>
         <SectionTitle title="Latest Merged Candidates" subtitle="Category-balanced merge, deduplication, and multi-category priority boost" />
         <div className="max-h-[360px] overflow-auto rounded-lg border border-stroke/70">
           <table className="w-full text-xs">
-            <thead>
+            <thead className="sticky top-0 z-20 bg-bg">
               <tr className="border-b border-stroke text-left text-slate-400">
                 <th className="px-2 py-2">Merged Rank</th>
                 <th className="px-2 py-2">Symbol</th>

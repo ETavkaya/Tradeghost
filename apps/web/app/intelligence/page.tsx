@@ -6,7 +6,6 @@ import { api } from "@/lib/api";
 import {
   CohortDetail,
   CohortReviewResponse,
-  IntelligenceRunReport,
   IntelligenceDashboardResponse,
   LLMDebugLog,
   LLMConnectionStatus,
@@ -27,20 +26,16 @@ export default function IntelligencePage() {
   const [market, setMarket] = useState<MarketCode>("us");
   const [duration, setDuration] = useState<ScannerDuration>("1y");
   const [scope, setScope] = useState<ScannerUniverseScope>("full_universe");
-  const [debugCappedUniverse, setDebugCappedUniverse] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [maxUniverseSymbols, setMaxUniverseSymbols] = useState(60);
   const [topNPerCategory, setTopNPerCategory] = useState(5);
-  const [scannerResultCap, setScannerResultCap] = useState(30);
+  const scannerResultCap = 30;
   const [categories, setCategories] = useState<ScannerCategory[]>(["trend_mode", "build_up", "momentum_mode", "value_rebuild", "overextended"]);
 
   const [llmConcurrency, setLlmConcurrency] = useState(1);
-  const [contextSymbolLimit, setContextSymbolLimit] = useState(3);
   const [contextTimeout, setContextTimeout] = useState(120);
-  const [liveStreamDebug, setLiveStreamDebug] = useState(false);
   const [reviewDays, setReviewDays] = useState(28);
 
-  const [showLLMConsole, setShowLLMConsole] = useState(false);
+  const [llmConsoleExpanded, setLlmConsoleExpanded] = useState(false);
   const [consoleTab, setConsoleTab] = useState<"pipeline" | "llm">("pipeline");
   const [llmStatusFilter, setLlmStatusFilter] = useState<"all" | "success" | "fail">("all");
   const [llmProviderFilter, setLlmProviderFilter] = useState<"all" | "openai" | "ollama">("all");
@@ -51,16 +46,12 @@ export default function IntelligencePage() {
   const [expandedLogIds, setExpandedLogIds] = useState<Record<string, boolean>>({});
   const [expandedPipelineIds, setExpandedPipelineIds] = useState<Record<string, boolean>>({});
   const [backendConnected, setBackendConnected] = useState(false);
-  const [runReport, setRunReport] = useState<IntelligenceRunReport | null>(null);
-  const [reviewer, setReviewer] = useState("operator");
-  const [approvalNotes, setApprovalNotes] = useState("");
   const [cohortName, setCohortName] = useState("Momentum Milestone");
   const [cohortNotes, setCohortNotes] = useState("");
   const [selectedCohortId, setSelectedCohortId] = useState<string>("");
   const [selectedCohortDetail, setSelectedCohortDetail] = useState<CohortDetail | null>(null);
   const [cohortReview, setCohortReview] = useState<CohortReviewResponse | null>(null);
   const [cohortContextFailedSymbols, setCohortContextFailedSymbols] = useState<string[]>([]);
-  const [showLegacyActions, setShowLegacyActions] = useState(false);
   const [cohortActionSuccess, setCohortActionSuccess] = useState<Record<string, { followup?: boolean; contexts?: boolean; briefing?: boolean; review?: boolean; export?: boolean }>>({});
 
   const formatError = (err: unknown, stage: string): string => {
@@ -110,16 +101,12 @@ export default function IntelligencePage() {
   }, []);
 
   useEffect(() => {
-    if (!showLLMConsole && !loading) return;
+    if (!llmConsoleExpanded && !loading) return;
     const t = setInterval(() => {
       void load();
     }, 2500);
     return () => clearInterval(t);
-  }, [showLLMConsole, loading]);
-
-  useEffect(() => {
-    void loadRunReport();
-  }, [dashboard?.runs?.[0]?.id]);
+  }, [llmConsoleExpanded, loading]);
 
   useEffect(() => {
     const first = dashboard?.cohorts?.[0]?.id ?? "";
@@ -145,7 +132,6 @@ export default function IntelligencePage() {
     setCohortActionSuccess((prev) => ({ ...prev, [selectedCohortId]: prev[selectedCohortId] ?? {} }));
   }, [selectedCohortId]);
 
-  const latestRun = dashboard?.runs?.[0] ?? null;
   const activeModel = llmStatus?.model_used ?? "llama3.2:3b";
   const cohortContexts = (dashboard?.latest_contexts ?? []).filter((row) => row.cohort_id === selectedCohortId);
   const generatedCohortContextCount = cohortContexts.filter((row) => row.status === "generated").length;
@@ -155,7 +141,6 @@ export default function IntelligencePage() {
   const canRunCohortContexts = Boolean(selectedCohortId) && Boolean(llmStatus?.connected);
   const canRunCohortBriefing = Boolean(selectedCohortId) && generatedCohortContextCount > 0 && Boolean(llmStatus?.connected);
   const canRunCohortReview = Boolean(selectedCohortId) && latestCohortSnapshotCount > 0;
-  const canRunReview = (dashboard?.runs.length ?? 0) > 0;
   const followupDone = Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.followup);
   const contextsDone = Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.contexts);
   const briefingDone = Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.briefing);
@@ -170,30 +155,6 @@ export default function IntelligencePage() {
     return true;
   });
 
-  const runPipeline = async () => {
-    setError(null);
-    setNotice(null);
-    setLoading(true);
-    try {
-      const response = await api.runDailyPipeline({
-        market,
-        duration,
-        categories,
-        max_universe_symbols: maxUniverseSymbols,
-        top_n_per_category: topNPerCategory,
-        max_candidates: autoFinalShortlistLimit,
-        scanner_max_results: scannerResultCap,
-        scanner_universe_scope: debugCappedUniverse ? "capped_universe" : scope,
-      });
-      setNotice(`Daily pipeline completed: ${response.run.symbols_count} symbols stored.`);
-      await load();
-    } catch (err) {
-      setError(formatError(err, "Daily pipeline"));
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const createDiscoveryCohort = async () => {
     setError(null);
     setNotice(null);
@@ -205,11 +166,11 @@ export default function IntelligencePage() {
         market,
         duration,
         categories,
-        max_universe_symbols: maxUniverseSymbols,
+        max_universe_symbols: 500,
         top_n_per_category: topNPerCategory,
         max_candidates: autoFinalShortlistLimit,
         scanner_max_results: scannerResultCap,
-        scanner_universe_scope: debugCappedUniverse ? "capped_universe" : scope,
+        scanner_universe_scope: scope,
       });
       setSelectedCohortId(detail.cohort.id);
       setNotice(`Discovery Run completed and cohort created: ${detail.cohort.name}.`);
@@ -287,13 +248,15 @@ export default function IntelligencePage() {
     try {
       const response = await api.generateCohortSymbolContexts({
         cohort_id: selectedCohortId,
-        context_symbol_limit: contextSymbolLimit,
+        context_symbol_limit: retryFailedOnly
+          ? Math.max(1, cohortContextFailedSymbols.length)
+          : Math.max(1, selectedCohortDetail?.candidates.length ?? 200),
         max_concurrency: llmConcurrency,
         timeout_seconds: contextTimeout,
         model: activeModel,
         sequential_mode: true,
         short_context_mode: true,
-        debug_stream: liveStreamDebug,
+        debug_stream: false,
         symbols: retryFailedOnly ? cohortContextFailedSymbols : [],
       });
       setCohortContextFailedSymbols(response.failed_symbols ?? []);
@@ -336,25 +299,6 @@ export default function IntelligencePage() {
     }
   };
 
-  const runReview = async () => {
-    setError(null);
-    setNotice(null);
-    setLoading(true);
-    try {
-      const response = await api.runSystemReview({
-        days: reviewDays,
-        model: activeModel,
-        max_concurrency: llmConcurrency,
-        timeout_seconds: contextTimeout,
-      });
-      setNotice(`System review ${response.status === "generated" ? "generated" : "failed"} for ${response.period}.`);
-      await load();
-    } catch (err) {
-      setError(formatError(err, "Run System Review"));
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const runLLMResponseTest = async () => {
     setError(null);
@@ -377,53 +321,6 @@ export default function IntelligencePage() {
       setError(formatError(err, "LLM response test"));
     } finally {
       setLoading(false);
-    }
-  };
-
-  const loadRunReport = async () => {
-    if (!latestRun) return;
-    try {
-      const report = await api.getIntelligenceRunReport(latestRun.id);
-      setRunReport(report);
-    } catch {
-      setRunReport(null);
-    }
-  };
-
-  const exportRunReport = async () => {
-    if (!latestRun) return;
-    setError(null);
-    try {
-      const report = await api.exportIntelligenceRunReport(latestRun.id);
-      const blob = new Blob([report.markdown], { type: "text/markdown;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = report.filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      setNotice(`Report exported: ${report.filename}`);
-    } catch (err) {
-      setError(formatError(err, "Export report"));
-    }
-  };
-
-  const approveReview = async () => {
-    if (!latestRun) return;
-    setError(null);
-    try {
-      await api.approveIntelligenceRunReport({
-        run_id: latestRun.id,
-        reviewer,
-        status: "approved",
-        notes: approvalNotes,
-      });
-      setNotice("Review approved and saved.");
-      await Promise.all([load(), loadRunReport()]);
-    } catch (err) {
-      setError(formatError(err, "Approve review"));
     }
   };
 
@@ -469,9 +366,9 @@ export default function IntelligencePage() {
             <button type="button" onClick={() => jumpTo("workflow-steps")} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan whitespace-nowrap">Workflow Steps</button>
             <button type="button" onClick={() => jumpTo("discovery")} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan whitespace-nowrap">Discovery</button>
             <button type="button" onClick={() => jumpTo("active-cohorts")} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan whitespace-nowrap">Active Cohorts</button>
+            <button type="button" onClick={() => { setLlmConsoleExpanded(true); jumpTo("cohort-console"); }} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan whitespace-nowrap">LLM Console</button>
             <button type="button" onClick={() => jumpTo("candidates")} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan whitespace-nowrap">Latest Candidates</button>
             <button type="button" onClick={() => jumpTo("review-readiness")} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan whitespace-nowrap">Review Readiness</button>
-            <button type="button" onClick={() => jumpTo("legacy-tools")} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan whitespace-nowrap">Legacy / Tools</button>
           </div>
         </div>
       </aside>
@@ -490,8 +387,11 @@ export default function IntelligencePage() {
           <span className={`rounded-md border px-2 py-1 ${llmStatus?.fallback_connected ? "border-green/60 text-green" : "border-red/60 text-red"}`}>
             Fallback Provider: {(llmStatus?.fallback_provider ?? "n/a").toUpperCase()} | Model: {llmStatus?.fallback_model ?? "-"} | Status: {llmStatus?.fallback_connected ? "Connected" : "Not reachable"}
           </span>
-          <button type="button" onClick={() => setShowLLMConsole((prev) => !prev)} className="rounded-md border border-stroke px-2 py-1 hover:text-cyan">
-            {showLLMConsole ? "Hide LLM Console" : "Show LLM Console"}
+          <button type="button" onClick={() => setLlmConsoleExpanded((prev) => !prev)} className="rounded-md border border-stroke px-2 py-1 hover:text-cyan">
+            {llmConsoleExpanded ? "Minimize LLM Console" : "Expand LLM Console"}
+          </button>
+          <button type="button" onClick={() => { setLlmConsoleExpanded(true); jumpTo("cohort-console"); }} className="rounded-md border border-stroke px-2 py-1 hover:text-cyan">
+            Jump to Console
           </button>
           <button type="button" onClick={runLLMResponseTest} disabled={loading || !backendConnected || !llmStatus?.connected} className="rounded-md border border-stroke px-2 py-1 hover:text-cyan disabled:opacity-60">
             Test LLM Response
@@ -586,14 +486,9 @@ export default function IntelligencePage() {
           {showAdvanced ? "Hide Advanced Settings" : "Show Advanced Settings"}
         </button>
         {showAdvanced ? (
-          <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3 text-xs text-slate-300 rounded-lg border border-stroke/70 p-3">
-            <label>Debug capped universe<input type="checkbox" checked={debugCappedUniverse} onChange={(e) => setDebugCappedUniverse(e.target.checked)} className="ml-2" /></label>
-            <label>Max Universe Symbols<input type="number" min={10} max={500} value={maxUniverseSymbols} onChange={(e) => setMaxUniverseSymbols(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
-            <label>Scanner Result Cap<input type="number" min={5} max={100} value={scannerResultCap} onChange={(e) => setScannerResultCap(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
+        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3 text-xs text-slate-300 rounded-lg border border-stroke/70 p-3">
             <label>LLM Concurrency<input type="number" min={1} max={8} value={llmConcurrency} onChange={(e) => setLlmConcurrency(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
-            <label>Context Symbol Limit<input type="number" min={1} max={100} value={contextSymbolLimit} onChange={(e) => setContextSymbolLimit(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
             <label>LLM Timeout (sec)<input type="number" min={5} max={300} value={contextTimeout} onChange={(e) => setContextTimeout(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
-            <label>Live Stream Debug<input type="checkbox" checked={liveStreamDebug} onChange={(e) => setLiveStreamDebug(e.target.checked)} className="ml-2" /></label>
             <label>Review Period Days<input type="number" min={7} max={365} value={reviewDays} onChange={(e) => setReviewDays(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
           </div>
         ) : null}
@@ -601,20 +496,7 @@ export default function IntelligencePage() {
         <div className="mt-3 grid gap-2 md:grid-cols-2">
           <button type="button" onClick={createDiscoveryCohort} disabled={loading || !backendConnected || !canCreateCohort} className="h-10 rounded-lg bg-cyan px-3 text-sm font-semibold text-bg disabled:opacity-60">{loading ? "Running..." : "Create New Candidate Cohort"}</button>
           <p className="text-xs text-slate-400">Runs scanner category-by-category, merges candidates, and stores immutable cohort candidate snapshots.</p>
-          <button type="button" onClick={() => setShowLegacyActions((prev) => !prev)} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan">{showLegacyActions ? "Hide Legacy Actions" : "Show Legacy Actions"}</button>
-          <p className="text-xs text-slate-400">Legacy actions are available but hidden from the main cohort workflow.</p>
         </div>
-
-        {showLegacyActions ? (
-          <div className="mt-3 grid gap-2 md:grid-cols-2 rounded-lg border border-stroke/70 p-3">
-            <button type="button" onClick={runPipeline} disabled={loading || !backendConnected} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Legacy Daily Pipeline</button>
-            <p className="text-xs text-slate-400">Legacy run-level discovery path.</p>
-            <button type="button" onClick={runReview} disabled={loading || !canRunReview} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Run System Review (Legacy)</button>
-            <p className="text-xs text-slate-400">Legacy daily-run review.</p>
-            <button type="button" onClick={exportRunReport} disabled={loading || !latestRun} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Export Daily Run Report (Legacy)</button>
-            <p className="text-xs text-slate-400">Exports legacy run report format.</p>
-          </div>
-        ) : null}
 
         {notice ? <p className="mt-3 text-xs text-green">{notice}</p> : null}
         {error ? <p className="mt-3 text-xs text-red">{error}</p> : null}
@@ -655,7 +537,7 @@ export default function IntelligencePage() {
               <button type="button" onClick={runCohortBriefing} disabled={loading || !canRunCohortBriefing} className={actionButtonClass(briefingDone)}>Generate Cohort Briefing</button>
               <button type="button" onClick={runCohortReview} disabled={loading || !canRunCohortReview} className={actionButtonClass(reviewDone)}>Review Selected Cohort</button>
               <button type="button" onClick={exportCohortReport} disabled={loading || !selectedCohortId} className={actionButtonClass(exportDone)}>Export Cohort Report</button>
-              {showLLMConsole ? <button type="button" onClick={() => jumpTo("cohort-console")} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan">Jump to Console</button> : null}
+              <button type="button" onClick={() => { setLlmConsoleExpanded(true); jumpTo("cohort-console"); }} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan">Jump to Console</button>
             </div>
           </div>
           <div className="mt-3 max-h-[340px] overflow-auto rounded-lg border border-stroke/70 xl:mt-0">
@@ -706,15 +588,21 @@ export default function IntelligencePage() {
       </Panel>
       </section>
 
-      {showLLMConsole ? (
-        <section id="cohort-console">
-        <Panel>
+      <section id="cohort-console">
+      <Panel>
           <SectionTitle title="Pipeline / LLM Console" subtitle="Placed near Active Cohorts for follow-up/context runs" />
           {llmStatus ? (
             <p className="text-xs text-slate-400">
               Endpoint: {llmStatus.base_url} | Checked: {new Date(llmStatus.checked_at).toLocaleString()} | Status: {llmStatus.connected ? "connected" : `error: ${llmStatus.error ?? "unknown"}`}
             </p>
           ) : null}
+          <div className="mt-2">
+            <button type="button" onClick={() => setLlmConsoleExpanded((prev) => !prev)} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan">
+              {llmConsoleExpanded ? "Minimize Console" : "Expand Console"}
+            </button>
+          </div>
+          {llmConsoleExpanded ? (
+          <>
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
             <button type="button" onClick={() => setConsoleTab("pipeline")} className={`rounded border px-2 py-1 ${consoleTab === "pipeline" ? "border-cyan/60 text-cyan" : "border-stroke text-slate-300"}`}>Pipeline Steps</button>
             <button type="button" onClick={() => setConsoleTab("llm")} className={`rounded border px-2 py-1 ${consoleTab === "llm" ? "border-cyan/60 text-cyan" : "border-stroke text-slate-300"}`}>LLM Calls</button>
@@ -861,9 +749,12 @@ export default function IntelligencePage() {
               </table>
             </div>
           )}
-        </Panel>
-        </section>
-      ) : null}
+          </>
+          ) : (
+            <p className="mt-3 text-xs text-slate-400">Console minimized. Expand anytime to inspect pipeline and LLM call details.</p>
+          )}
+      </Panel>
+      </section>
 
       <section id="candidates">
       <Panel>
@@ -920,41 +811,6 @@ export default function IntelligencePage() {
       </Panel>
       </section>
 
-      <section id="legacy-tools">
-      <Panel>
-        <SectionTitle title="Daily Briefing" subtitle="LLM-generated advisory summary, never an execution signal" />
-        <p className="text-sm text-slate-200 whitespace-pre-wrap">{dashboard?.latest_briefing?.summary_text ?? "No briefing generated yet."}</p>
-      </Panel>
-
-      <Panel>
-        <SectionTitle title="Review" subtitle="System-level findings and recommendations from historical outcomes" />
-        {dashboard?.latest_review ? (
-          <div className="space-y-2 text-sm">
-            <p><strong>Findings:</strong> {dashboard.latest_review.findings}</p>
-            <p><strong>Mistakes:</strong> {dashboard.latest_review.mistakes}</p>
-            <p><strong>Missed Patterns:</strong> {dashboard.latest_review.missed_patterns}</p>
-            <p><strong>Recommendations:</strong> {dashboard.latest_review.recommendations}</p>
-          </div>
-        ) : (
-          <p className="text-sm text-slate-300">No review generated yet.</p>
-        )}
-      </Panel>
-
-      <Panel>
-        <SectionTitle title="Review Approval" subtitle="Approve/reject latest run after checking LLM outputs" />
-        <div className="grid gap-3 md:grid-cols-3 text-xs">
-          <label>Reviewer<input value={reviewer} onChange={(e) => setReviewer(e.target.value)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
-          <label className="md:col-span-2">Notes<input value={approvalNotes} onChange={(e) => setApprovalNotes(e.target.value)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" placeholder="Approval notes" /></label>
-        </div>
-        <div className="mt-3 flex gap-2">
-          <button type="button" onClick={approveReview} disabled={loading || !latestRun} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Approve Review</button>
-          <button type="button" onClick={loadRunReport} disabled={loading || !latestRun} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Refresh Report</button>
-        </div>
-        <p className="mt-2 text-xs text-slate-300">
-          Approval: {runReport?.approval ? `${runReport.approval.status} by ${runReport.approval.reviewer} at ${new Date(runReport.approval.created_at).toLocaleString()}` : "not approved yet"}
-        </p>
-      </Panel>
-      </section>
       </div>
     </main>
   );

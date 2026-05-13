@@ -913,6 +913,7 @@ class IntelligenceService:
         run_id: str | None = None,
         debug_stream: bool = False,
         response_format: dict[str, Any] | None = None,
+        max_tokens_hint: int | None = None,
     ) -> str:
         started = datetime.now(UTC)
         primary_provider = self._normalize_provider(self.settings.llm_provider)
@@ -954,7 +955,7 @@ class IntelligenceService:
                                 timeout_seconds=timeout_seconds,
                                 options={
                                     "temperature": self.settings.ollama_temperature,
-                                    "num_predict": self.settings.ollama_num_predict,
+                                    "num_predict": int(max_tokens_hint or self.settings.ollama_num_predict),
                                     "response_format": response_format if response_format is not None else None,
                                 },
                             )
@@ -982,7 +983,7 @@ class IntelligenceService:
                                         "temperature": self.settings.ollama_temperature,
                                         "top_p": self.settings.ollama_top_p,
                                         "repeat_penalty": self.settings.ollama_repeat_penalty,
-                                        "num_predict": self.settings.ollama_num_predict,
+                                        "num_predict": int(max_tokens_hint or self.settings.ollama_num_predict),
                                         "num_ctx": self.settings.ollama_num_ctx,
                                         "num_thread": self.settings.ollama_num_thread,
                                     },
@@ -1007,8 +1008,8 @@ class IntelligenceService:
                                 fallback_used=is_fallback,
                                 fallback_provider=fallback_provider if is_fallback else None,
                                 token_estimate=token_estimate,
-                                prompt_preview=prompt[:300],
-                                response_preview=text[:300],
+                                prompt_preview=prompt[:1200],
+                                response_preview=text[:1200],
                             )
                         )
                         if is_fallback and symbol:
@@ -1041,7 +1042,7 @@ class IntelligenceService:
                                 fallback_used=is_fallback,
                                 fallback_provider=fallback_provider if is_fallback else None,
                                 token_estimate=0,
-                                prompt_preview=prompt[:300],
+                                prompt_preview=prompt[:1200],
                             )
                         )
                         if attempt_idx == 0:
@@ -1134,6 +1135,7 @@ class IntelligenceService:
                 run_id=run_id,
                 debug_stream=debug_stream,
                 response_format=self._symbol_context_response_format() if short_context_mode else None,
+                max_tokens_hint=220 if short_context_mode else None,
             )
             bull = ""
             bear = ""

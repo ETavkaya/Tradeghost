@@ -755,7 +755,10 @@ export default function IntelligencePage() {
                     const relatedLog = expandedPipelineIds[row.id] ? getRelatedLogForEvent(row) : null;
                     return (
                       <Fragment key={row.id}>
-                        <tr className={`border-b border-stroke/50 ${row.status === "failed" ? "bg-red/10" : ""}`}>
+                        <tr
+                          className={`border-b border-stroke/50 cursor-pointer ${row.status === "failed" ? "bg-red/10" : ""} ${expandedPipelineIds[row.id] ? "bg-cyan/5" : ""}`}
+                          onClick={() => setExpandedPipelineIds((prev) => ({ ...prev, [row.id]: !prev[row.id] }))}
+                        >
                           <td className="px-2 py-2">{new Date(row.timestamp).toLocaleTimeString()}</td>
                           <td className="px-2 py-2">{row.step_name}</td>
                           <td className={`px-2 py-2 ${row.status === "failed" ? "text-red" : row.status === "success" ? "text-green" : "text-yellow-300"}`}>{row.status}</td>
@@ -766,7 +769,10 @@ export default function IntelligencePage() {
                           <td className="px-2 py-2">
                             <button
                               type="button"
-                              onClick={() => setExpandedPipelineIds((prev) => ({ ...prev, [row.id]: !prev[row.id] }))}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setExpandedPipelineIds((prev) => ({ ...prev, [row.id]: !prev[row.id] }));
+                              }}
                               className="rounded border border-stroke px-2 py-1 hover:text-cyan"
                             >
                               {expandedPipelineIds[row.id] ? "Collapse" : "Expand"}

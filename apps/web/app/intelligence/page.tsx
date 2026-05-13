@@ -437,8 +437,8 @@ export default function IntelligencePage() {
 
   return (
     <main className="relative">
-      <aside className="mb-4 xl:mb-0 xl:fixed xl:left-4 xl:top-[170px] xl:w-[240px] xl:z-30">
-        <div className="rounded-lg border border-stroke/70 bg-panel p-3">
+      <aside className="mb-4 xl:absolute xl:left-0 xl:top-0 xl:w-[208px] xl:z-20">
+        <div className="rounded-lg border border-stroke/70 bg-panel p-3 xl:sticky xl:top-4">
           <p className="mb-2 text-xs font-semibold text-slate-300">Intelligence Menu</p>
           <div className="flex gap-2 overflow-x-auto xl:flex-col xl:overflow-visible">
             <button type="button" onClick={() => jumpTo("intelligence-layer")} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan whitespace-nowrap">Intelligence Layer</button>
@@ -452,7 +452,7 @@ export default function IntelligencePage() {
         </div>
       </aside>
 
-      <div className="space-y-4 xl:pl-[268px]">
+      <div className="space-y-4 xl:pl-[228px]">
       <section id="intelligence-layer">
       <Panel>
         <SectionTitle title="Intelligence Layer" subtitle="Deterministic pipeline + optional LLM interpretation layer" />

@@ -60,6 +60,7 @@ export default function IntelligencePage() {
   const [cohortReview, setCohortReview] = useState<CohortReviewResponse | null>(null);
   const [cohortContextFailedSymbols, setCohortContextFailedSymbols] = useState<string[]>([]);
   const [showLegacyActions, setShowLegacyActions] = useState(false);
+  const [cohortActionSuccess, setCohortActionSuccess] = useState<Record<string, { followup?: boolean; contexts?: boolean; briefing?: boolean; review?: boolean; export?: boolean }>>({});
 
   const formatError = (err: unknown, stage: string): string => {
     if (!(err instanceof Error)) return `${stage} failed.`;
@@ -149,6 +150,11 @@ export default function IntelligencePage() {
   const canRunCohortBriefing = Boolean(selectedCohortId) && generatedCohortContextCount > 0 && Boolean(llmStatus?.connected);
   const canRunCohortReview = Boolean(selectedCohortId) && latestCohortSnapshotCount > 0;
   const canRunReview = (dashboard?.runs.length ?? 0) > 0;
+  const briefingDone = Boolean(dashboard?.latest_briefing?.cohort_id === selectedCohortId && dashboard?.latest_briefing?.status === "generated");
+  const followupDone = latestCohortSnapshotCount > 0;
+  const contextsDone = generatedCohortContextCount > 0;
+  const reviewDone = Boolean((cohortReview && cohortReview.cohort_id === selectedCohortId) || cohortActionSuccess[selectedCohortId ?? ""]?.review);
+  const exportDone = Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.export);
   const selectedCategoryCount = categories.length;
   const rawExpected = selectedCategoryCount * topNPerCategory;
   const autoFinalShortlistLimit = rawExpected;
@@ -217,6 +223,7 @@ export default function IntelligencePage() {
     try {
       const response = await api.runCohortFollowup({ cohort_id: selectedCohortId });
       setNotice(`Follow-up Run completed for ${response.cohort_id} with ${response.snapshots.length} snapshots.`);
+      setCohortActionSuccess((prev) => ({ ...prev, [selectedCohortId]: { ...(prev[selectedCohortId] ?? {}), followup: true } }));
       await load();
     } catch (err) {
       setError(formatError(err, "Run Cohort Follow-up"));
@@ -234,6 +241,7 @@ export default function IntelligencePage() {
       const response = await api.runCohortReview({ cohort_id: selectedCohortId, days_required: 28, model: activeModel, timeout_seconds: contextTimeout });
       setCohortReview(response);
       setNotice(response.readiness_message);
+      setCohortActionSuccess((prev) => ({ ...prev, [selectedCohortId]: { ...(prev[selectedCohortId] ?? {}), review: true } }));
     } catch (err) {
       setError(formatError(err, "Run Cohort Review"));
     } finally {
@@ -256,6 +264,7 @@ export default function IntelligencePage() {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       setNotice(`Cohort report exported: ${report.filename}`);
+      setCohortActionSuccess((prev) => ({ ...prev, [selectedCohortId]: { ...(prev[selectedCohortId] ?? {}), export: true } }));
     } catch (err) {
       setError(formatError(err, "Export cohort report"));
     }
@@ -283,6 +292,9 @@ export default function IntelligencePage() {
       });
       setCohortContextFailedSymbols(response.failed_symbols ?? []);
       setNotice(`Cohort contexts completed: generated ${response.generated}, failed ${response.failed}.${response.failed > 0 ? ` failed symbols: ${response.failed_symbols.join(", ")}` : ""}`);
+      if (response.generated > 0) {
+        setCohortActionSuccess((prev) => ({ ...prev, [selectedCohortId]: { ...(prev[selectedCohortId] ?? {}), contexts: true } }));
+      }
       await load();
     } catch (err) {
       setError(formatError(err, "Generate Cohort Symbol Contexts"));
@@ -307,6 +319,9 @@ export default function IntelligencePage() {
         short_briefing_mode: true,
       });
       setNotice(`Cohort briefing ${response.status === "generated" ? "generated" : "failed"}.`);
+      if (response.status === "generated") {
+        setCohortActionSuccess((prev) => ({ ...prev, [selectedCohortId]: { ...(prev[selectedCohortId] ?? {}), briefing: true } }));
+      }
       await load();
     } catch (err) {
       setError(formatError(err, "Generate Cohort Briefing"));
@@ -410,8 +425,35 @@ export default function IntelligencePage() {
     setCategories((prev) => (prev.includes(category) ? prev.filter((x) => x !== category) : [...prev, category]));
   };
 
+  const jumpTo = (id: string) => {
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const actionButtonClass = (done: boolean) =>
+    `h-10 rounded-lg border px-3 text-sm disabled:opacity-60 ${
+      done ? "border-green/70 bg-green/20 text-green" : "border-stroke hover:text-cyan"
+    }`;
+
   return (
-    <main className="space-y-4">
+    <main className="xl:grid xl:grid-cols-[240px_minmax(0,1fr)] xl:gap-4">
+      <aside className="mb-4 xl:mb-0">
+        <div className="xl:sticky xl:top-4 rounded-lg border border-stroke/70 bg-panel p-3">
+          <p className="mb-2 text-xs font-semibold text-slate-300">Intelligence Menu</p>
+          <div className="flex gap-2 overflow-x-auto xl:flex-col xl:overflow-visible">
+            <button type="button" onClick={() => jumpTo("intelligence-layer")} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan whitespace-nowrap">Intelligence Layer</button>
+            <button type="button" onClick={() => jumpTo("workflow-steps")} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan whitespace-nowrap">Workflow Steps</button>
+            <button type="button" onClick={() => jumpTo("discovery")} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan whitespace-nowrap">Discovery</button>
+            <button type="button" onClick={() => jumpTo("active-cohorts")} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan whitespace-nowrap">Active Cohorts</button>
+            <button type="button" onClick={() => jumpTo("candidates")} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan whitespace-nowrap">Latest Candidates</button>
+            <button type="button" onClick={() => jumpTo("review-readiness")} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan whitespace-nowrap">Review Readiness</button>
+            <button type="button" onClick={() => jumpTo("legacy-tools")} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan whitespace-nowrap">Legacy / Tools</button>
+          </div>
+        </div>
+      </aside>
+
+      <div className="space-y-4">
+      <section id="intelligence-layer">
       <Panel>
         <SectionTitle title="Intelligence Layer" subtitle="Deterministic pipeline + optional LLM interpretation layer" />
         <div className="mt-2 flex flex-wrap gap-2 text-xs">
@@ -450,6 +492,7 @@ export default function IntelligencePage() {
           <p className="mt-1 text-xs text-red">Model not found on primary provider. Pull/install or select an available model.</p>
         ) : null}
       </Panel>
+      </section>
 
       {dashboard ? (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -461,6 +504,7 @@ export default function IntelligencePage() {
         </div>
       ) : null}
 
+      <section id="workflow-steps">
       <Panel>
         <SectionTitle title="Workflow Steps" subtitle="Cohort-first workflow: deterministic path stays usable even if LLM fails" />
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4 text-xs">
@@ -486,7 +530,9 @@ export default function IntelligencePage() {
           </div>
         </div>
       </Panel>
+      </section>
 
+      <section id="discovery">
       <Panel>
         <SectionTitle title="Discovery" subtitle="Discovery Run finds new candidates and creates an immutable Candidate Cohort snapshot" />
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 text-xs text-slate-300">
@@ -549,6 +595,7 @@ export default function IntelligencePage() {
         {notice ? <p className="mt-3 text-xs text-green">{notice}</p> : null}
         {error ? <p className="mt-3 text-xs text-red">{error}</p> : null}
       </Panel>
+      </section>
 
       {showLLMConsole ? (
         <Panel>
@@ -674,21 +721,54 @@ export default function IntelligencePage() {
         </div>
       </Panel>
 
+      <section id="active-cohorts">
       <Panel>
         <SectionTitle title="Active Cohorts" subtitle="Follow-up Run tracks existing cohort symbols and forward performance" />
-        <div className="grid gap-3 md:grid-cols-3 text-xs">
-          <label className="md:col-span-2">Selected Cohort
+        <div className="grid gap-3 text-xs">
+          <label>Selected Cohort
             <select value={selectedCohortId} onChange={(e) => setSelectedCohortId(e.target.value)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm">
               <option value="">Select cohort</option>
               {(dashboard?.cohorts ?? []).map((row) => <option key={row.id} value={row.id}>{row.name} | {row.start_date} | {row.status}</option>)}
             </select>
           </label>
-          <div className="flex items-end gap-2">
-            <button type="button" onClick={runCohortFollowup} disabled={loading || !canRunFollowup} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Run Follow-up for Selected Cohort</button>
-            <button type="button" onClick={() => runCohortContexts(false)} disabled={loading || !canRunCohortContexts} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Generate Cohort Symbol Contexts</button>
-            <button type="button" onClick={runCohortBriefing} disabled={loading || !canRunCohortBriefing} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Generate Cohort Briefing</button>
-            <button type="button" onClick={exportCohortReport} disabled={loading || !selectedCohortId} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Export Cohort Report</button>
-            <button type="button" onClick={runCohortReview} disabled={loading || !canRunCohortReview} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Review Selected Cohort</button>
+          <div className="grid gap-3 xl:grid-cols-[280px_minmax(0,1fr)]">
+            <div className="rounded-lg border border-stroke/70 p-3">
+              <p className="mb-2 text-xs text-slate-400">Cohort Actions</p>
+              <div className="flex flex-col gap-2">
+                <button type="button" onClick={runCohortFollowup} disabled={loading || !canRunFollowup} className={actionButtonClass(followupDone || Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.followup))}>Run Follow-up for Selected Cohort</button>
+                <button type="button" onClick={() => runCohortContexts(false)} disabled={loading || !canRunCohortContexts} className={actionButtonClass(contextsDone || Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.contexts))}>Generate Cohort Symbol Contexts</button>
+                <button type="button" onClick={runCohortBriefing} disabled={loading || !canRunCohortBriefing} className={actionButtonClass(briefingDone || Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.briefing))}>Generate Cohort Briefing</button>
+                <button type="button" onClick={runCohortReview} disabled={loading || !canRunCohortReview} className={actionButtonClass(reviewDone)}>Review Selected Cohort</button>
+                <button type="button" onClick={exportCohortReport} disabled={loading || !selectedCohortId} className={actionButtonClass(exportDone)}>Export Cohort Report</button>
+              </div>
+            </div>
+            <div className="mt-3 max-h-[340px] overflow-auto rounded-lg border border-stroke/70 xl:mt-0">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 z-20 bg-bg">
+                  <tr className="border-b border-stroke text-left text-slate-400">
+                    <th className="sticky left-0 z-10 bg-bg px-2 py-2">Symbol</th>
+                    <th className="px-2 py-2">Original Why Selected</th>
+                    <th className="px-2 py-2">Selected Score</th>
+                    <th className="px-2 py-2">Current Status</th>
+                    <th className="px-2 py-2">Forward Performance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(selectedCohortDetail?.candidates ?? []).map((row) => {
+                    const latest = (selectedCohortDetail?.snapshots ?? []).filter((x) => x.symbol === row.symbol).slice(-1)[0];
+                    return (
+                      <tr key={`${row.cohort_id}-${row.symbol}`} className="border-b border-stroke/50">
+                        <td className="sticky left-0 z-10 bg-bg px-2 py-2">{row.symbol}</td>
+                        <td className="px-2 py-2 min-w-[320px]">{row.selected_reason}</td>
+                        <td className="px-2 py-2">{row.selected_score.toFixed(2)}</td>
+                        <td className="px-2 py-2">{latest ? (latest.still_valid_candidate ? "valid" : `invalid (${latest.invalidation_reason ?? "n/a"})`) : "pending follow-up"}</td>
+                        <td className="px-2 py-2">1D:{latest?.return_1d ?? "pending"} 3D:{latest?.return_3d ?? "pending"} 7D:{latest?.return_7d ?? "pending"} 14D:{latest?.return_14d ?? "pending"} 28D:{latest?.return_28d ?? "pending"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
         {cohortContextFailedSymbols.length > 0 ? (
@@ -698,35 +778,10 @@ export default function IntelligencePage() {
           </div>
         ) : null}
         {cohortReview ? <p className="mt-2 text-xs text-slate-300">{cohortReview.readiness_message}</p> : null}
-        <div className="mt-3 max-h-[340px] overflow-auto rounded-lg border border-stroke/70">
-          <table className="w-full text-xs">
-            <thead className="sticky top-0 z-20 bg-bg">
-              <tr className="border-b border-stroke text-left text-slate-400">
-                <th className="sticky left-0 z-10 bg-bg px-2 py-2">Symbol</th>
-                <th className="px-2 py-2">Original Why Selected</th>
-                <th className="px-2 py-2">Selected Score</th>
-                <th className="px-2 py-2">Current Status</th>
-                <th className="px-2 py-2">Forward Performance</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(selectedCohortDetail?.candidates ?? []).map((row) => {
-                const latest = (selectedCohortDetail?.snapshots ?? []).filter((x) => x.symbol === row.symbol).slice(-1)[0];
-                return (
-                  <tr key={`${row.cohort_id}-${row.symbol}`} className="border-b border-stroke/50">
-                    <td className="sticky left-0 z-10 bg-bg px-2 py-2">{row.symbol}</td>
-                    <td className="px-2 py-2 min-w-[320px]">{row.selected_reason}</td>
-                    <td className="px-2 py-2">{row.selected_score.toFixed(2)}</td>
-                    <td className="px-2 py-2">{latest ? (latest.still_valid_candidate ? "valid" : `invalid (${latest.invalidation_reason ?? "n/a"})`) : "pending follow-up"}</td>
-                    <td className="px-2 py-2">1D:{latest?.return_1d ?? "pending"} 3D:{latest?.return_3d ?? "pending"} 7D:{latest?.return_7d ?? "pending"} 14D:{latest?.return_14d ?? "pending"} 28D:{latest?.return_28d ?? "pending"}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
       </Panel>
+      </section>
 
+      <section id="candidates">
       <Panel>
         <SectionTitle title="Latest Merged Candidates" subtitle="Category-balanced merge, deduplication, and multi-category priority boost" />
         <div className="max-h-[360px] overflow-auto rounded-lg border border-stroke/70">
@@ -764,7 +819,9 @@ export default function IntelligencePage() {
           </table>
         </div>
       </Panel>
+      </section>
 
+      <section id="review-readiness">
       <Panel>
         <SectionTitle title="Review Readiness" subtitle="Deterministic review input health before 28-day review" />
         <div className="text-xs text-slate-300 space-y-1">
@@ -777,7 +834,9 @@ export default function IntelligencePage() {
           <p>Worst category by 7D: {dashboard?.deterministic_review_stats?.worst_category_by_7d ?? "-"}</p>
         </div>
       </Panel>
+      </section>
 
+      <section id="legacy-tools">
       <Panel>
         <SectionTitle title="Daily Briefing" subtitle="LLM-generated advisory summary, never an execution signal" />
         <p className="text-sm text-slate-200 whitespace-pre-wrap">{dashboard?.latest_briefing?.summary_text ?? "No briefing generated yet."}</p>
@@ -811,6 +870,8 @@ export default function IntelligencePage() {
           Approval: {runReport?.approval ? `${runReport.approval.status} by ${runReport.approval.reviewer} at ${new Date(runReport.approval.created_at).toLocaleString()}` : "not approved yet"}
         </p>
       </Panel>
+      </section>
+      </div>
     </main>
   );
 }

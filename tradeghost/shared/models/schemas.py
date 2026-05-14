@@ -1046,6 +1046,7 @@ class SymbolResult(BaseModel):
     priority_boost: float = 0.0
     base_score: float = 0.0
     category_boost: float = 0.0
+    data_quality_penalty: float = 0.0
     final_score_raw: float = 0.0
     final_score_capped: float = 0.0
     score: float
@@ -1054,6 +1055,8 @@ class SymbolResult(BaseModel):
     setup_type: str
     candidate_type: str = "watch_candidate"
     entry_readiness: str = "watch"
+    blocked_by: str = "none"
+    readiness_explanation: str = ""
     main_opportunity_reason: str = ""
     main_risk_reason: str = ""
     confirm_entry_condition: str = ""
@@ -1188,6 +1191,8 @@ class CohortCandidate(BaseModel):
     selected_setup_type: str = ""
     selected_candidate_type: str = "watch_candidate"
     selected_entry_readiness: str = "watch"
+    selected_blocked_by: str = "none"
+    selected_readiness_explanation: str = ""
     selected_trend_state: str = ""
     selected_score_dynamics: str | None = None
     selected_reason: str = ""
@@ -1198,6 +1203,8 @@ class CohortCandidate(BaseModel):
     selected_structure_snapshot: dict[str, Any] = Field(default_factory=dict)
     selected_risk_flags: list[str] = Field(default_factory=list)
     selected_data_quality_flags: list[str] = Field(default_factory=list)
+    selected_data_quality_penalty: float = 0.0
+    selected_displayed_score: float = 0.0
     original_context: SymbolContext | None = None
 
 
@@ -1212,7 +1219,10 @@ class CohortDailySnapshot(BaseModel):
     current_setup_type: str | None = None
     current_trend_state: str | None = None
     current_score_dynamics: str | None = None
+    current_trigger_state: str | None = None
+    current_trigger_score: float | None = None
     price_change_since_selection: float | None = None
+    return_since_selection: float | None = None
     return_1d: float | None = None
     return_3d: float | None = None
     return_7d: float | None = None
@@ -1223,8 +1233,48 @@ class CohortDailySnapshot(BaseModel):
     still_valid_candidate: bool | None = None
     validity_state: str = "pending_validation"
     invalidation_reason: str | None = None
+    entry_readiness: str = "pending_validation"
+    blocked_by: str = "none"
+    readiness_explanation: str = ""
     data_quality_flags: list[str] = Field(default_factory=list)
     updated_context: SymbolContext | None = None
+
+    
+class LatestCohortState(BaseModel):
+    cohort_id: str
+    symbol: str
+    latest_followup_date: date | None = None
+    selected_rank: int = 0
+    selected_score: float = 0.0
+    selected_setup_type: str = ""
+    selected_reason: str = ""
+    selected_categories: list[ScannerCategory] = Field(default_factory=list)
+    current_price: float | None = None
+    current_score: float | None = None
+    current_setup_type: str | None = None
+    current_trend_state: str | None = None
+    current_score_dynamics: str | None = None
+    current_trigger_state: str | None = None
+    current_trigger_score: float | None = None
+    return_since_selection: float | None = None
+    return_1d: float | None = None
+    return_3d: float | None = None
+    return_7d: float | None = None
+    return_14d: float | None = None
+    return_28d: float | None = None
+    validity_state: str = "pending_validation"
+    invalidation_reason: str | None = None
+    entry_readiness: str = "pending_validation"
+    blocked_by: str = "none"
+    readiness_explanation: str = ""
+    data_quality_flags: list[str] = Field(default_factory=list)
+
+
+class CohortReportMode(str, Enum):
+    INITIAL = "initial"
+    FOLLOWUP = "followup"
+    LIFECYCLE = "lifecycle"
+    REVIEW_28D = "review_28d"
 
 
 class DiscoveryCreateCohortRequest(BaseModel):
@@ -1286,6 +1336,7 @@ class CohortDetail(BaseModel):
     cohort: CandidateCohort
     candidates: list[CohortCandidate] = Field(default_factory=list)
     snapshots: list[CohortDailySnapshot] = Field(default_factory=list)
+    latest_states: list[LatestCohortState] = Field(default_factory=list)
 
 
 class CohortFollowupResponse(BaseModel):
@@ -1306,6 +1357,10 @@ class CohortReviewStats(BaseModel):
     stayed_valid: int = 0
     invalidated_quickly: int = 0
     pending_validation_count: int = 0
+    needs_data_check_count: int = 0
+    snapshots_collected: int = 0
+    pending_horizon_count: int = 0
+    early_return_1d_avg: float | None = None
     insufficient_data: bool = False
     score_delta_vs_return_note: str = ""
 
@@ -1375,6 +1430,10 @@ class IntelligenceRunReport(BaseModel):
 class IntelligenceRunReportExport(BaseModel):
     run_id: str
     filename: str
+    report_mode: str | None = None
+    cohort_id: str | None = None
+    exported_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    latest_followup_date: date | None = None
     markdown: str
 
 

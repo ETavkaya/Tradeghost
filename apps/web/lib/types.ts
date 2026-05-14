@@ -842,6 +842,7 @@ export type SymbolResult = {
   priority_boost: number;
   base_score: number;
   category_boost: number;
+  data_quality_penalty: number;
   final_score_raw: number;
   final_score_capped: number;
   score: number;
@@ -850,6 +851,8 @@ export type SymbolResult = {
   setup_type: string;
   candidate_type: string;
   entry_readiness: string;
+  blocked_by: string;
+  readiness_explanation: string;
   main_opportunity_reason: string;
   main_risk_reason: string;
   confirm_entry_condition: string;
@@ -934,6 +937,10 @@ export type IntelligenceRunReport = {
 export type IntelligenceRunReportExport = {
   run_id: string;
   filename: string;
+  report_mode?: string | null;
+  cohort_id?: string | null;
+  exported_at?: string;
+  latest_followup_date?: string | null;
   markdown: string;
 };
 
@@ -973,6 +980,8 @@ export type CohortCandidate = {
   selected_setup_type: string;
   selected_candidate_type: string;
   selected_entry_readiness: string;
+  selected_blocked_by: string;
+  selected_readiness_explanation: string;
   selected_trend_state: string;
   selected_score_dynamics: string | null;
   selected_reason: string;
@@ -983,6 +992,8 @@ export type CohortCandidate = {
   selected_structure_snapshot: Record<string, unknown>;
   selected_risk_flags: string[];
   selected_data_quality_flags: string[];
+  selected_data_quality_penalty: number;
+  selected_displayed_score: number;
 };
 
 export type CohortDailySnapshot = {
@@ -996,7 +1007,10 @@ export type CohortDailySnapshot = {
   current_setup_type: string | null;
   current_trend_state: string | null;
   current_score_dynamics: string | null;
+  current_trigger_state: string | null;
+  current_trigger_score: number | null;
   price_change_since_selection: number | null;
+  return_since_selection: number | null;
   return_1d: number | null;
   return_3d: number | null;
   return_7d: number | null;
@@ -1007,6 +1021,39 @@ export type CohortDailySnapshot = {
   still_valid_candidate: boolean | null;
   validity_state: string;
   invalidation_reason: string | null;
+  entry_readiness: string;
+  blocked_by: string;
+  readiness_explanation: string;
+  data_quality_flags: string[];
+};
+
+export type LatestCohortState = {
+  cohort_id: string;
+  symbol: string;
+  latest_followup_date: string | null;
+  selected_rank: number;
+  selected_score: number;
+  selected_setup_type: string;
+  selected_reason: string;
+  selected_categories: ScannerCategory[];
+  current_price: number | null;
+  current_score: number | null;
+  current_setup_type: string | null;
+  current_trend_state: string | null;
+  current_score_dynamics: string | null;
+  current_trigger_state: string | null;
+  current_trigger_score: number | null;
+  return_since_selection: number | null;
+  return_1d: number | null;
+  return_3d: number | null;
+  return_7d: number | null;
+  return_14d: number | null;
+  return_28d: number | null;
+  validity_state: string;
+  invalidation_reason: string | null;
+  entry_readiness: string;
+  blocked_by: string;
+  readiness_explanation: string;
   data_quality_flags: string[];
 };
 
@@ -1014,6 +1061,7 @@ export type CohortDetail = {
   cohort: CandidateCohort;
   candidates: CohortCandidate[];
   snapshots: CohortDailySnapshot[];
+  latest_states: LatestCohortState[];
 };
 
 export type CohortFollowupResponse = {
@@ -1040,6 +1088,10 @@ export type CohortReviewResponse = {
     stayed_valid: number;
     invalidated_quickly: number;
     pending_validation_count: number;
+    needs_data_check_count: number;
+    snapshots_collected: number;
+    pending_horizon_count: number;
+    early_return_1d_avg: number | null;
     insufficient_data: boolean;
     score_delta_vs_return_note: string;
   };

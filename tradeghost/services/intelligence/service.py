@@ -22,6 +22,7 @@ from tradeghost.shared.models.schemas import (
     CohortCandidate,
     CohortDailySnapshot,
     CohortDetail,
+    CohortReportMode,
     CohortFollowupRequest,
     CohortFollowupResponse,
     CohortSymbolContextRequest,
@@ -43,6 +44,7 @@ from tradeghost.shared.models.schemas import (
     IntelligenceRunResponse,
     LLMResponseTestRequest,
     LLMResponseTestResult,
+    LatestCohortState,
     LLMConnectionStatus,
     LLMDebugLog,
     PipelineDebugEvent,
@@ -245,7 +247,59 @@ class IntelligenceService:
             raise FileNotFoundError(f"Cohort not found: {cohort_id}")
         candidates = [row for row in self._read_cohort_candidates() if row.cohort_id == cohort_id]
         snapshots = [row for row in self._read_cohort_snapshots() if row.cohort_id == cohort_id]
-        return CohortDetail(cohort=cohort, candidates=sorted(candidates, key=lambda row: row.selected_rank), snapshots=sorted(snapshots, key=lambda row: (row.snapshot_date, row.symbol)))
+        ordered_candidates = sorted(candidates, key=lambda row: row.selected_rank)
+        ordered_snapshots = sorted(snapshots, key=lambda row: (row.snapshot_date, row.symbol))
+        latest_states = self._derive_latest_cohort_states(ordered_candidates, ordered_snapshots)
+        return CohortDetail(
+            cohort=cohort,
+            candidates=ordered_candidates,
+            snapshots=ordered_snapshots,
+            latest_states=latest_states,
+        )
+
+    def _derive_latest_cohort_states(
+        self,
+        candidates: list[CohortCandidate],
+        snapshots: list[CohortDailySnapshot],
+    ) -> list[LatestCohortState]:
+        latest_by_symbol: dict[str, CohortDailySnapshot] = {}
+        for snap in snapshots:
+            latest_by_symbol[snap.symbol] = snap
+        rows: list[LatestCohortState] = []
+        for cand in candidates:
+            latest = latest_by_symbol.get(cand.symbol)
+            rows.append(
+                LatestCohortState(
+                    cohort_id=cand.cohort_id,
+                    symbol=cand.symbol,
+                    latest_followup_date=latest.snapshot_date if latest else None,
+                    selected_rank=cand.selected_rank,
+                    selected_score=cand.selected_score,
+                    selected_setup_type=cand.selected_setup_type,
+                    selected_reason=cand.selected_reason,
+                    selected_categories=cand.selected_categories,
+                    current_price=latest.current_price if latest else None,
+                    current_score=latest.current_score if latest else None,
+                    current_setup_type=latest.current_setup_type if latest else None,
+                    current_trend_state=latest.current_trend_state if latest else None,
+                    current_score_dynamics=latest.current_score_dynamics if latest else None,
+                    current_trigger_state=latest.current_trigger_state if latest else None,
+                    current_trigger_score=latest.current_trigger_score if latest else None,
+                    return_since_selection=latest.return_since_selection if latest else None,
+                    return_1d=latest.return_1d if latest else None,
+                    return_3d=latest.return_3d if latest else None,
+                    return_7d=latest.return_7d if latest else None,
+                    return_14d=latest.return_14d if latest else None,
+                    return_28d=latest.return_28d if latest else None,
+                    validity_state=latest.validity_state if latest else "pending_validation",
+                    invalidation_reason=latest.invalidation_reason if latest else None,
+                    entry_readiness=latest.entry_readiness if latest else "pending_validation",
+                    blocked_by=latest.blocked_by if latest else "none",
+                    readiness_explanation=latest.readiness_explanation if latest else "Awaiting first follow-up snapshot.",
+                    data_quality_flags=latest.data_quality_flags if latest else [],
+                )
+            )
+        return rows
 
     def run_discovery_create_cohort(self, req: DiscoveryCreateCohortRequest) -> CohortDetail:
         discovery = self.run_daily_pipeline(
@@ -295,6 +349,8 @@ class IntelligenceService:
                     selected_setup_type=row.setup_type,
                     selected_candidate_type=row.candidate_type,
                     selected_entry_readiness=row.entry_readiness,
+                    selected_blocked_by=row.blocked_by,
+                    selected_readiness_explanation=row.readiness_explanation,
                     selected_trend_state=row.trend,
                     selected_score_dynamics=str(row.structure_snapshot.get("score_dynamics_state")) if row.structure_snapshot.get("score_dynamics_state") is not None else None,
                     selected_reason=row.why_selected,
@@ -305,6 +361,8 @@ class IntelligenceService:
                     selected_structure_snapshot=row.structure_snapshot,
                     selected_risk_flags=row.risk_flags,
                     selected_data_quality_flags=row.data_quality_flags,
+                    selected_data_quality_penalty=row.data_quality_penalty,
+                    selected_displayed_score=row.score,
                 )
             )
         self._save_cohort_candidates(cohort_candidates)
@@ -325,20 +383,39 @@ class IntelligenceService:
             close = float(analysis.chart.current_price)
             selected_price = cand.selected_price
             perf = self._forward_returns_from_selection(cand.symbol, cand.market.value, cand.selected_at.date(), selected_price)
-            has_validation_data = any(perf.get(k) is not None for k in ("1d", "3d", "7d"))
-            if not has_validation_data:
-                validity_state = "pending_validation"
-                still_valid_candidate: bool | None = None
-                invalidation_reason = None
-            elif analysis.entry_gate.final_entry_decision:
+            data_quality_flags = self._build_data_quality_flags(analysis)
+            normalized_setup = self._normalize_setup_type(
+                analysis,
+                [x.value if hasattr(x, "value") else str(x) for x in cand.selected_categories],
+                data_quality_flags,
+            )
+            risk_flags = self._build_risk_flags(analysis)
+            classification = self._classify_candidate_type(
+                analysis,
+                [x.value if hasattr(x, "value") else str(x) for x in cand.selected_categories],
+                risk_flags,
+                data_quality_flags,
+                normalized_setup,
+            )
+            has_min_horizon = perf.get("7d") is not None
+            severe_structure_break = str(analysis.setup_interpretation.trend_state or "") in {"damaged_trend", "weakening_trend"}
+            severe_gate_failure = str(analysis.entry_gate.skip_reason or "") in {"regime_filter", "location_filter"} and has_min_horizon
+            if self._is_serious_data_quality(data_quality_flags):
+                validity_state = "needs_data_check"
+                still_valid_candidate = None
+                invalidation_reason = "data_quality_flags_detected"
+            elif severe_structure_break and severe_gate_failure:
+                validity_state = "invalid"
+                still_valid_candidate = False
+                invalidation_reason = str(analysis.entry_gate.skip_reason or "severe_structure_break")
+            elif analysis.entry_gate.final_entry_decision and has_min_horizon:
                 validity_state = "valid"
                 still_valid_candidate = True
                 invalidation_reason = None
             else:
-                validity_state = "invalid"
-                still_valid_candidate = False
-                invalidation_reason = analysis.entry_gate.skip_reason or "no_longer_valid"
-            data_quality_flags = self._build_data_quality_flags(analysis)
+                validity_state = "pending_validation"
+                still_valid_candidate = None
+                invalidation_reason = None
             snap = CohortDailySnapshot(
                 cohort_id=req.cohort_id,
                 symbol=cand.symbol,
@@ -346,10 +423,13 @@ class IntelligenceService:
                 current_price=close,
                 current_score=float(analysis.quantedge.final_score),
                 current_categories=cand.selected_categories,
-                current_setup_type=analysis.setup_interpretation.setup_type,
+                current_setup_type=normalized_setup,
                 current_trend_state=analysis.setup_interpretation.trend_state,
                 current_score_dynamics=analysis.entry_gate.score_dynamics_state,
+                current_trigger_state=analysis.trigger.trigger_state,
+                current_trigger_score=float(analysis.trigger.trigger_score),
                 price_change_since_selection=((close / selected_price - 1.0) * 100.0) if selected_price and selected_price > 0 else None,
+                return_since_selection=((close / selected_price - 1.0) * 100.0) if selected_price and selected_price > 0 else None,
                 return_1d=perf.get("1d"),
                 return_3d=perf.get("3d"),
                 return_7d=perf.get("7d"),
@@ -360,6 +440,9 @@ class IntelligenceService:
                 still_valid_candidate=still_valid_candidate,
                 validity_state=validity_state,
                 invalidation_reason=invalidation_reason,
+                entry_readiness=classification["entry_readiness"] if validity_state != "needs_data_check" else "needs_data_check",
+                blocked_by=classification["blocked_by"] if validity_state != "needs_data_check" else "data_quality",
+                readiness_explanation=classification["readiness_explanation"] if validity_state != "needs_data_check" else "Metrics may be distorted by adjusted price / split / EMA inconsistency. Review data before interpreting.",
                 data_quality_flags=data_quality_flags,
             )
             snapshots = [row for row in snapshots if not (row.cohort_id == req.cohort_id and row.symbol == cand.symbol and row.snapshot_date == today)]
@@ -509,10 +592,11 @@ class IntelligenceService:
             base_score = float(row.base_score if row.base_score > 0 else row.score)
             final_score_raw = base_score + boost
             final_score_capped = min(100.0, final_score_raw)
+            displayed_score = max(0.0, min(100.0, final_score_capped + float(getattr(row, "data_quality_penalty", 0.0))))
             boosted_rows.append(
                 row.model_copy(
                     update={
-                        "score": final_score_capped,
+                        "score": displayed_score,
                         "priority_boost": boost,
                         "category_boost": boost,
                         "final_score_raw": final_score_raw,
@@ -521,7 +605,7 @@ class IntelligenceService:
                     }
                 )
             )
-        ranked = sorted(boosted_rows, key=lambda r: (r.final_score_raw, len(r.category_tags), r.base_score), reverse=True)[: req.max_candidates]
+        ranked = sorted(boosted_rows, key=lambda r: (r.score, r.final_score_raw, len(r.category_tags), r.base_score), reverse=True)[: req.max_candidates]
         ranked = [
             row.model_copy(update={"merged_rank": idx + 1})
             for idx, row in enumerate(ranked)
@@ -588,29 +672,129 @@ class IntelligenceService:
             flags.append("ema_stack_inconsistent_with_bullish_trend")
         return sorted(set(flags))
 
-    def _classify_candidate_type(self, analysis: Any, category_tags: list[str], risk_flags: list[str]) -> dict[str, str]:
+    @staticmethod
+    def _data_quality_penalty(flags: list[str]) -> float:
+        severe = {"possible_split_or_unadjusted_price_jump", "non_positive_price_or_ema"}
+        medium = {"price_vs_ema200_unusually_high", "ema_spread_unusually_wide", "ema_stack_inconsistent_with_bullish_trend"}
+        penalty = 0.0
+        for flag in flags:
+            if flag in severe:
+                penalty -= 12.0
+            elif flag in medium:
+                penalty -= 6.0
+        return penalty
+
+    @staticmethod
+    def _is_serious_data_quality(flags: list[str]) -> bool:
+        serious = {"possible_split_or_unadjusted_price_jump", "non_positive_price_or_ema"}
+        return any(flag in serious for flag in flags)
+
+    @staticmethod
+    def _map_blocked_by(skip_reason: str, risk_flags: list[str], data_quality_flags: list[str], analysis: Any) -> str:
+        if data_quality_flags:
+            return "data_quality"
+        mapping = {
+            "trigger_filter": "trigger_missing",
+            "resistance_room_filter": "resistance_room",
+            "location_filter": "location_filter",
+            "regime_filter": "regime_filter",
+            "score_threshold": "score_threshold",
+            "weak_volume_confirmation": "weak_volume",
+            "overextended": "overextended",
+        }
+        if skip_reason in mapping:
+            return mapping[skip_reason]
+        if analysis.location.overextended_flag:
+            return "overextended"
+        lowered_risks = {x.lower() for x in risk_flags}
+        if "weak_volume_confirmation" in lowered_risks:
+            return "weak_volume"
+        if "resistance_room_filter" in lowered_risks:
+            return "resistance_room"
+        return "none"
+
+    @staticmethod
+    def _normalize_setup_type(analysis: Any, category_tags: list[str], data_quality_flags: list[str]) -> str:
+        setup = str(analysis.setup_interpretation.setup_type or "").strip() or "trend_watch"
+        trend_state = str(analysis.setup_interpretation.trend_state or "")
+        extension_state = str(analysis.setup_interpretation.extension_state or "")
+        dist_ema200 = abs(float(analysis.location.distance_to_ema200_pct))
+        support_distance = float(analysis.location.support_distance_pct)
+        trigger_score = float(analysis.trigger.trigger_score)
+        trigger_threshold = float(analysis.analysis_config.trigger_filter.min_trigger_score)
+        trigger_state = str(analysis.trigger.trigger_state or "").lower()
+        lower_cats = {str(x).lower() for x in category_tags}
+        if data_quality_flags:
+            return "data_quality_watch"
+        if extension_state == "overextended" or dist_ema200 >= 18:
+            if trigger_state == "confirmed" and trigger_score >= trigger_threshold:
+                return "overextended_momentum_watch"
+            return "momentum_watch"
+        if trend_state == "bullish_trend" and support_distance > 6.0:
+            return "momentum_watch"
+        if "value_rebuild" in lower_cats and float(analysis.location.distance_to_ema200_pct) <= 3.0:
+            return "value_rebuild_watch"
+        if setup == "second_attempt_breakout":
+            has_evidence = (
+                bool(getattr(analysis.setup_interpretation, "prior_breakout_failed", False))
+                and int(getattr(analysis.setup_interpretation, "reclaim_attempt_count", 0)) >= 1
+                and int(getattr(analysis.setup_interpretation, "evidence_score", 0)) >= 2
+                and getattr(analysis.setup_interpretation, "breakout_level", None) is not None
+            )
+            if not has_evidence:
+                return "momentum_watch" if trend_state == "bullish_trend" else "trend_watch"
+        return setup
+
+    def _classify_candidate_type(
+        self,
+        analysis: Any,
+        category_tags: list[str],
+        risk_flags: list[str],
+        data_quality_flags: list[str],
+        setup_type: str,
+    ) -> dict[str, str]:
         trigger_state = str(analysis.trigger.trigger_state or "unknown").lower()
         trigger_score = float(analysis.trigger.trigger_score)
         min_trigger = float(analysis.analysis_config.trigger_filter.min_trigger_score)
         skip_reason = str(analysis.entry_gate.skip_reason or "")
+        blocked_by = self._map_blocked_by(skip_reason, risk_flags, data_quality_flags, analysis)
         opportunity_reason = str(
             analysis.chartmap.opportunity_interest_reason
-            or f"{analysis.setup_interpretation.setup_type} structure with {analysis.entry_gate.score_dynamics_state or 'unknown'} dynamics"
+            or f"{setup_type} structure with {analysis.entry_gate.score_dynamics_state or 'unknown'} dynamics"
         )
         risk_reason = str(analysis.chartmap.opportunity_risk_reason or (risk_flags[0] if risk_flags else "normal_risk_profile"))
-        confirm_entry = (
-            f"Need trigger confirmation and trigger score >= {min_trigger:.1f} "
-            f"(current_state={analysis.trigger.trigger_state}, current_score={trigger_score:.1f})."
-        )
+        trigger_confirmed = trigger_state == "confirmed" and trigger_score >= min_trigger
+        if not trigger_confirmed:
+            confirm_entry = (
+                f"Needs trigger confirmation and trigger score >= {min_trigger:.1f} "
+                f"(current_state={analysis.trigger.trigger_state}, current_score={trigger_score:.1f})."
+            )
+        elif blocked_by != "none":
+            confirm_entry = f"Trigger is already confirmed. Entry still needs `{blocked_by}` to improve."
+        else:
+            confirm_entry = "Entry conditions are currently met."
         invalidate = skip_reason or "Invalidate if trend weakens and price loses key EMA support with no trigger confirmation."
+        if data_quality_flags:
+            return {
+                "candidate_type": "watch_candidate",
+                "entry_readiness": "needs_data_check",
+                "blocked_by": "data_quality",
+                "readiness_explanation": "Metrics may be distorted by adjusted price / split / EMA inconsistency. Review data before interpreting.",
+                "main_opportunity_reason": opportunity_reason,
+                "main_risk_reason": "Data quality flags detected; treat this candidate as needs_data_check.",
+                "confirm_entry_condition": "Verify data integrity first, then reassess trigger/location conditions.",
+                "invalidation_condition": "Invalidate if data remains unusable after validation.",
+            }
         if analysis.entry_gate.final_entry_decision:
             return {
                 "candidate_type": "entry_candidate",
                 "entry_readiness": "ready",
+                "blocked_by": "none",
+                "readiness_explanation": "Entry conditions are currently met.",
                 "main_opportunity_reason": opportunity_reason,
                 "main_risk_reason": risk_reason,
                 "confirm_entry_condition": (
-                    f"Keep trigger confirmed and score above threshold {analysis.entry_gate.score_threshold_used:.1f}."
+                    "Entry conditions are currently met."
                 ),
                 "invalidation_condition": invalidate,
             }
@@ -618,6 +802,8 @@ class IntelligenceService:
             return {
                 "candidate_type": "watch_candidate",
                 "entry_readiness": "watch",
+                "blocked_by": "trigger_missing",
+                "readiness_explanation": "Bullish structure is present, but there is no trigger confirmation yet.",
                 "main_opportunity_reason": opportunity_reason,
                 "main_risk_reason": risk_reason,
                 "confirm_entry_condition": confirm_entry,
@@ -633,7 +819,9 @@ class IntelligenceService:
         ):
             return {
                 "candidate_type": "risk_monitor",
-                "entry_readiness": "not_ready",
+                "entry_readiness": "risk_monitor",
+                "blocked_by": "overextended" if analysis.location.overextended_flag else (blocked_by if blocked_by != "none" else "resistance_room"),
+                "readiness_explanation": "Trend is strong but price is stretched or blocked by location risk. Monitor rather than treat as an entry.",
                 "main_opportunity_reason": opportunity_reason,
                 "main_risk_reason": risk_reason,
                 "confirm_entry_condition": confirm_entry,
@@ -642,7 +830,9 @@ class IntelligenceService:
         if skip_reason in {"score_threshold", "regime_filter", "location_filter", "trigger_filter"}:
             return {
                 "candidate_type": "invalid_candidate",
-                "entry_readiness": "not_ready",
+                "entry_readiness": "blocked",
+                "blocked_by": blocked_by,
+                "readiness_explanation": f"Entry is blocked by `{blocked_by}` under current deterministic gates.",
                 "main_opportunity_reason": opportunity_reason,
                 "main_risk_reason": risk_reason,
                 "confirm_entry_condition": confirm_entry,
@@ -651,6 +841,8 @@ class IntelligenceService:
         return {
             "candidate_type": "watch_candidate",
             "entry_readiness": "watch",
+            "blocked_by": blocked_by if blocked_by != "none" else "none",
+            "readiness_explanation": "Selected for monitoring, not yet a confirmed entry setup.",
             "main_opportunity_reason": opportunity_reason,
             "main_risk_reason": risk_reason,
             "confirm_entry_condition": confirm_entry,
@@ -666,6 +858,8 @@ class IntelligenceService:
         )
         location = analysis.location
         setup = analysis.setup_interpretation
+        data_quality_flags = self._build_data_quality_flags(analysis)
+        setup_type = self._normalize_setup_type(analysis, category_tags, data_quality_flags)
         base_score = max(0.0, min(100.0, float(scanner_score)))
         backtest = self.backtest_engine.run(
             symbol,
@@ -677,7 +871,7 @@ class IntelligenceService:
         )
         structure_snapshot = {
             "trend_state": setup.trend_state,
-            "setup_type": setup.setup_type,
+            "setup_type": setup_type,
             "extension_state": setup.extension_state,
             "score_dynamics_state": analysis.entry_gate.score_dynamics_state,
             "price_vs_ema20": round(location.distance_to_ema20_pct, 3),
@@ -696,14 +890,15 @@ class IntelligenceService:
             "evidence_score": setup.evidence_score,
         }
         risk_flags = self._build_risk_flags(analysis)
-        data_quality_flags = self._build_data_quality_flags(analysis)
-        classification = self._classify_candidate_type(analysis, category_tags, risk_flags)
+        classification = self._classify_candidate_type(analysis, category_tags, risk_flags, data_quality_flags, setup_type)
         structure_snapshot["candidate_type"] = classification["candidate_type"]
         structure_snapshot["entry_readiness"] = classification["entry_readiness"]
+        structure_snapshot["blocked_by"] = classification["blocked_by"]
+        structure_snapshot["readiness_explanation"] = classification["readiness_explanation"]
         why_selected = self._build_why_selected_text(
             symbol=symbol,
             category_tags=category_tags,
-            setup_type=setup.setup_type,
+            setup_type=setup_type,
             candidate_type=classification["candidate_type"],
             trend_state=setup.trend_state,
             score=base_score,
@@ -715,6 +910,8 @@ class IntelligenceService:
             trigger_reason=analysis.trigger.trigger_reason,
             main_risk=(risk_flags[0] if risk_flags else "normal monitoring risk"),
         )
+        data_quality_penalty = self._data_quality_penalty(data_quality_flags)
+        displayed_score = max(0.0, min(100.0, base_score + data_quality_penalty))
 
         return SymbolResult(
             symbol=symbol,
@@ -722,9 +919,10 @@ class IntelligenceService:
             category_tags=category_tags,
             base_score=base_score,
             category_boost=0.0,
+            data_quality_penalty=data_quality_penalty,
             final_score_raw=base_score,
-            final_score_capped=base_score,
-            score=base_score,
+            final_score_capped=min(100.0, base_score),
+            score=displayed_score,
             trend=setup.trend_state,
             ema_distances={
                 "ema20": round(location.distance_to_ema20_pct, 3),
@@ -732,9 +930,11 @@ class IntelligenceService:
                 "ema100": round(location.distance_to_ema100_pct, 3),
                 "ema200": round(location.distance_to_ema200_pct, 3),
             },
-            setup_type=setup.setup_type,
+            setup_type=setup_type,
             candidate_type=classification["candidate_type"],
             entry_readiness=classification["entry_readiness"],
+            blocked_by=classification["blocked_by"],
+            readiness_explanation=classification["readiness_explanation"],
             main_opportunity_reason=classification["main_opportunity_reason"],
             main_risk_reason=classification["main_risk_reason"],
             confirm_entry_condition=classification["confirm_entry_condition"],
@@ -802,14 +1002,21 @@ class IntelligenceService:
         categories = " + ".join(category_tags)
         ema_structure = "above" if location.distance_to_ema200_pct >= 0 else "below"
         dynamics = score_dynamics or "unknown"
-        trigger_status = "confirmed" if trigger_score >= trigger_threshold and trigger_state == "confirmed" else "not_confirmed"
-        monitoring_note = "selected for monitoring, not confirmed entry" if candidate_type == "watch_candidate" else "entry conditions currently stronger"
+        trigger_confirmed = trigger_score >= trigger_threshold and str(trigger_state).lower() == "confirmed"
+        if candidate_type == "entry_candidate":
+            monitoring_note = "Entry conditions are currently met."
+        elif candidate_type == "risk_monitor":
+            monitoring_note = "This is not an entry candidate. Monitor risk/extension or wait for better location."
+        elif trigger_confirmed:
+            monitoring_note = "Trigger is confirmed, but entry is still blocked by deterministic risk filters."
+        else:
+            monitoring_note = "Bullish structure is present, but trigger confirmation is still missing."
         return (
             f"{symbol} selected because it appears in {categories}; setup={setup_type}; trend={trend_state}; "
-            f"candidate_type={candidate_type}; score={score:.2f}; score_dynamics={dynamics}; price is {ema_structure} EMA200 "
-            f"({location.distance_to_ema200_pct:.2f}%); trigger_state={trigger_state}; "
-            f"trigger_score={trigger_score:.1f}/{trigger_threshold:.1f} ({trigger_status}); "
-            f"trigger={trigger_reason}; risk={main_risk}; note={monitoring_note}."
+            f"candidate_type={candidate_type}; score={score:.2f}; score_dynamics={dynamics}; "
+            f"price is {ema_structure} EMA200 ({location.distance_to_ema200_pct:.2f}%); "
+            f"trigger_state={trigger_state}; trigger_score={trigger_score:.1f}/{trigger_threshold:.1f}; "
+            f"trigger={trigger_reason}; risk={main_risk}; note={monitoring_note}"
         )
 
     def _apply_daily_change_tracking(self, ranked: list[SymbolResult], previous_detail: DailyRunDetail | None) -> list[SymbolResult]:
@@ -1068,11 +1275,13 @@ class IntelligenceService:
                 f"symbol={row.symbol}\n"
                 f"category={','.join([tag.value if hasattr(tag, 'value') else str(tag) for tag in row.category_tags])}\n"
                 f"score={row.score:.2f}\n"
-                f"score_breakdown=base:{row.base_score:.2f},boost:{row.category_boost:.2f},raw:{row.final_score_raw:.2f},capped:{row.final_score_capped:.2f}\n"
+                f"score_breakdown=base:{row.base_score:.2f},boost:{row.category_boost:.2f},dq:{row.data_quality_penalty:.2f},raw:{row.final_score_raw:.2f},capped:{row.final_score_capped:.2f},displayed:{row.score:.2f}\n"
                 f"trend={row.trend}\n"
                 f"setup_type={row.setup_type}\n"
                 f"candidate_type={row.candidate_type}\n"
                 f"entry_readiness={row.entry_readiness}\n"
+                f"blocked_by={row.blocked_by}\n"
+                f"readiness_explanation={row.readiness_explanation}\n"
                 f"risk_flags={','.join(row.risk_flags)}\n"
                 f"data_quality_flags={','.join(row.data_quality_flags)}\n"
                 f"ema20={row.ema_distances.get('ema20', 0.0):.2f}\n"
@@ -1309,14 +1518,17 @@ class IntelligenceService:
                     priority_boost=0.0,
                     base_score=cand.selected_base_score,
                     category_boost=cand.selected_category_boost,
+                    data_quality_penalty=cand.selected_data_quality_penalty,
                     final_score_raw=cand.selected_final_score_raw,
                     final_score_capped=cand.selected_final_score_capped,
-                    score=cand.selected_score,
+                    score=cand.selected_displayed_score if cand.selected_displayed_score else cand.selected_score,
                     trend=cand.selected_trend_state,
                     ema_distances={},
                     setup_type=cand.selected_setup_type,
                     candidate_type=cand.selected_candidate_type,
                     entry_readiness=cand.selected_entry_readiness,
+                    blocked_by=cand.selected_blocked_by,
+                    readiness_explanation=cand.selected_readiness_explanation,
                     main_opportunity_reason=cand.selected_main_opportunity_reason,
                     main_risk_reason=cand.selected_main_risk_reason,
                     confirm_entry_condition=cand.selected_confirm_entry_condition,
@@ -1465,7 +1677,7 @@ class IntelligenceService:
             structure = row.structure_snapshot
             prompt_parts.append(
                 f"- {row.symbol} | category={','.join([str(tag) for tag in row.category_tags])} | "
-                f"score={row.score:.2f} | score_breakdown=base:{row.base_score:.2f},boost:{row.category_boost:.2f},raw:{row.final_score_raw:.2f},capped:{row.final_score_capped:.2f} | "
+                f"score={row.score:.2f} | score_breakdown=base:{row.base_score:.2f},boost:{row.category_boost:.2f},dq:{row.data_quality_penalty:.2f},raw:{row.final_score_raw:.2f},capped:{row.final_score_capped:.2f} | "
                 f"setup={row.setup_type} | candidate_type={row.candidate_type} | entry_readiness={row.entry_readiness} | why_selected={row.why_selected} | "
                 f"structure_snapshot={json.dumps(structure)} | daily_change={daily_change} | "
                 f"risk_flags={','.join(row.risk_flags)} | data_quality_flags={','.join(row.data_quality_flags)} | llm_summary={summary}"
@@ -1687,9 +1899,9 @@ class IntelligenceService:
         days_remaining = max(0, req.days_required - unique_days)
         sufficient_window = days_remaining == 0
         readiness = (
-            f"Review ready. Current history: {unique_days} days. Target: {req.days_required} days."
+            f"Review ready. History: {unique_days}/{req.days_required} days."
             if sufficient_window
-            else f"Review needs more historical runs. Current history: {unique_days} days. Target: {req.days_required} days."
+            else f"Review needs more history: {unique_days}/{req.days_required} days."
         )
         by_symbol_snapshots: dict[str, list[CohortDailySnapshot]] = {}
         for row in sorted(snapshot_rows, key=lambda x: (x.snapshot_date, x.symbol)):
@@ -1701,6 +1913,9 @@ class IntelligenceService:
         stayed_valid = 0
         invalidated_quickly = 0
         pending_validation_count = 0
+        needs_data_check_count = 0
+        pending_horizon_count = 0
+        ret1d_vals: list[float] = []
         best_symbol = None
         worst_symbol = None
         best_ret = -9999.0
@@ -1710,6 +1925,8 @@ class IntelligenceService:
             symbol_snaps = by_symbol_snapshots.get(f"{cand.cohort_id}|{cand.symbol}", [])
             latest = symbol_snaps[-1] if symbol_snaps else None
             ret7 = latest.return_7d if latest else None
+            if latest and latest.return_1d is not None:
+                ret1d_vals.append(float(latest.return_1d))
             validity_state = "pending_validation"
             if latest:
                 if getattr(latest, "validity_state", None):
@@ -1718,6 +1935,9 @@ class IntelligenceService:
                     validity_state = "valid"
                 elif latest.still_valid_candidate is False:
                     validity_state = "invalid"
+            has_required_horizon = latest is not None and latest.return_7d is not None
+            if not has_required_horizon:
+                pending_horizon_count += 1
             if ret7 is not None:
                 for cat in cand.selected_categories:
                     key = cat.value if hasattr(cat, "value") else str(cat)
@@ -1731,6 +1951,8 @@ class IntelligenceService:
                     worst_ret, worst_symbol = ret7, cand.symbol
             if validity_state == "pending_validation":
                 pending_validation_count += 1
+            if validity_state == "needs_data_check":
+                needs_data_check_count += 1
             if sufficient_window and validity_state == "invalid" and latest and latest.return_7d is not None and latest.return_7d < 0:
                 false_positives += 1
             if validity_state == "valid":
@@ -1757,6 +1979,7 @@ class IntelligenceService:
             )
             false_positives = 0
             invalidated_quickly = 0
+            missed_follow = 0
         stats = CohortReviewStats(
             average_return_by_category=avg_by_cat,
             best_candidate=best_symbol,
@@ -1769,6 +1992,10 @@ class IntelligenceService:
             stayed_valid=stayed_valid,
             invalidated_quickly=invalidated_quickly,
             pending_validation_count=pending_validation_count,
+            needs_data_check_count=needs_data_check_count,
+            snapshots_collected=len(snapshot_rows),
+            pending_horizon_count=pending_horizon_count,
+            early_return_1d_avg=(round(sum(ret1d_vals) / len(ret1d_vals), 3) if ret1d_vals else None),
             insufficient_data=not sufficient_window,
             score_delta_vs_return_note=note,
         )
@@ -1939,7 +2166,7 @@ class IntelligenceService:
         lines.append("## 2. Top Candidates")
         for row in report.symbol_results:
             score_formula = (
-                f"{row.base_score:.2f} base + {row.category_boost:.2f} boost = {row.final_score_raw:.2f} raw"
+                f"{row.base_score:.2f} base + {row.category_boost:.2f} boost + {row.data_quality_penalty:.2f} data_quality_penalty = {row.score:.2f} displayed"
             )
             if row.final_score_raw > 100:
                 score_formula += f" (capped {row.final_score_capped:.2f})"
@@ -1950,6 +2177,8 @@ class IntelligenceService:
             lines.append(f"- Setup Type: `{row.setup_type}`")
             lines.append(f"- Candidate Type: `{row.candidate_type}`")
             lines.append(f"- Entry Readiness: `{row.entry_readiness}`")
+            lines.append(f"- Blocked By: `{row.blocked_by}`")
+            lines.append(f"- Readiness Explanation: {row.readiness_explanation or '-'}")
             lines.append(f"- Main Opportunity Reason: {row.main_opportunity_reason or '-'}")
             lines.append(f"- Main Risk: {row.main_risk_reason or '-'}")
             lines.append(f"- What Confirms Entry: {row.confirm_entry_condition or '-'}")
@@ -2007,70 +2236,147 @@ class IntelligenceService:
         return IntelligenceRunReportExport(
             run_id=run_id,
             filename=f"tradeghost-intelligence-report-{report.run.date}-{run_id[:8]}.md",
+            report_mode="daily_run",
             markdown=markdown,
         )
 
-    def export_cohort_report_markdown(self, cohort_id: str) -> IntelligenceRunReportExport:
+    def _build_versioned_cohort_export_filename(
+        self,
+        *,
+        cohort_name: str,
+        cohort_id: str,
+        report_mode: CohortReportMode,
+        export_date: date,
+    ) -> str:
+        slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in cohort_name.strip()).strip("-")
+        slug = slug or cohort_id[:8].lower()
+        mode = report_mode.value
+        base = f"tradeghost-cohort-{slug}-{mode}-{export_date.isoformat()}"
+        export_dir = self.base_dir / "exports"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        existing = sorted(export_dir.glob(f"{base}*.md"))
+        if not existing:
+            return f"{base}.md"
+        return f"{base}-v{len(existing) + 1}.md"
+
+    def export_cohort_report_markdown(
+        self,
+        cohort_id: str,
+        report_mode: CohortReportMode = CohortReportMode.LIFECYCLE,
+    ) -> IntelligenceRunReportExport:
         detail = self.get_cohort_detail(cohort_id)
         review = self.run_cohort_review(CohortReviewRequest(cohort_id=cohort_id))
+        latest_followup_date = max((x.snapshot_date for x in detail.snapshots), default=None)
+        exported_at = datetime.now(UTC)
+        filename = self._build_versioned_cohort_export_filename(
+            cohort_name=detail.cohort.name,
+            cohort_id=detail.cohort.id,
+            report_mode=report_mode,
+            export_date=exported_at.date(),
+        )
         lines: list[str] = []
         lines.append(f"# TradeGhost Candidate Cohort Report - {detail.cohort.name}")
         lines.append("")
-        lines.append("## A) Discovery Cohort Report")
+        lines.append(f"- report_mode: `{report_mode.value}`")
+        lines.append(f"- exported_at: `{exported_at.isoformat()}`")
+        lines.append(f"- cohort_id: `{detail.cohort.id}`")
+        lines.append(f"- latest_followup_date: `{latest_followup_date}`")
+        lines.append("")
+        lines.append("## Initial Selection Snapshot")
         lines.append(f"- Cohort ID: `{detail.cohort.id}`")
         lines.append(f"- Start date: `{detail.cohort.start_date}`")
         lines.append(f"- Market: `{detail.cohort.market.value}`")
         lines.append(f"- Analysis window: `{detail.cohort.analysis_window.value}`")
         lines.append(f"- Categories: `{', '.join([c.value if hasattr(c, 'value') else str(c) for c in detail.cohort.selected_categories])}`")
+        grouped_candidates: dict[str, list[CohortCandidate]] = {
+            "ready": [],
+            "watch": [],
+            "risk_monitor": [],
+            "needs_data_check": [],
+            "pending_validation": [],
+            "blocked": [],
+        }
         for row in detail.candidates:
-            lines.append(f"### {row.selected_rank}. {row.symbol}")
-            lines.append(f"- Original why selected: {row.selected_reason}")
-            score_formula = (
-                f"{row.selected_base_score:.2f} base + {row.selected_category_boost:.2f} boost = "
-                f"{row.selected_final_score_raw:.2f} raw"
-            )
-            if row.selected_final_score_raw > 100:
-                score_formula += f" (capped {row.selected_final_score_capped:.2f})"
-            lines.append(f"- Candidate Type: `{row.selected_candidate_type}`")
-            lines.append(f"- Entry Readiness: `{row.selected_entry_readiness}`")
-            lines.append(f"- Score Breakdown: `{score_formula}`")
-            lines.append(f"- Main Opportunity Reason: {row.selected_main_opportunity_reason or '-'}")
-            lines.append(f"- Main Risk: {row.selected_main_risk_reason or '-'}")
-            lines.append(f"- What would confirm entry: {row.selected_confirm_entry_condition or '-'}")
-            lines.append(f"- What would invalidate candidate: {row.selected_invalidation_condition or '-'}")
-            lines.append(f"- Structure snapshot: `{json.dumps(row.selected_structure_snapshot, default=str)}`")
-            lines.append(f"- Risk flags: `{', '.join(row.selected_risk_flags) if row.selected_risk_flags else '-'}`")
-            lines.append(f"- Data quality flags: `{', '.join(row.selected_data_quality_flags) if row.selected_data_quality_flags else '-'}`")
-        lines.append("")
-        lines.append("## B) Cohort Follow-up Report")
-        lines.append(f"- Current date: `{date.today()}`")
-        lines.append("- Validity states: `pending_validation` (insufficient forward bars), `valid`, `invalid`.")
-        latest_by_symbol: dict[str, CohortDailySnapshot] = {}
-        for snap in sorted(detail.snapshots, key=lambda x: (x.snapshot_date, x.symbol)):
-            latest_by_symbol[snap.symbol] = snap
-        for symbol in sorted(latest_by_symbol):
-            row = latest_by_symbol[symbol]
-            validity = row.validity_state if row.validity_state else (
-                "valid" if row.still_valid_candidate is True else "invalid" if row.still_valid_candidate is False else "pending_validation"
-            )
-            lines.append(
-                f"- {row.symbol}: 1D={row.return_1d if row.return_1d is not None else 'pending'}, "
-                f"3D={row.return_3d if row.return_3d is not None else 'pending'}, "
-                f"7D={row.return_7d if row.return_7d is not None else 'pending'}, "
-                f"14D={row.return_14d if row.return_14d is not None else 'pending'}, "
-                f"28D={row.return_28d if row.return_28d is not None else 'pending'} "
-                f"validity={validity}"
-            )
-            lines.append(f"  - data_quality_flags={','.join(row.data_quality_flags) if row.data_quality_flags else '-'}")
-        lines.append("")
-        lines.append("## C) 28-Day Review Report")
-        lines.append(f"- Readiness: {review.readiness_message}")
-        lines.append(f"- Deterministic stats: `{json.dumps(review.deterministic_stats.model_dump(mode='json'), default=str)}`")
-        lines.append(f"- LLM summary: {review.llm_summary or 'not generated'}")
+            key = row.selected_entry_readiness if row.selected_entry_readiness in grouped_candidates else "watch"
+            grouped_candidates[key].append(row)
+        for group_name in ["ready", "watch", "risk_monitor", "blocked", "needs_data_check", "pending_validation"]:
+            if not grouped_candidates[group_name]:
+                continue
+            lines.append(f"### Group: {group_name}")
+            for row in grouped_candidates[group_name]:
+                lines.append(f"#### {row.selected_rank}. {row.symbol}")
+                lines.append(f"- Original why selected: {row.selected_reason}")
+                score_formula = (
+                    f"{row.selected_base_score:.2f} base + {row.selected_category_boost:.2f} boost + "
+                    f"{row.selected_data_quality_penalty:.2f} data_quality_penalty => {row.selected_displayed_score:.2f} displayed"
+                )
+                lines.append(f"- Score Breakdown: `{score_formula}`")
+                lines.append(f"- Candidate Type: `{row.selected_candidate_type}`")
+                lines.append(f"- Entry Readiness: `{row.selected_entry_readiness}`")
+                lines.append(f"- Blocked By: `{row.selected_blocked_by}`")
+                lines.append(f"- Readiness Explanation: {row.selected_readiness_explanation or '-'}")
+                lines.append(f"- Main Opportunity Reason: {row.selected_main_opportunity_reason or '-'}")
+                lines.append(f"- Main Risk: {row.selected_main_risk_reason or '-'}")
+                lines.append(f"- What would confirm entry: {row.selected_confirm_entry_condition or '-'}")
+                lines.append(f"- What would invalidate candidate: {row.selected_invalidation_condition or '-'}")
+                lines.append(f"- Structure snapshot: `{json.dumps(row.selected_structure_snapshot, default=str)}`")
+                lines.append(f"- Risk flags: `{', '.join(row.selected_risk_flags) if row.selected_risk_flags else '-'}`")
+                lines.append(f"- Data quality flags: `{', '.join(row.selected_data_quality_flags) if row.selected_data_quality_flags else '-'}`")
+            lines.append("")
+        if report_mode == CohortReportMode.INITIAL:
+            lines.append("## Follow-up")
+            lines.append("- Not included in initial report mode.")
+        else:
+            lines.append("## Latest Follow-up State")
+            if not detail.latest_states:
+                lines.append("- No follow-up snapshots yet.")
+            for state in detail.latest_states:
+                lines.append(
+                    f"- {state.symbol}: latest_date={state.latest_followup_date} "
+                    f"return_since_selection={state.return_since_selection if state.return_since_selection is not None else 'pending'} "
+                    f"1D={state.return_1d if state.return_1d is not None else 'pending'} "
+                    f"3D={state.return_3d if state.return_3d is not None else 'pending'} "
+                    f"7D={state.return_7d if state.return_7d is not None else 'pending'} "
+                    f"14D={state.return_14d if state.return_14d is not None else 'pending'} "
+                    f"28D={state.return_28d if state.return_28d is not None else 'pending'} "
+                    f"validity={state.validity_state} blocked_by={state.blocked_by}"
+                )
+                if state.data_quality_flags:
+                    lines.append(f"  - data_quality_flags={','.join(state.data_quality_flags)}")
+                lines.append(f"  - readiness={state.entry_readiness}; explanation={state.readiness_explanation}")
+        if report_mode == CohortReportMode.LIFECYCLE:
+            lines.append("")
+            lines.append("## Full Follow-up Timeline")
+            if not detail.snapshots:
+                lines.append("- No follow-up snapshots yet.")
+            for snap in detail.snapshots:
+                lines.append(
+                    f"- {snap.snapshot_date} | {snap.symbol} | score={snap.current_score if snap.current_score is not None else '-'} "
+                    f"| return_since_selection={snap.return_since_selection if snap.return_since_selection is not None else 'pending'} "
+                    f"| validity={snap.validity_state} | blocked_by={snap.blocked_by}"
+                )
+        if report_mode == CohortReportMode.REVIEW_28D:
+            lines.append("")
+            lines.append("## 28-Day Review")
+            lines.append(f"- Readiness: {review.readiness_message}")
+            lines.append(f"- Deterministic stats: `{json.dumps(review.deterministic_stats.model_dump(mode='json'), default=str)}`")
+            lines.append(f"- LLM summary: {review.llm_summary or 'not generated'}")
+        else:
+            lines.append("")
+            lines.append("## Review Snapshot")
+            lines.append(f"- Readiness: {review.readiness_message}")
+            lines.append(f"- Deterministic stats: `{json.dumps(review.deterministic_stats.model_dump(mode='json'), default=str)}`")
+        markdown = "\n".join(lines).strip() + "\n"
+        export_path = self.base_dir / "exports" / filename
+        export_path.write_text(markdown, encoding="utf-8")
         return IntelligenceRunReportExport(
             run_id=cohort_id,
-            filename=f"tradeghost-cohort-report-{detail.cohort.start_date}-{cohort_id[:8]}.md",
-            markdown="\n".join(lines).strip() + "\n",
+            filename=filename,
+            report_mode=report_mode.value,
+            cohort_id=cohort_id,
+            exported_at=exported_at,
+            latest_followup_date=latest_followup_date,
+            markdown=markdown,
         )
 
     def get_llm_logs(self, limit: int = 200) -> list[LLMDebugLog]:

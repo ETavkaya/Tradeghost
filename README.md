@@ -174,7 +174,21 @@ Default threshold:
 - `GET /health`
 - `GET /analyze-combined?ticker=TSLA&window=6m`
 - `POST /backtest-from-analysis`
-- Intelligence endpoints:
+- Intelligence (cohort-first, current primary flow):
+  - `POST /intelligence/discovery/create-cohort`
+  - `GET /intelligence/cohorts`
+  - `GET /intelligence/cohorts/{cohort_id}`
+  - `POST /intelligence/cohorts/follow-up`
+  - `POST /intelligence/cohorts/symbol-contexts`
+  - `POST /intelligence/cohorts/briefing`
+  - `POST /intelligence/cohorts/review`
+  - `GET /intelligence/cohorts/{cohort_id}/export`
+  - `GET /intelligence/dashboard`
+  - `GET /intelligence/llm/status`
+  - `GET /intelligence/llm/logs`
+  - `GET /intelligence/pipeline-events`
+  - `POST /intelligence/llm/test`
+- Intelligence legacy compatibility endpoints (still available):
   - `POST /intelligence/daily-pipeline`
   - `POST /intelligence/symbol-contexts`
   - `POST /intelligence/daily-briefing`
@@ -182,9 +196,6 @@ Default threshold:
   - `GET /intelligence/report/{run_id}`
   - `GET /intelligence/report/{run_id}/export`
   - `POST /intelligence/report/approve`
-  - `GET /intelligence/llm/status`
-  - `GET /intelligence/llm/logs`
-  - `GET /intelligence/pipeline-events`
 - Legacy compatibility endpoints remain available:
   - `GET /analyze?ticker=TSLA`
   - `GET /score?ticker=TSLA`
@@ -193,34 +204,75 @@ Default threshold:
 
 ## Frontend Navigation
 
+- `Scanner`
 - `Analysis`
 - `Backtest` (enabled after a successful analysis context is created)
-- `Intelligence` (deterministic daily pipeline + optional LLM context/review + report export/approval)
+- `Monitor`
+- `Intelligence` (cohort-first deterministic workflow + optional LLM interpretation)
 - `Logic` (pipeline + mode + setup-status transparency page)
 
 ## Intelligence Workflow
 
-TradeGhost Intelligence is split into two layers:
+TradeGhost Intelligence now runs as a **cohort lifecycle workflow**:
 
-1. Deterministic pipeline (always primary):
-- scanner by selected categories
-- top-N selection per category
-- merge + dedupe + multi-category boost
-- analysis snapshot + lightweight backtest summary
+1. Discovery Run -> `Create New Candidate Cohort`
+- runs scanner category-by-category
+- applies top-N per category
+- merges and deduplicates
+- stores immutable cohort candidate snapshots (original why-selected truth)
 
-2. Optional LLM layer (never opens trades / never changes config):
-- symbol context generation
-- daily briefing generation
-- system review generation
+2. Follow-up Run -> `Run Follow-up for Selected Cohort`
+- re-checks the same cohort symbols only
+- updates current score/category/trend snapshots
+- updates forward performance fields (`1D`, `3D`, `7D`, `14D`, `28D`) when available
 
-### Report Export + Approval
+3. Optional LLM context layer (advisory only):
+- `Generate Cohort Symbol Contexts`
+- `Generate Cohort Briefing`
+- OpenAI is primary provider; Ollama is fallback
+- deterministic engine remains source-of-truth
 
-After a run, you can:
-- export a run report as markdown (`Export Report`)
-- review run-level LLM outputs and diagnostics
-- store explicit approval metadata (`Approve Review`) with reviewer + notes
+4. Cohort Review -> `Review Selected Cohort`
+- deterministic review stats are generated first
+- LLM summary is optional and never allowed to mutate deterministic results
+- if history is insufficient, review returns readiness messaging instead of silent failure
 
-This makes review traceable for GPT/manual second-pass checks without changing deterministic engine behavior.
+### Intelligence UI (current)
+
+- Main actions shown in Active Cohorts:
+  - `Run Follow-up for Selected Cohort`
+  - `Generate Cohort Symbol Contexts`
+  - `Generate Cohort Briefing`
+  - `Review Selected Cohort`
+  - `Export Cohort Report`
+- LLM Console:
+  - always available on Intelligence page
+  - default minimized
+  - expandable with `Expand LLM Console` or `Jump to Console`
+  - includes pipeline events + LLM call inspector with expandable rows
+- Discovery Advanced Settings are intentionally reduced to:
+  - `LLM Concurrency`
+  - `LLM Timeout (sec)`
+  - `Review Period Days`
+
+### LLM Provider Configuration (current default)
+
+Use `.env`:
+
+```env
+LLM_PROVIDER=openai
+LLM_FALLBACK_PROVIDER=ollama
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4.1-mini
+OPENAI_BASE_URL=https://api.openai.com/v1
+OLLAMA_BASE_URL=http://localhost:11435
+OLLAMA_MODEL=llama3.2:3b
+```
+
+Notes:
+- OpenAI is primary for speed/reliability.
+- Ollama remains available for local fallback/offline runs.
+- API keys stay backend-only and are never exposed to frontend logs.
 
 ## Decision Log / Backtest Diagnostics
 
@@ -294,6 +346,16 @@ docker compose logs -f tradeghost-web
 - `http://192.168.1.72:3000`
 - `http://192.168.1.72:8000/health`
 - `http://192.168.1.72:8000/docs`
+
+### Update Existing Deployment (recommended routine)
+
+If the stack already exists on your Linux Docker host, use:
+
+```bash
+git pull origin Full-analysis-flow---new-backtest
+docker compose up -d --build
+docker compose ps
+```
 
 ## Local Dev (without Docker)
 

@@ -53,6 +53,7 @@ export default function IntelligencePage() {
   const [cohortReview, setCohortReview] = useState<CohortReviewResponse | null>(null);
   const [cohortContextFailedSymbols, setCohortContextFailedSymbols] = useState<string[]>([]);
   const [cohortActionSuccess, setCohortActionSuccess] = useState<Record<string, { followup?: boolean; contexts?: boolean; briefing?: boolean; review?: boolean; export?: boolean }>>({});
+  const [exportMode, setExportMode] = useState<"initial" | "followup" | "lifecycle" | "review_28d">("lifecycle");
 
   const formatError = (err: unknown, stage: string): string => {
     if (!(err instanceof Error)) return `${stage} failed.`;
@@ -205,7 +206,7 @@ export default function IntelligencePage() {
     setNotice(null);
     setLoading(true);
     try {
-      const response = await api.runCohortReview({ cohort_id: selectedCohortId, days_required: 28, model: activeModel, timeout_seconds: contextTimeout });
+      const response = await api.runCohortReview({ cohort_id: selectedCohortId, days_required: reviewDays, model: activeModel, timeout_seconds: contextTimeout });
       setCohortReview(response);
       setNotice(response.readiness_message);
       setCohortActionSuccess((prev) => ({ ...prev, [selectedCohortId]: { ...(prev[selectedCohortId] ?? {}), review: true } }));
@@ -220,7 +221,7 @@ export default function IntelligencePage() {
     if (!selectedCohortId) return;
     setError(null);
     try {
-      const report = await api.exportCohortReport(selectedCohortId);
+      const report = await api.exportCohortReport(selectedCohortId, exportMode);
       const blob = new Blob([report.markdown], { type: "text/markdown;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -230,7 +231,7 @@ export default function IntelligencePage() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      setNotice(`Cohort report exported: ${report.filename}`);
+      setNotice(`Cohort report exported: ${report.filename} (mode=${report.report_mode ?? exportMode}).`);
       setCohortActionSuccess((prev) => ({ ...prev, [selectedCohortId]: { ...(prev[selectedCohortId] ?? {}), export: true } }));
     } catch (err) {
       setError(formatError(err, "Export cohort report"));
@@ -536,6 +537,12 @@ export default function IntelligencePage() {
               <button type="button" onClick={() => runCohortContexts(false)} disabled={loading || !canRunCohortContexts} className={actionButtonClass(contextsDone)}>Generate Cohort Symbol Contexts</button>
               <button type="button" onClick={runCohortBriefing} disabled={loading || !canRunCohortBriefing} className={actionButtonClass(briefingDone)}>Generate Cohort Briefing</button>
               <button type="button" onClick={runCohortReview} disabled={loading || !canRunCohortReview} className={actionButtonClass(reviewDone)}>Review Selected Cohort</button>
+              <select value={exportMode} onChange={(e) => setExportMode(e.target.value as "initial" | "followup" | "lifecycle" | "review_28d")} className="h-10 rounded-lg border border-stroke bg-bg px-2 text-xs">
+                <option value="initial">Export: Initial</option>
+                <option value="followup">Export: Latest Follow-up</option>
+                <option value="lifecycle">Export: Full Lifecycle</option>
+                <option value="review_28d">Export: 28-Day Review</option>
+              </select>
               <button type="button" onClick={exportCohortReport} disabled={loading || !selectedCohortId} className={actionButtonClass(exportDone)}>Export Cohort Report</button>
               <button type="button" onClick={() => { setLlmConsoleExpanded(true); jumpTo("cohort-console"); }} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan">Jump to Console</button>
             </div>
@@ -545,32 +552,45 @@ export default function IntelligencePage() {
                 <thead className="sticky top-0 z-20 bg-bg">
                   <tr className="border-b border-stroke text-left text-slate-400">
                     <th className="sticky left-0 z-10 bg-bg px-2 py-2">Symbol</th>
-                    <th className="px-2 py-2">Original Why Selected</th>
-                    <th className="px-2 py-2">Selected Score</th>
+                    <th className="px-2 py-2">Original Snapshot</th>
+                    <th className="px-2 py-2">Latest Follow-up</th>
+                    <th className="px-2 py-2">Return Since Selection</th>
                     <th className="px-2 py-2">Current Status</th>
+                    <th className="px-2 py-2">Blocked By</th>
+                    <th className="px-2 py-2">Data Quality</th>
                     <th className="px-2 py-2">Forward Performance</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {(selectedCohortDetail?.candidates ?? []).map((row) => {
-                    const latest = (selectedCohortDetail?.snapshots ?? []).filter((x) => x.symbol === row.symbol).slice(-1)[0];
-                    const validity = latest?.validity_state
-                      ?? (latest?.still_valid_candidate === true ? "valid" : latest?.still_valid_candidate === false ? "invalid" : "pending_validation");
+                  {(selectedCohortDetail?.latest_states ?? []).map((row) => {
+                    const original = (selectedCohortDetail?.candidates ?? []).find((x) => x.symbol === row.symbol);
+                    const validity = row.validity_state ?? "pending_validation";
                     return (
                       <tr key={`${row.cohort_id}-${row.symbol}`} className="border-b border-stroke/50">
                         <td className="sticky left-0 z-10 bg-bg px-2 py-2">{row.symbol}</td>
-                        <td className="px-2 py-2 min-w-[320px]">{row.selected_reason}</td>
-                        <td className="px-2 py-2">{row.selected_score.toFixed(2)}</td>
+                        <td className="px-2 py-2 min-w-[320px]">
+                          <p>selected_score={row.selected_score.toFixed(2)} | selected_setup={row.selected_setup_type}</p>
+                          <details className="mt-1">
+                            <summary className="cursor-pointer text-slate-300">Original why selected</summary>
+                            <p className="mt-1 text-slate-300">{original?.selected_reason ?? row.selected_reason ?? "-"}</p>
+                          </details>
+                        </td>
+                        <td className="px-2 py-2">{row.latest_followup_date ?? "pending"}</td>
+                        <td className="px-2 py-2">{row.return_since_selection ?? "pending"}</td>
                         <td className="px-2 py-2">
-                          {!latest
+                          {!row.latest_followup_date
                             ? "pending follow-up"
+                            : validity === "needs_data_check"
+                              ? "needs_data_check"
                             : validity === "pending_validation"
                               ? "pending validation"
                               : validity === "valid"
                                 ? "valid"
-                                : `invalid (${latest.invalidation_reason ?? "n/a"})`}
+                                : `invalid (${row.invalidation_reason ?? "n/a"})`}
                         </td>
-                        <td className="px-2 py-2">1D:{latest?.return_1d ?? "pending"} 3D:{latest?.return_3d ?? "pending"} 7D:{latest?.return_7d ?? "pending"} 14D:{latest?.return_14d ?? "pending"} 28D:{latest?.return_28d ?? "pending"}</td>
+                        <td className="px-2 py-2">{row.blocked_by ?? "none"}</td>
+                        <td className="px-2 py-2">{row.data_quality_flags?.length ? row.data_quality_flags.join(", ") : "-"}</td>
+                        <td className="px-2 py-2">1D:{row.return_1d ?? "pending"} 3D:{row.return_3d ?? "pending"} 7D:{row.return_7d ?? "pending"} 14D:{row.return_14d ?? "pending"} 28D:{row.return_28d ?? "pending"}</td>
                       </tr>
                     );
                   })}
@@ -767,7 +787,7 @@ export default function IntelligencePage() {
                 <th className="px-2 py-2">Symbol</th>
                 <th className="px-2 py-2">Category Source</th>
                 <th className="px-2 py-2">Score / Category</th>
-                <th className="px-2 py-2">Final Score</th>
+                <th className="px-2 py-2">Score Breakdown</th>
                 <th className="px-2 py-2 whitespace-nowrap">Multi-Category</th>
                 <th className="px-2 py-2">Why Selected</th>
                 <th className="px-2 py-2">Daily Change</th>
@@ -781,7 +801,9 @@ export default function IntelligencePage() {
                   <td className="px-2 py-2 font-semibold text-slate-100">{row.symbol}</td>
                   <td className="px-2 py-2">{row.category_tags.join(", ")}</td>
                   <td className="px-2 py-2">{Object.entries(row.score_by_category).map(([k, v]) => `${k}:${v.toFixed(1)}`).join(" | ")}</td>
-                  <td className="px-2 py-2">{row.score.toFixed(2)} {row.priority_boost > 0 ? `(+${row.priority_boost.toFixed(1)} boost)` : ""}</td>
+                  <td className="px-2 py-2">
+                    base:{row.base_score.toFixed(1)} + boost:{row.category_boost.toFixed(1)} + dq:{row.data_quality_penalty.toFixed(1)} = displayed:{row.score.toFixed(1)}
+                  </td>
                   <td className="px-2 py-2 whitespace-nowrap">{row.multi_category ? <span className="inline-flex shrink-0 whitespace-nowrap rounded border border-cyan/60 px-2 py-1 text-cyan">multi-category</span> : "-"}</td>
                   <td className="px-2 py-2 min-w-[320px]">{row.why_selected || "-"}</td>
                   <td className="px-2 py-2 min-w-[260px]">{String(row.daily_change?.message ?? "No previous run comparison")}</td>

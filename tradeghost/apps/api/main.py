@@ -32,6 +32,7 @@ from tradeghost.shared.models.schemas import (
     DailyBriefing,
     CandidateCohort,
     CohortDetail,
+    CohortReportMode,
     CohortFollowupRequest,
     CohortFollowupResponse,
     CohortSymbolContextRequest,
@@ -592,9 +593,12 @@ def run_intelligence_cohort_review(payload: CohortReviewRequest) -> CohortReview
 
 
 @app.get("/intelligence/cohorts/{cohort_id}/export", response_model=IntelligenceRunReportExport)
-def export_intelligence_cohort_report(cohort_id: str) -> IntelligenceRunReportExport:
+def export_intelligence_cohort_report(
+    cohort_id: str,
+    mode: CohortReportMode = Query(default=CohortReportMode.LIFECYCLE),
+) -> IntelligenceRunReportExport:
     try:
-        return intelligence_service.export_cohort_report_markdown(cohort_id)
+        return intelligence_service.export_cohort_report_markdown(cohort_id, report_mode=mode)
     except FileNotFoundError as exc:  # pragma: no cover
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover

@@ -128,3 +128,27 @@ When updating this file, append a short dated entry:
 - Remaining TODO:
   - Full frontend build/test run for TypeScript confidence.
   - Optional deeper cohort review metrics tuning and first-column sticky enhancement.
+
+## 10) Latest Entry (2026-05-15)
+
+- Request:
+  - Fix cohort lifecycle semantics, export mode/versioning, readiness/blocked reason consistency, setup classification overuse, data-quality handling, and review-readiness wording.
+- Implemented changes:
+  - Added explicit lifecycle fields for cohort snapshots and latest derived state (`LatestCohortState`) without mutating immutable initial selection snapshots.
+  - Added `blocked_by`, `readiness_explanation`, trigger fields, `return_since_selection`, and `needs_data_check` validity support.
+  - Added report mode support (`initial`, `followup`, `lifecycle`, `review_28d`) and versioned cohort export filenames with metadata (`exported_at`, `report_mode`, `latest_followup_date`).
+  - Improved deterministic setup normalization to reduce overuse of `second_attempt_breakout`/`pullback` for highly-extended names.
+  - Added data-quality penalty into displayed score and ranking priority.
+  - Updated cohort review to defer false-positive/quick-invalidation conclusions when history is insufficient.
+  - Updated Intelligence UI cohort table to show latest-state fields and export mode selector.
+- Files changed:
+  - `tradeghost/shared/models/schemas.py`
+  - `tradeghost/services/intelligence/service.py`
+  - `tradeghost/apps/api/main.py`
+  - `apps/web/app/api/intelligence/cohorts/[cohortId]/export/route.ts`
+  - `apps/web/lib/api.ts`
+  - `apps/web/lib/types.ts`
+  - `apps/web/app/intelligence/page.tsx`
+- Validation run:
+  - `python -m py_compile tradeghost/shared/models/schemas.py tradeghost/services/intelligence/service.py tradeghost/apps/api/main.py`
+  - Frontend lint could not run in this shell because `next` is unavailable (`node_modules` not installed in current environment).

@@ -253,8 +253,8 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)
     }),
-  exportCohortReport: (cohortId: string) =>
-    fetchJson<IntelligenceRunReportExport>(`/api/intelligence/cohorts/${encodeURIComponent(cohortId)}/export`),
+  exportCohortReport: (cohortId: string, mode: "initial" | "followup" | "lifecycle" | "review_28d" = "lifecycle") =>
+    fetchJson<IntelligenceRunReportExport>(`/api/intelligence/cohorts/${encodeURIComponent(cohortId)}/export?mode=${encodeURIComponent(mode)}`),
   generateCohortSymbolContexts: (payload: Record<string, unknown>) =>
     fetchJson<SymbolContextBatchResponse>("/api/intelligence/cohorts/symbol-contexts", {
       method: "POST",

@@ -42,6 +42,15 @@ from tradeghost.shared.models.schemas import (
 
 
 class MonitoringService:
+    _US_EXCHANGE_FALLBACK: dict[str, str] = {
+        "NVDA": "NASDAQ",
+        "AMD": "NASDAQ",
+        "AAPL": "NASDAQ",
+        "ORCL": "NYSE",
+        "KO": "NYSE",
+        "GS": "NYSE",
+    }
+
     def __init__(self, analysis_engine: AnalysisEngine | None = None, scanner_engine: ScannerEngine | None = None) -> None:
         settings = get_settings()
         self.base_dir = settings.logs_dir / "monitoring"
@@ -174,6 +183,14 @@ class MonitoringService:
 
         return targets[: req.max_symbols_per_batch]
 
+    @classmethod
+    def _resolve_exchange(cls, symbol: str, market: str, exchange: str | None = None) -> str:
+        if market == "bist":
+            return "BIST"
+        if exchange and exchange.strip():
+            return exchange.strip().upper()
+        return cls._US_EXCHANGE_FALLBACK.get(symbol.upper(), "NASDAQ")
+
     # Watchlists
     def list_watchlists(self) -> list[Watchlist]:
         return self._read_watchlists()
@@ -214,6 +231,7 @@ class MonitoringService:
             added_price = None
             added_price_estimated = False
             try:
+                meta = self.analysis_engine.data_service.get_symbol_metadata(symbol, req.market)
                 combined = self.analysis_engine.analyze_combined(
                     ticker=symbol,
                     market=req.market.value,
@@ -225,12 +243,14 @@ class MonitoringService:
                 company_name = str(combined.indicator_summary.get("name")) if combined.indicator_summary.get("name") else None
                 sector = str(combined.indicator_summary.get("sector")) if combined.indicator_summary.get("sector") else None
                 industry = str(combined.indicator_summary.get("industry")) if combined.indicator_summary.get("industry") else None
+                exchange = self._resolve_exchange(symbol, req.market.value, meta.exchange if meta else None)
             except Exception:
                 added_price = None
                 added_price_estimated = False
                 company_name = None
                 sector = None
                 industry = None
+                exchange = self._resolve_exchange(symbol, req.market.value, None)
 
             item = WatchlistItem(
                 watchlist_id=row.id,
@@ -243,6 +263,7 @@ class MonitoringService:
                 company_name=company_name,
                 sector=sector,
                 industry=industry,
+                exchange=exchange,
             )
             updated = row.model_copy(update={"items": [*row.items, item], "updated_at": datetime.now(UTC)})
             rows[idx] = updated

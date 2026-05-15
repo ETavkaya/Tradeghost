@@ -65,6 +65,8 @@ from tradeghost.shared.models.schemas import (
     MonitoringScheduleUpdateRequest,
     ScannerRequest,
     ScannerResponse,
+    ScannerLLMQRequest,
+    ScannerLLMQResponse,
     ScoreResponse,
     SymbolContextBatchRequest,
     SymbolContextBatchResponse,
@@ -295,6 +297,14 @@ def scanner_legacy(
 def scanner(payload: ScannerRequest) -> ScannerResponse:
     try:
         return scanner_engine.scan(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/scanner/llmq", response_model=ScannerLLMQResponse)
+def scanner_llmq(payload: ScannerLLMQRequest) -> ScannerLLMQResponse:
+    try:
+        return scanner_engine.generate_llmq(payload)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -3,8 +3,14 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from datetime import date
+from urllib.parse import quote
+from typing import Any
+
+import yfinance as yf
 
 from tradeghost.services.analysis_engine import AnalysisEngine
+from tradeghost.services.intelligence.providers import OllamaProvider, OpenAIProvider
+from tradeghost.shared.config.settings import get_settings
 from tradeghost.services.charts.payloads import WINDOW_TO_PERIOD
 from tradeghost.services.strategy.config import build_analysis_config
 from tradeghost.services.strategy.pipeline import run_analysis_pipeline
@@ -16,6 +22,8 @@ from tradeghost.shared.models.schemas import (
     ScannerRuleOperator,
     ScannerRequest,
     ScannerResponse,
+    ScannerLLMQRequest,
+    ScannerLLMQResponse,
     ScannerRuleImpact,
     ScannerResult,
     ScannerSectorSummary,
@@ -105,8 +113,22 @@ class _Confluence:
 
 
 class ScannerEngine:
+    _US_EXCHANGE_FALLBACK: dict[str, str] = {
+        "NVDA": "NASDAQ",
+        "AMD": "NASDAQ",
+        "AAPL": "NASDAQ",
+        "ORCL": "NYSE",
+        "KO": "NYSE",
+        "GS": "NYSE",
+    }
+
     def __init__(self, analysis_engine: AnalysisEngine | None = None) -> None:
+        self.settings = get_settings()
         self.analysis_engine = analysis_engine or AnalysisEngine()
+        self._llm_providers = {
+            "openai": OpenAIProvider(self.settings),
+            "ollama": OllamaProvider(self.settings),
+        }
 
     def _universe(self, market: str, scope: ScannerUniverseScope) -> tuple[list[str], str]:
         if market == "bist":
@@ -155,10 +177,23 @@ class ScannerEngine:
             return "weakening"
         return "stable"
 
-    @staticmethod
-    def _tradingview_url(market: str, symbol: str) -> str:
-        exchange_prefix = "BIST" if market == "bist" else "NASDAQ"
-        return f"https://www.tradingview.com/chart/?symbol={exchange_prefix}%3A{symbol}"
+    @classmethod
+    def _resolve_tradingview_symbol(cls, market: str, symbol: str, exchange: str | None = None) -> str:
+        normalized_symbol = (symbol or "").strip().upper()
+        if ":" in normalized_symbol:
+            return normalized_symbol
+        if market == "bist":
+            return f"BIST:{normalized_symbol}"
+        ex = (exchange or "").strip().upper()
+        if ex:
+            return f"{ex}:{normalized_symbol}"
+        ex = cls._US_EXCHANGE_FALLBACK.get(normalized_symbol, "NASDAQ")
+        return f"{ex}:{normalized_symbol}"
+
+    @classmethod
+    def _tradingview_url(cls, market: str, symbol: str, exchange: str | None = None) -> str:
+        tv_symbol = cls._resolve_tradingview_symbol(market, symbol, exchange=exchange)
+        return f"https://www.tradingview.com/chart/?symbol={quote(tv_symbol, safe='')}"
 
     @staticmethod
     def _count_test_events(mask) -> int:
@@ -613,6 +648,7 @@ class ScannerEngine:
                     industry_key=bundle.metadata.industry_key,
                     metadata_source=bundle.metadata.source,
                     metadata_data_quality_status=bundle.metadata.data_quality_status or "ok",
+                    exchange=bundle.metadata.exchange,
                     price_vs_ema200_pct=regime.price_vs_ema200_pct,
                     ema200_slope_state=regime.ema200_slope_state,
                     ema_stack_alignment=regime.ema_stack_alignment,
@@ -630,7 +666,7 @@ class ScannerEngine:
                     distance_to_range_high_pct=to_high_pct,
                     range_low=range_low,
                     range_high=range_high,
-                    tradingview_url=self._tradingview_url(req.market.value, bundle.normalized_ticker),
+                    tradingview_url=self._tradingview_url(req.market.value, bundle.normalized_ticker, exchange=bundle.metadata.exchange),
                     bars_since_reclaim=regime.bars_since_reclaim,
                     compression_state=self._compression_state(location.support_distance_pct, location.resistance_room_pct),
                 )
@@ -761,4 +797,121 @@ class ScannerEngine:
             sector_summary=sector_summary,
             top_sector_by_candidate_count=(sector_summary[0].sector if sector_summary else None),
             rule_impact=impact_rows,
+        )
+
+    @staticmethod
+    def _normalize_provider(provider: str | None) -> str:
+        value = (provider or "openai").strip().lower()
+        return value if value in {"openai", "ollama"} else "openai"
+
+    @staticmethod
+    def _fallback_sector_macro(sector: str | None) -> str:
+        s = (sector or "unknown").lower()
+        if "financial" in s:
+            return "Rate expectations, credit spreads, and yield curve shape often drive this sector."
+        if "technology" in s:
+            return "Valuation sensitivity to rates and AI/capex cycle updates can dominate sentiment."
+        if "energy" in s:
+            return "Commodity price volatility and geopolitics are common macro drivers."
+        if "health" in s:
+            return "Regulatory updates, reimbursement trends, and product pipeline outcomes matter."
+        return "Cross-asset risk sentiment, rates, and earnings revisions are key macro variables."
+
+    def _recent_news_summary(self, symbol: str) -> tuple[bool, str]:
+        try:
+            rows: list[dict[str, Any]] = list(yf.Ticker(symbol).news or [])
+            if not rows:
+                return False, "External news context unavailable"
+            picked = rows[:8]
+            bullets: list[str] = []
+            for row in picked:
+                title = str(row.get("title") or "").strip()
+                if not title:
+                    continue
+                publisher = str(row.get("publisher") or "unknown")
+                bullets.append(f"- {title} ({publisher})")
+            if not bullets:
+                return False, "External news context unavailable"
+            return True, "\n".join(bullets)
+        except Exception:
+            return False, "External news context unavailable"
+
+    def generate_llmq(self, req: ScannerLLMQRequest) -> ScannerLLMQResponse:
+        row = req.row
+        news_available, news_text = self._recent_news_summary(row.symbol)
+        sector_macro = self._fallback_sector_macro(row.sector)
+        technical_merge = (
+            f"score={row.scanner_score:.2f}, category={row.category_tag}, priority={row.priority}, "
+            f"trend={row.trend_state}, setup={row.opportunity_type}, dynamics={row.score_dynamics_state}, "
+            f"support_distance={row.support_distance_pct:.2f}%, resistance_room={row.resistance_room_pct:.2f}%."
+        )
+        prompt = (
+            "You are an explanatory assistant. No financial advice.\n"
+            "Do NOT output buy/sell recommendations.\n"
+            "Do NOT change deterministic score/category/priority.\n"
+            "Return plain text with exactly these sections:\n"
+            "1. Scanner Snapshot\n2. Company / Sector\n3. Recent News Context\n4. Sector Context\n5. Technical Setup Interpretation\n6. What to Watch Next\n7. Risks / Missing Data\n\n"
+            f"symbol={row.symbol}\nmarket={req.market.value}\nduration={req.duration.value}\ncategory={req.category.value}\n"
+            f"company_name={row.company_name or 'unknown'}\nsector={row.sector or 'unknown'}\nindustry={row.industry or 'unknown'}\n"
+            f"news_last_3_months={news_text}\nsector_macro_context={sector_macro}\ntechnical_context={technical_merge}\n"
+        )
+        primary = self._normalize_provider(self.settings.llm_provider)
+        fallback = self._normalize_provider(self.settings.llm_fallback_provider)
+        sequence = [primary] if primary == fallback else [primary, fallback]
+        last_err = None
+        for provider_name in sequence:
+            try:
+                model = self.settings.openai_model if provider_name == "openai" else self.settings.ollama_model
+                result = self._llm_providers[provider_name].generate(
+                    prompt=prompt,
+                    model=model,
+                    timeout_seconds=45.0,
+                    options={"temperature": 0.1},
+                )
+                disclaimer = (
+                    "This is not financial advice.\n"
+                    "LLM does not change deterministic score/category/priority.\n"
+                    "LLM does not issue buy/sell signals.\n"
+                    "LLM explains context only.\n\n"
+                )
+                return ScannerLLMQResponse(
+                    symbol=row.symbol,
+                    provider_used=provider_name,
+                    model_used=model,
+                    external_news_available=news_available,
+                    report_text=disclaimer + result.text.strip(),
+                )
+            except Exception as exc:  # pragma: no cover
+                last_err = exc
+                continue
+        base = (
+            "1. Scanner Snapshot\n"
+            f"- symbol={row.symbol}, score={row.scanner_score:.2f}, category={row.category_tag}, priority={row.priority}\n\n"
+            "2. Company / Sector\n"
+            f"- company_name={row.company_name or 'unknown'}, sector={row.sector or 'unknown'}, industry={row.industry or 'unknown'}\n\n"
+            "3. Recent News Context\n"
+            f"- {news_text}\n\n"
+            "4. Sector Context\n"
+            f"- {sector_macro}\n\n"
+            "5. Technical Setup Interpretation\n"
+            f"- {technical_merge}\n\n"
+            "6. What to Watch Next\n"
+            "- Trigger quality, resistance room, and score dynamics.\n\n"
+            "7. Risks / Missing Data\n"
+            "- External news or metadata may be incomplete.\n"
+        )
+        disclaimer = (
+            "This is not financial advice.\n"
+            "LLM does not change deterministic score/category/priority.\n"
+            "LLM does not issue buy/sell signals.\n"
+            "LLM explains context only.\n\n"
+        )
+        if last_err:
+            base += f"\nLLM unavailable: {last_err}"
+        return ScannerLLMQResponse(
+            symbol=row.symbol,
+            provider_used="none",
+            model_used="none",
+            external_news_available=news_available,
+            report_text=disclaimer + base,
         )

@@ -65,9 +65,27 @@ const presetDefaults: Record<AlertRuleType, { label: string; valueKey: string | 
   fib_ema_confluence_reached: { label: "Fib/EMA confluence reached", valueKey: "max_distance_pct", defaultValue: "1.5", severity: "important" },
 };
 
-function tvLink(symbol: string, market: MarketCode): string {
-  const prefix = market === "bist" ? "BIST" : "NASDAQ";
-  return `https://www.tradingview.com/chart/?symbol=${prefix}%3A${encodeURIComponent(symbol)}`;
+const US_EXCHANGE_FALLBACK: Record<string, string> = {
+  NVDA: "NASDAQ",
+  AMD: "NASDAQ",
+  AAPL: "NASDAQ",
+  ORCL: "NYSE",
+  KO: "NYSE",
+  GS: "NYSE",
+};
+
+function resolveTradingViewSymbol(symbol: string, market: MarketCode, exchange?: string | null): string {
+  const normalized = (symbol ?? "").trim().toUpperCase();
+  if (normalized.includes(":")) return normalized;
+  if (market === "bist") return `BIST:${normalized}`;
+  const ex = (exchange ?? "").trim().toUpperCase();
+  if (ex) return `${ex}:${normalized}`;
+  return `${US_EXCHANGE_FALLBACK[normalized] ?? "NASDAQ"}:${normalized}`;
+}
+
+function tvLink(symbol: string, market: MarketCode, exchange?: string | null): string {
+  const tvSymbol = resolveTradingViewSymbol(symbol, market, exchange);
+  return `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSymbol)}`;
 }
 
 function pct(v: number | null | undefined): string {
@@ -423,7 +441,7 @@ export default function MonitorPage() {
                     {(selectedWatchlist?.items ?? []).map((item) => {
                       const alertCount = enabledRules.filter((r) => r.market === item.market && ((r.scope_type === "symbol" && r.symbol?.toUpperCase() === item.symbol.toUpperCase()) || (r.scope_type === "watchlist" && r.scope_ref === selectedWatchlistId))).length;
                       const latestLog = latestAlertBySymbol.get(`${item.symbol}|${item.market}`);
-                      return <tr key={`${item.symbol}|${item.market}`} className="border-b border-stroke/50"><td className="px-2 py-2 font-medium text-slate-100">{item.symbol}</td><td className="px-2 py-2">{item.market.toUpperCase()}</td><td className="px-2 py-2">{new Date(item.added_at).toLocaleDateString()}</td><td className="px-2 py-2">{num(item.added_price)}{item.added_price_estimated ? " (est)" : ""}</td><td className="px-2 py-2">{num(item.current_price)}</td><td className={`px-2 py-2 ${(item.pnl_since_added_pct ?? 0) >= 0 ? "text-green" : "text-red"}`}>{pct(item.pnl_since_added_pct)}</td><td className="px-2 py-2">{pct(item.return_1m_pct)}</td><td className="px-2 py-2">{pct(item.return_3m_pct)}</td><td className="px-2 py-2">{pct(item.return_6m_pct)}</td><td className="px-2 py-2">{pct(item.return_1y_pct)}</td><td className="px-2 py-2">{item.trend_state ?? "-"}</td><td className="px-2 py-2">{item.score !== null ? item.score.toFixed(1) : "-"}</td><td className="px-2 py-2">{item.score_dynamics_state ?? "-"}</td><td className="px-2 py-2">{pct(item.price_vs_ema200_pct)}</td><td className="px-2 py-2">{alertCount}</td><td className="px-2 py-2">{latestLog ? `${latestLog.message.slice(0, 42)}${latestLog.message.length > 42 ? "..." : ""}` : "-"}</td><td className="px-2 py-2">{item.last_checked ? new Date(item.last_checked).toLocaleString() : "-"}</td><td className="px-2 py-2"><div className="flex gap-1"><button type="button" onClick={() => router.push(`/analysis?ticker=${encodeURIComponent(item.symbol)}&market=${encodeURIComponent(item.market)}&window=1y`)} className="rounded border border-stroke px-2 py-1">Analysis</button><a href={tvLink(item.symbol, item.market)} target="_blank" rel="noreferrer" className="rounded border border-stroke px-2 py-1">TV</a><button type="button" onClick={() => { setRuleSymbolFilter(item.symbol); setView("rules"); }} className="rounded border border-stroke px-2 py-1">Edit Alerts</button><button type="button" onClick={() => openPreset(item.symbol, item.market)} className="rounded border border-stroke px-2 py-1">Alert</button><button type="button" onClick={() => removeSymbol(item.symbol, item.market)} className="rounded border border-red/40 px-2 py-1 text-red">Remove</button></div></td></tr>;
+                      return <tr key={`${item.symbol}|${item.market}`} className="border-b border-stroke/50"><td className="px-2 py-2 font-medium text-slate-100">{item.symbol}</td><td className="px-2 py-2">{item.market.toUpperCase()}</td><td className="px-2 py-2">{new Date(item.added_at).toLocaleDateString()}</td><td className="px-2 py-2">{num(item.added_price)}{item.added_price_estimated ? " (est)" : ""}</td><td className="px-2 py-2">{num(item.current_price)}</td><td className={`px-2 py-2 ${(item.pnl_since_added_pct ?? 0) >= 0 ? "text-green" : "text-red"}`}>{pct(item.pnl_since_added_pct)}</td><td className="px-2 py-2">{pct(item.return_1m_pct)}</td><td className="px-2 py-2">{pct(item.return_3m_pct)}</td><td className="px-2 py-2">{pct(item.return_6m_pct)}</td><td className="px-2 py-2">{pct(item.return_1y_pct)}</td><td className="px-2 py-2">{item.trend_state ?? "-"}</td><td className="px-2 py-2">{item.score !== null ? item.score.toFixed(1) : "-"}</td><td className="px-2 py-2">{item.score_dynamics_state ?? "-"}</td><td className="px-2 py-2">{pct(item.price_vs_ema200_pct)}</td><td className="px-2 py-2">{alertCount}</td><td className="px-2 py-2">{latestLog ? `${latestLog.message.slice(0, 42)}${latestLog.message.length > 42 ? "..." : ""}` : "-"}</td><td className="px-2 py-2">{item.last_checked ? new Date(item.last_checked).toLocaleString() : "-"}</td><td className="px-2 py-2"><div className="flex gap-1"><button type="button" onClick={() => router.push(`/analysis?ticker=${encodeURIComponent(item.symbol)}&market=${encodeURIComponent(item.market)}&window=1y`)} className="rounded border border-stroke px-2 py-1">Analysis</button><a href={tvLink(item.symbol, item.market, item.exchange)} target="_blank" rel="noreferrer" className="rounded border border-stroke px-2 py-1">TV</a><button type="button" onClick={() => { setRuleSymbolFilter(item.symbol); setView("rules"); }} className="rounded border border-stroke px-2 py-1">Edit Alerts</button><button type="button" onClick={() => openPreset(item.symbol, item.market)} className="rounded border border-stroke px-2 py-1">Alert</button><button type="button" onClick={() => removeSymbol(item.symbol, item.market)} className="rounded border border-red/40 px-2 py-1 text-red">Remove</button></div></td></tr>;
                     })}
                   </tbody>
                 </table>

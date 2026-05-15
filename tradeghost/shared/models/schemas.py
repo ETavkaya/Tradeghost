@@ -610,6 +610,7 @@ class ScannerResult(BaseModel):
     industry_key: str | None = None
     metadata_source: str | None = None
     metadata_data_quality_status: str = "ok"
+    exchange: str | None = None
     price_vs_ema200_pct: float
     ema200_slope_state: str
     ema_stack_alignment: str
@@ -676,6 +677,21 @@ class ScannerResponse(BaseModel):
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class ScannerLLMQRequest(BaseModel):
+    market: MarketCode
+    category: ScannerCategory
+    duration: ScannerDuration
+    row: ScannerResult
+
+
+class ScannerLLMQResponse(BaseModel):
+    symbol: str
+    provider_used: str
+    model_used: str
+    external_news_available: bool = False
+    report_text: str
+
+
 class WatchlistItem(BaseModel):
     watchlist_id: str
     symbol: str
@@ -697,6 +713,7 @@ class WatchlistItem(BaseModel):
     company_name: str | None = None
     sector: str | None = None
     industry: str | None = None
+    exchange: str | None = None
     last_checked: datetime | None = None
 
 

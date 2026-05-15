@@ -14,6 +14,7 @@ import {
   ScannerRequest,
   ScannerResponse,
   ScannerResult,
+  ScannerLLMQResponse,
   ScannerRuleField,
   ScannerRuleOperator,
   ScannerUniverseScope,
@@ -159,6 +160,9 @@ export default function ScannerPage() {
   const [savedPresets, setSavedPresets] = useState<Array<{ name: string; rules: ScannerCustomRule[] }>>([]);
   const [selectedPreview, setSelectedPreview] = useState<ScannerResult | null>(null);
   const [previewAnalysis, setPreviewAnalysis] = useState<CombinedAnalysisResponse | null>(null);
+  const [llmqRow, setLlmqRow] = useState<ScannerResult | null>(null);
+  const [llmqLoading, setLlmqLoading] = useState(false);
+  const [llmqResult, setLlmqResult] = useState<ScannerLLMQResponse | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -429,6 +433,25 @@ export default function ScannerPage() {
     }
   };
 
+  const openLLMQ = async (row: ScannerResult) => {
+    setLlmqRow(row);
+    setLlmqResult(null);
+    setLlmqLoading(true);
+    try {
+      const response = await api.scannerLLMQ({
+        market,
+        category: result?.scope.category ?? category,
+        duration: result?.scope.duration ?? duration,
+        row,
+      });
+      setLlmqResult(response);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Failed to load LLMQ context.");
+    } finally {
+      setLlmqLoading(false);
+    }
+  };
+
   const ruleMeaning = (rule: ScannerCustomRule): string => {
     if (rule.field === "rsi_14") return `RSI ${rule.operator} ${rule.value_number ?? "?"}: lower values are stricter for oversold screens.`;
     if (rule.field.startsWith("distance_to_ema")) return `${rule.field} uses signed distance: + above EMA, - below EMA.`;
@@ -531,6 +554,20 @@ export default function ScannerPage() {
             <button type="button" onClick={applyAlertPlan} className="rounded-lg border border-stroke px-3 py-2 text-xs hover:text-cyan">Apply Selected</button>
             <button type="button" onClick={() => { setAlertPlanRow(null); setAlertPlanRules([]); }} className="rounded-lg border border-stroke px-3 py-2 text-xs">Close</button>
           </div>
+        </Panel>
+      ) : null}
+
+      {llmqRow ? (
+        <Panel>
+          <SectionTitle title={`LLMQ: ${llmqRow.symbol}`} subtitle="Context-only explanatory summary (deterministic outputs unchanged)" />
+          <div className="mb-2 flex gap-2">
+            <button type="button" onClick={() => navigator.clipboard.writeText(llmqResult?.report_text ?? "")} disabled={!llmqResult} className="rounded-lg border border-stroke px-3 py-2 text-xs hover:text-cyan disabled:opacity-60">Copy</button>
+            <button type="button" onClick={() => { setLlmqRow(null); setLlmqResult(null); }} className="rounded-lg border border-stroke px-3 py-2 text-xs">Close</button>
+          </div>
+          {llmqLoading ? <p className="text-xs text-slate-300">Loading LLMQ...</p> : null}
+          {llmqResult ? (
+            <textarea readOnly value={llmqResult.report_text} className="h-[380px] w-full rounded-lg border border-stroke bg-bg p-2 text-xs text-slate-200" />
+          ) : null}
         </Panel>
       ) : null}
 
@@ -808,13 +845,14 @@ export default function ScannerPage() {
                     <th className="sticky top-0 z-20 bg-panel px-2 py-2 whitespace-nowrap">TV</th>
                     <th className="sticky top-0 z-20 bg-panel px-2 py-2 whitespace-nowrap">Open</th>
                     <th className="sticky top-0 z-20 bg-panel px-2 py-2 whitespace-nowrap">Track</th>
+                    <th className="sticky top-0 z-20 bg-panel px-2 py-2 whitespace-nowrap">LLMQ</th>
                   </tr>
                 </thead>
                 <tbody>
                   {sortedResults.length === 0 ? (
                     <tr>
                       <td className="sticky left-0 z-10 bg-panel px-2 py-3 text-slate-400 shadow-[8px_0_12px_-12px_rgba(0,0,0,0.6)]">No candidates found for selected scope.</td>
-                      <td className="px-2 py-3 text-slate-400" colSpan={29}></td>
+                      <td className="px-2 py-3 text-slate-400" colSpan={30}></td>
                     </tr>
                   ) : (
                     sortedResults.map((row) => (
@@ -875,6 +913,9 @@ export default function ScannerPage() {
                             <button type="button" onClick={() => addToWatchlist(row.symbol)} className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan">Add WL</button>
                             <button type="button" onClick={() => openAlertPlan(row)} disabled={alertPlanLoading} className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan disabled:opacity-60">{alertPlanLoading ? "Loading..." : "Alert Plan"}</button>
                           </div>
+                        </td>
+                        <td className="px-2 py-2 whitespace-nowrap">
+                          <button type="button" onClick={() => openLLMQ(row)} disabled={llmqLoading} className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan disabled:opacity-60">LLMQ</button>
                         </td>
                       </tr>
                     ))

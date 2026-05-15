@@ -619,6 +619,7 @@ export type ScannerResult = {
   industry_key: string | null;
   metadata_source: string | null;
   metadata_data_quality_status: string;
+  exchange: string | null;
   price_vs_ema200_pct: number;
   ema200_slope_state: string;
   ema_stack_alignment: string;
@@ -655,6 +656,21 @@ export type ScannerResponse = {
   generated_at: string;
 };
 
+export type ScannerLLMQRequest = {
+  market: MarketCode;
+  category: ScannerCategory;
+  duration: ScannerDuration;
+  row: ScannerResult;
+};
+
+export type ScannerLLMQResponse = {
+  symbol: string;
+  provider_used: string;
+  model_used: string;
+  external_news_available: boolean;
+  report_text: string;
+};
+
 export type WatchlistItem = {
   watchlist_id: string;
   symbol: string;
@@ -676,6 +692,7 @@ export type WatchlistItem = {
   company_name: string | null;
   sector: string | null;
   industry: string | null;
+  exchange: string | null;
   last_checked: string | null;
 };
 

@@ -34,6 +34,8 @@ import {
   ScannerDuration,
   ScannerRequest,
   ScannerResponse,
+  ScannerLLMQRequest,
+  ScannerLLMQResponse,
   ScannerUniverseScope,
   BacktestResponse,
   CombinedAnalysisResponse,
@@ -122,6 +124,12 @@ export const api = {
     }),
   scanner: (payload: ScannerRequest) =>
     fetchJson<ScannerResponse>("/api/scanner", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
+  scannerLLMQ: (payload: ScannerLLMQRequest) =>
+    fetchJson<ScannerLLMQResponse>("/api/scanner/llmq", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)

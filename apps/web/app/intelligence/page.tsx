@@ -5,6 +5,7 @@ import { Panel, SectionTitle, StatCard } from "@/components/ui";
 import { api } from "@/lib/api";
 import {
   CohortDetail,
+  CohortCleanupDuplicateResponse,
   CohortReviewResponse,
   IntelligenceDashboardResponse,
   LLMDebugLog,
@@ -54,6 +55,9 @@ export default function IntelligencePage() {
   const [cohortContextFailedSymbols, setCohortContextFailedSymbols] = useState<string[]>([]);
   const [cohortActionSuccess, setCohortActionSuccess] = useState<Record<string, { followup?: boolean; contexts?: boolean; briefing?: boolean; review?: boolean; export?: boolean }>>({});
   const [exportMode, setExportMode] = useState<"initial" | "followup" | "lifecycle" | "review_28d">("lifecycle");
+  const [cohortFilter, setCohortFilter] = useState<"active" | "archived" | "all">("active");
+  const [duplicateStrategy, setDuplicateStrategy] = useState<"use_existing" | "archive_existing_create_new" | "create_duplicate_anyway">("use_existing");
+  const [cleanupResult, setCleanupResult] = useState<CohortCleanupDuplicateResponse | null>(null);
 
   const formatError = (err: unknown, stage: string): string => {
     if (!(err instanceof Error)) return `${stage} failed.`;
@@ -73,7 +77,9 @@ export default function IntelligencePage() {
         const endpoint = detailObj.endpoint ? ` endpoint=${String(detailObj.endpoint)}` : "";
         const method = detailObj.method ? ` method=${String(detailObj.method)}` : "";
         const backendError = detailObj.error ? ` error=${String(detailObj.error)}` : "";
-        return `${detail}.${status}${method}${endpoint}${backendError}${failedStage}${failedSymbol}${model}${llmProvider}${llmFallbackProvider}${errorType}${errorMessage}`;
+        const suggestedAction = detailObj.suggested_action ? ` suggested_action=${String(detailObj.suggested_action)}` : "";
+        const conflictingCohortId = detailObj.conflicting_cohort_id ? ` conflicting_cohort_id=${String(detailObj.conflicting_cohort_id)}` : "";
+        return `${detail}.${status}${method}${endpoint}${backendError}${failedStage}${failedSymbol}${model}${llmProvider}${llmFallbackProvider}${errorType}${errorMessage}${conflictingCohortId}${suggestedAction}`;
       }
       return `${String(detailObj ?? `${stage} failed`)}.${status}`;
     } catch {
@@ -95,6 +101,13 @@ export default function IntelligencePage() {
     if (eventsR.status === "fulfilled") setPipelineEvents(eventsR.value);
     if (healthR.status === "fulfilled") setBackendConnected(healthR.value.status === "ok");
     else setBackendConnected(false);
+    if (selectedCohortId) {
+      try {
+        setSelectedCohortDetail(await api.getCohortDetail(selectedCohortId));
+      } catch {
+        setSelectedCohortDetail(null);
+      }
+    }
   };
 
   useEffect(() => {
@@ -126,7 +139,7 @@ export default function IntelligencePage() {
         setSelectedCohortDetail(null);
       }
     })();
-  }, [selectedCohortId, dashboard?.cohorts?.length]);
+  }, [selectedCohortId]);
 
   useEffect(() => {
     if (!selectedCohortId) return;
@@ -134,14 +147,19 @@ export default function IntelligencePage() {
   }, [selectedCohortId]);
 
   const activeModel = llmStatus?.model_used ?? "llama3.2:3b";
+  const selectedCohortMeta = (dashboard?.cohorts ?? []).find((x) => x.id === selectedCohortId) ?? null;
+  const filteredCohorts = (dashboard?.cohorts ?? []).filter((row) => cohortFilter === "all" ? true : row.status === cohortFilter);
   const cohortContexts = (dashboard?.latest_contexts ?? []).filter((row) => row.cohort_id === selectedCohortId);
   const generatedCohortContextCount = cohortContexts.filter((row) => row.status === "generated").length;
   const latestCohortSnapshotCount = selectedCohortDetail?.snapshots?.length ?? 0;
-  const canCreateCohort = Boolean(market && duration && categories.length > 0);
-  const canRunFollowup = Boolean(selectedCohortId);
-  const canRunCohortContexts = Boolean(selectedCohortId) && Boolean(llmStatus?.connected);
+  const selectedCohortCandidateCount = selectedCohortDetail?.candidates?.length ?? 0;
+  const selectedIsActive = selectedCohortMeta?.status === "active";
+  const canCreateCohort = Boolean(market && duration && categories.length > 0 && cohortName.trim().length > 0);
+  const canRunFollowup = Boolean(selectedCohortId) && selectedIsActive && selectedCohortCandidateCount > 0;
+  const canRunCohortContexts = Boolean(selectedCohortId) && selectedIsActive && selectedCohortCandidateCount > 0 && Boolean(llmStatus?.connected);
   const canRunCohortBriefing = Boolean(selectedCohortId) && generatedCohortContextCount > 0 && Boolean(llmStatus?.connected);
   const canRunCohortReview = Boolean(selectedCohortId) && latestCohortSnapshotCount > 0;
+  const canExportCohortReport = Boolean(selectedCohortId);
   const followupDone = Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.followup);
   const contextsDone = Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.contexts);
   const briefingDone = Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.briefing);
@@ -172,9 +190,10 @@ export default function IntelligencePage() {
         max_candidates: autoFinalShortlistLimit,
         scanner_max_results: scannerResultCap,
         scanner_universe_scope: scope,
+        duplicate_strategy: duplicateStrategy,
       });
       setSelectedCohortId(detail.cohort.id);
-      setNotice(`Discovery Run completed and cohort created: ${detail.cohort.name}.`);
+      setNotice(`Discovery/Create Cohort completed: ${detail.cohort.name} (${detail.cohort.id.slice(0, 8)}).`);
       await load();
     } catch (err) {
       setError(formatError(err, "Create Cohort"));
@@ -190,7 +209,7 @@ export default function IntelligencePage() {
     setLoading(true);
     try {
       const response = await api.runCohortFollowup({ cohort_id: selectedCohortId });
-      setNotice(`Follow-up Run completed for ${response.cohort_id} with ${response.snapshots.length} snapshots.`);
+      setNotice(`Follow-up completed for cohort_id=${response.cohort_id} snapshots=${response.snapshots.length}.`);
       setCohortActionSuccess((prev) => ({ ...prev, [selectedCohortId]: { ...(prev[selectedCohortId] ?? {}), followup: true } }));
       await load();
     } catch (err) {
@@ -235,6 +254,57 @@ export default function IntelligencePage() {
       setCohortActionSuccess((prev) => ({ ...prev, [selectedCohortId]: { ...(prev[selectedCohortId] ?? {}), export: true } }));
     } catch (err) {
       setError(formatError(err, "Export cohort report"));
+    }
+  };
+
+  const archiveSelectedCohort = async () => {
+    if (!selectedCohortId) return;
+    setError(null);
+    setNotice(null);
+    setLoading(true);
+    try {
+      const res = await api.archiveCohort(selectedCohortId);
+      setNotice(`Cohort archived: ${res.cohort_id}`);
+      await load();
+    } catch (err) {
+      setError(formatError(err, "Archive Cohort"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const deleteSelectedCohort = async () => {
+    if (!selectedCohortId) return;
+    const ok = window.confirm("Delete this cohort and all linked follow-up/context/review data?");
+    if (!ok) return;
+    setError(null);
+    setNotice(null);
+    setLoading(true);
+    try {
+      const res = await api.deleteCohort(selectedCohortId);
+      setNotice(`Cohort deleted: ${res.cohort_id} (candidates=${res.removed_candidates}, snapshots=${res.removed_snapshots}, contexts=${res.removed_contexts}).`);
+      setSelectedCohortId("");
+      setSelectedCohortDetail(null);
+      await load();
+    } catch (err) {
+      setError(formatError(err, "Delete Cohort"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const cleanupDuplicateCohortsDryRun = async () => {
+    setError(null);
+    setNotice(null);
+    setLoading(true);
+    try {
+      const res = await api.cleanupDuplicateCohorts({ dry_run: true, apply_archive: false });
+      setCleanupResult(res);
+      setNotice(`Duplicate cleanup dry-run completed. groups=${res.duplicate_groups.length}`);
+    } catch (err) {
+      setError(formatError(err, "Cleanup Duplicate Cohorts"));
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -476,6 +546,13 @@ export default function IntelligencePage() {
         <div className="mt-3 grid gap-3 md:grid-cols-2 text-xs text-slate-300">
           <label>Cohort Name<input value={cohortName} onChange={(e) => setCohortName(e.target.value)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
           <label>Cohort Notes<input value={cohortNotes} onChange={(e) => setCohortNotes(e.target.value)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
+          <label>Duplicate Cohort Behavior
+            <select value={duplicateStrategy} onChange={(e) => setDuplicateStrategy(e.target.value as "use_existing" | "archive_existing_create_new" | "create_duplicate_anyway")} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm">
+              <option value="use_existing">Use Existing Cohort (Recommended)</option>
+              <option value="archive_existing_create_new">Archive Existing and Create New</option>
+              <option value="create_duplicate_anyway">Create Duplicate Anyway</option>
+            </select>
+          </label>
         </div>
         <p className="mt-2 text-xs text-slate-400">
           Discovery Run selects new symbols. Follow-up Run tracks the same cohort symbols only.
@@ -491,6 +568,19 @@ export default function IntelligencePage() {
             <label>LLM Concurrency<input type="number" min={1} max={8} value={llmConcurrency} onChange={(e) => setLlmConcurrency(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
             <label>LLM Timeout (sec)<input type="number" min={5} max={300} value={contextTimeout} onChange={(e) => setContextTimeout(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
             <label>Review Period Days<input type="number" min={7} max={365} value={reviewDays} onChange={(e) => setReviewDays(Number(e.target.value))} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm" /></label>
+            <div className="md:col-span-2 xl:col-span-3">
+              <button type="button" onClick={cleanupDuplicateCohortsDryRun} disabled={loading} className="h-9 rounded border border-stroke px-3 text-xs hover:text-cyan disabled:opacity-60">Cleanup Duplicate Cohorts (Dry Run)</button>
+              {cleanupResult ? (
+                <div className="mt-2 text-xs text-slate-400 space-y-1">
+                  <p>duplicate_groups={cleanupResult.duplicate_groups.length} archived_on_apply={cleanupResult.archived_cohort_ids.length}</p>
+                  {cleanupResult.duplicate_groups.map((g) => (
+                    <p key={g.group_id}>
+                      {g.group_id}: keep `{g.keep_cohort_id}` archive `{g.archive_cohort_ids.join(", ") || "-"}`
+                    </p>
+                  ))}
+                </div>
+              ) : null}
+            </div>
           </div>
         ) : null}
 
@@ -506,30 +596,61 @@ export default function IntelligencePage() {
 
       
 
-      <Panel>
-        <SectionTitle title="Daily Runs" subtitle="Deterministic scanner -> analysis -> lightweight backtest snapshots" />
-        <div className="max-h-[240px] overflow-auto rounded-lg border border-stroke/70">
-          <table className="w-full text-xs">
-            <thead className="sticky top-0 z-20 bg-bg"><tr className="border-b border-stroke text-left text-slate-400"><th className="px-2 py-2">Date</th><th className="px-2 py-2">Symbols</th><th className="px-2 py-2">Categories</th><th className="px-2 py-2">Top N / Cat</th><th className="px-2 py-2">Raw Before Merge</th><th className="px-2 py-2">Final After Merge</th><th className="px-2 py-2">Status</th></tr></thead>
-            <tbody>
-              {(dashboard?.runs ?? []).map((row) => (
-                <tr key={row.id} className="border-b border-stroke/50"><td className="px-2 py-2">{new Date(row.timestamp).toLocaleString()}</td><td className="px-2 py-2">{row.symbols_count}</td><td className="px-2 py-2">{row.scanner_categories.join(", ")}</td><td className="px-2 py-2">{row.top_n_per_category}</td><td className="px-2 py-2">{row.raw_candidates_before_merge}</td><td className="px-2 py-2">{row.final_candidates_after_merge}</td><td className="px-2 py-2">{row.status}</td></tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Panel>
+      {showAdvanced ? (
+        <Panel>
+          <SectionTitle title="Legacy Daily Runs (Debug)" subtitle="Legacy daily scanner runs for debugging only; cohort workflow is primary." />
+          <div className="max-h-[240px] overflow-auto rounded-lg border border-stroke/70">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 z-20 bg-bg"><tr className="border-b border-stroke text-left text-slate-400"><th className="px-2 py-2">Date</th><th className="px-2 py-2">Symbols</th><th className="px-2 py-2">Categories</th><th className="px-2 py-2">Top N / Cat</th><th className="px-2 py-2">Raw Before Merge</th><th className="px-2 py-2">Final After Merge</th><th className="px-2 py-2">Status</th></tr></thead>
+              <tbody>
+                {(dashboard?.runs ?? []).map((row) => (
+                  <tr key={row.id} className="border-b border-stroke/50"><td className="px-2 py-2">{new Date(row.timestamp).toLocaleString()}</td><td className="px-2 py-2">{row.symbols_count}</td><td className="px-2 py-2">{row.scanner_categories.join(", ")}</td><td className="px-2 py-2">{row.top_n_per_category}</td><td className="px-2 py-2">{row.raw_candidates_before_merge}</td><td className="px-2 py-2">{row.final_candidates_after_merge}</td><td className="px-2 py-2">{row.status}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      ) : null}
 
       <section id="active-cohorts">
       <Panel>
         <SectionTitle title="Active Cohorts" subtitle="Follow-up Run tracks existing cohort symbols and forward performance" />
         <div className="grid gap-3 text-xs">
+          <div className="grid gap-2 md:grid-cols-2">
+            <label>Cohort Filter
+              <select value={cohortFilter} onChange={(e) => setCohortFilter(e.target.value as "active" | "archived" | "all")} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm">
+                <option value="active">Active</option>
+                <option value="archived">Archived</option>
+                <option value="all">All</option>
+              </select>
+            </label>
+          </div>
           <label>Selected Cohort
             <select value={selectedCohortId} onChange={(e) => setSelectedCohortId(e.target.value)} className="mt-1 h-10 w-full rounded-lg border border-stroke bg-bg px-2 text-sm">
               <option value="">Select cohort</option>
-              {(dashboard?.cohorts ?? []).map((row) => <option key={row.id} value={row.id}>{row.name} | {row.start_date} | {row.status}</option>)}
+              {filteredCohorts.map((row) => (
+                <option key={row.id} value={row.id}>
+                  {`${row.name} | created ${new Date(row.created_at).toLocaleString()} | start ${row.start_date} | ${row.status} | ${row.symbols_count ?? 0} symbols | latest ${row.latest_followup_date ?? "-"} | ${row.short_id ?? row.id.slice(0, 8)}`}
+                </option>
+              ))}
             </select>
           </label>
+          {selectedCohortMeta ? (
+            <div className="rounded-lg border border-stroke/70 p-3 text-xs text-slate-300">
+              <p className="font-semibold text-slate-100">Selected Cohort Status</p>
+              <p>Name: {selectedCohortMeta.name}</p>
+              <p>Cohort ID: {selectedCohortMeta.id}</p>
+              <p>Created at: {new Date(selectedCohortMeta.created_at).toLocaleString()}</p>
+              <p>Start date: {selectedCohortMeta.start_date}</p>
+              <p>Candidate count: {selectedCohortCandidateCount}</p>
+              <p>Follow-up snapshots: {latestCohortSnapshotCount}</p>
+              <p>Latest follow-up date: {selectedCohortMeta.latest_followup_date ?? "-"}</p>
+              <p>Contexts generated: {generatedCohortContextCount}</p>
+              <p>Briefing status: {generatedCohortContextCount > 0 ? "ready/generated contexts available" : "waiting contexts"}</p>
+              <p>Review readiness: {canRunCohortReview ? "ready" : "follow-up required"}</p>
+              <p>Status: {selectedCohortMeta.status}</p>
+            </div>
+          ) : null}
           <div className="rounded-lg border border-stroke/70 p-3">
             <p className="mb-2 text-xs text-slate-400">Cohort Actions</p>
             <div className="flex flex-wrap gap-2">
@@ -543,7 +664,9 @@ export default function IntelligencePage() {
                 <option value="lifecycle">Export: Full Lifecycle</option>
                 <option value="review_28d">Export: 28-Day Review</option>
               </select>
-              <button type="button" onClick={exportCohortReport} disabled={loading || !selectedCohortId} className={actionButtonClass(exportDone)}>Export Cohort Report</button>
+              <button type="button" onClick={exportCohortReport} disabled={loading || !canExportCohortReport} className={actionButtonClass(exportDone)}>Export Cohort Report</button>
+              <button type="button" onClick={archiveSelectedCohort} disabled={loading || !selectedCohortId || !selectedIsActive} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Archive Cohort</button>
+              <button type="button" onClick={deleteSelectedCohort} disabled={loading || !selectedCohortId} className="h-10 rounded-lg border border-red/60 px-3 text-sm text-red hover:bg-red/10 disabled:opacity-60">Delete Cohort</button>
               <button type="button" onClick={() => { setLlmConsoleExpanded(true); jumpTo("cohort-console"); }} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan">Jump to Console</button>
             </div>
           </div>
@@ -562,6 +685,20 @@ export default function IntelligencePage() {
                   </tr>
                 </thead>
                 <tbody>
+                  {!selectedCohortId ? (
+                    <tr><td className="px-2 py-3 text-slate-400" colSpan={8}>No cohort selected.</td></tr>
+                  ) : (selectedCohortMeta?.status === "archived" ? (
+                    <tr><td className="px-2 py-3 text-slate-400" colSpan={8}>Selected cohort is archived. Follow-up actions are disabled.</td></tr>
+                  ) : null)}
+                  {selectedCohortId && !selectedCohortDetail ? (
+                    <tr><td className="px-2 py-3 text-slate-400" colSpan={8}>Selected cohort could not be loaded (API error or missing cohort_id).</td></tr>
+                  ) : null}
+                  {selectedCohortId && (selectedCohortDetail?.candidates?.length ?? 0) === 0 ? (
+                    <tr><td className="px-2 py-3 text-slate-400" colSpan={8}>No candidates found for selected cohort.</td></tr>
+                  ) : null}
+                  {selectedCohortId && (selectedCohortDetail?.candidates?.length ?? 0) > 0 && (selectedCohortDetail?.latest_states?.length ?? 0) === 0 ? (
+                    <tr><td className="px-2 py-3 text-slate-400" colSpan={8}>Follow-up not run yet for this cohort.</td></tr>
+                  ) : null}
                   {(selectedCohortDetail?.latest_states ?? []).map((row) => {
                     const original = (selectedCohortDetail?.candidates ?? []).find((x) => x.symbol === row.symbol);
                     const validity = row.validity_state ?? "pending_validation";
@@ -649,10 +786,13 @@ export default function IntelligencePage() {
                 <thead className="sticky top-0 z-20 bg-bg">
                   <tr className="border-b border-stroke text-left text-slate-400">
                     <th className="px-2 py-2">Time</th>
-                    <th className="px-2 py-2">Step</th>
+                    <th className="px-2 py-2">Action</th>
+                    <th className="px-2 py-2">Cohort</th>
+                    <th className="px-2 py-2">Cohort ID</th>
                     <th className="px-2 py-2">Status</th>
                     <th className="px-2 py-2">Category</th>
                     <th className="px-2 py-2">Symbol</th>
+                    <th className="px-2 py-2">Provider</th>
                     <th className="px-2 py-2">Duration ms</th>
                     <th className="px-2 py-2">Message</th>
                     <th className="px-2 py-2">Details</th>
@@ -669,9 +809,12 @@ export default function IntelligencePage() {
                         >
                           <td className="px-2 py-2">{new Date(row.timestamp).toLocaleTimeString()}</td>
                           <td className="px-2 py-2">{row.step_name}</td>
+                          <td className="px-2 py-2">{row.cohort_name ?? "-"}</td>
+                          <td className="px-2 py-2">{row.cohort_id ?? "-"}</td>
                           <td className={`px-2 py-2 ${row.status === "failed" ? "text-red" : row.status === "success" ? "text-green" : "text-yellow-300"}`}>{row.status}</td>
                           <td className="px-2 py-2">{row.category ?? "-"}</td>
                           <td className="px-2 py-2">{row.symbol ?? "-"}</td>
+                          <td className="px-2 py-2">{row.provider ?? "-"}</td>
                           <td className="px-2 py-2">{row.duration_ms}</td>
                           <td className="px-2 py-2">{row.error_message ?? row.message ?? "-"}</td>
                           <td className="px-2 py-2">
@@ -689,7 +832,7 @@ export default function IntelligencePage() {
                         </tr>
                         {expandedPipelineIds[row.id] ? (
                           <tr className="border-b border-stroke/40 bg-panelSoft/60">
-                            <td className="px-2 py-2 text-slate-300" colSpan={8}>
+                            <td className="px-2 py-2 text-slate-300" colSpan={11}>
                               <p className="mb-1 text-slate-300">Full message</p>
                               <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded border border-stroke/60 bg-bg/50 p-2">{row.error_message ?? row.message ?? "-"}</pre>
                               {(row.error_message ?? "").includes("JSON") || (row.error_message ?? "").includes("Unterminated string") ? (

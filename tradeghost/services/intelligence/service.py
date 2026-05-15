@@ -19,9 +19,15 @@ from tradeghost.shared.config.settings import get_settings
 from tradeghost.shared.models.schemas import (
     CandidateCohort,
     CandidateCohortStatus,
+    CohortArchiveResponse,
     CohortCandidate,
+    CohortCleanupDuplicateRequest,
+    CohortCleanupDuplicateResponse,
     CohortDailySnapshot,
     CohortDetail,
+    CohortDeleteResponse,
+    CohortDuplicateGroup,
+    CohortDuplicateStrategy,
     CohortReportMode,
     CohortFollowupRequest,
     CohortFollowupResponse,
@@ -237,8 +243,48 @@ class IntelligenceService:
     def _save_cohort_snapshots(self, rows: list[CohortDailySnapshot]) -> None:
         self._write_rows(self.cohort_snapshots_path, [row.model_dump(mode="json") for row in rows])
 
+    @staticmethod
+    def _normalize_cohort_name(name: str) -> str:
+        return "".join(ch.lower() for ch in (name or "").strip() if ch.isalnum())
+
+    def _enrich_cohort_metadata(self, rows: list[CandidateCohort]) -> list[CandidateCohort]:
+        candidates = self._read_cohort_candidates()
+        snapshots = self._read_cohort_snapshots()
+        symbol_count_by_id: dict[str, int] = {}
+        latest_followup_by_id: dict[str, date] = {}
+        for row in candidates:
+            symbol_count_by_id[row.cohort_id] = symbol_count_by_id.get(row.cohort_id, 0) + 1
+        for row in snapshots:
+            prev = latest_followup_by_id.get(row.cohort_id)
+            if prev is None or row.snapshot_date > prev:
+                latest_followup_by_id[row.cohort_id] = row.snapshot_date
+        return [
+            row.model_copy(
+                update={
+                    "symbols_count": symbol_count_by_id.get(row.id, 0),
+                    "latest_followup_date": latest_followup_by_id.get(row.id),
+                    "short_id": row.id[:8],
+                }
+            )
+            for row in rows
+        ]
+
+    def _sort_cohorts(self, rows: list[CandidateCohort]) -> list[CandidateCohort]:
+        status_order = {
+            CandidateCohortStatus.ACTIVE: 0,
+            CandidateCohortStatus.COMPLETED: 1,
+            CandidateCohortStatus.ARCHIVED: 2,
+        }
+        return sorted(
+            rows,
+            key=lambda row: (
+                status_order.get(row.status, 9),
+                -int(row.created_at.timestamp()),
+            ),
+        )
+
     def list_cohorts(self) -> list[CandidateCohort]:
-        return sorted(self._read_cohorts(), key=lambda row: row.created_at, reverse=True)
+        return self._sort_cohorts(self._enrich_cohort_metadata(self._read_cohorts()))
 
     def get_cohort_detail(self, cohort_id: str) -> CohortDetail:
         cohorts = self._read_cohorts()
@@ -301,7 +347,217 @@ class IntelligenceService:
             )
         return rows
 
+    def archive_cohort(self, cohort_id: str) -> CohortArchiveResponse:
+        cohorts = self._read_cohorts()
+        found = False
+        updated: list[CandidateCohort] = []
+        cohort_name = None
+        for row in cohorts:
+            if row.id == cohort_id:
+                found = True
+                cohort_name = row.name
+                updated.append(row.model_copy(update={"status": CandidateCohortStatus.ARCHIVED}))
+            else:
+                updated.append(row)
+        if not found:
+            raise FileNotFoundError(f"Cohort not found: {cohort_id}")
+        self._save_cohorts(updated)
+        self._append_pipeline_event(
+            step_name="cohort_archived",
+            status="success",
+            cohort_id=cohort_id,
+            cohort_name=cohort_name,
+            message="action=archive",
+        )
+        return CohortArchiveResponse(cohort_id=cohort_id, status=CandidateCohortStatus.ARCHIVED)
+
+    def delete_cohort(self, cohort_id: str) -> CohortDeleteResponse:
+        cohorts = self._read_cohorts()
+        cohort = next((row for row in cohorts if row.id == cohort_id), None)
+        if cohort is None:
+            raise FileNotFoundError(f"Cohort not found: {cohort_id}")
+        cohorts = [row for row in cohorts if row.id != cohort_id]
+        self._save_cohorts(cohorts)
+
+        candidates = self._read_cohort_candidates()
+        snapshots = self._read_cohort_snapshots()
+        contexts = self._read_contexts()
+        briefings = self._read_briefings()
+        reviews = self._read_reviews()
+
+        removed_candidates = sum(1 for row in candidates if row.cohort_id == cohort_id)
+        removed_snapshots = sum(1 for row in snapshots if row.cohort_id == cohort_id)
+        removed_contexts = sum(1 for row in contexts if row.cohort_id == cohort_id)
+        removed_briefings = sum(1 for row in briefings if row.cohort_id == cohort_id)
+        removed_reviews = sum(1 for row in reviews if getattr(row, "id", "").startswith(cohort_id))
+
+        self._save_cohort_candidates([row for row in candidates if row.cohort_id != cohort_id])
+        self._save_cohort_snapshots([row for row in snapshots if row.cohort_id != cohort_id])
+        self._save_contexts([row for row in contexts if row.cohort_id != cohort_id])
+        self._save_briefings([row for row in briefings if row.cohort_id != cohort_id])
+        # Cohort reviews are deterministic ad-hoc currently; no persistent cohort review rows to delete by id.
+        self._save_reviews([row for row in reviews if not getattr(row, "id", "").startswith(cohort_id)])
+
+        self._append_pipeline_event(
+            step_name="cohort_deleted",
+            status="success",
+            cohort_id=cohort_id,
+            cohort_name=cohort.name,
+            message=f"action=delete candidates={removed_candidates} snapshots={removed_snapshots} contexts={removed_contexts}",
+        )
+        return CohortDeleteResponse(
+            cohort_id=cohort_id,
+            deleted=True,
+            removed_candidates=removed_candidates,
+            removed_snapshots=removed_snapshots,
+            removed_contexts=removed_contexts,
+            removed_briefings=removed_briefings,
+            removed_reviews=removed_reviews,
+        )
+
+    def cleanup_duplicate_cohorts(self, req: CohortCleanupDuplicateRequest) -> CohortCleanupDuplicateResponse:
+        cohorts = [row for row in self._read_cohorts() if row.status == CandidateCohortStatus.ACTIVE]
+        details = {row.id: self.get_cohort_detail(row.id) for row in cohorts}
+        adjacency: dict[str, set[str]] = {row.id: set() for row in cohorts}
+
+        def jaccard(a: set[str], b: set[str]) -> float:
+            if not a and not b:
+                return 1.0
+            denom = len(a.union(b))
+            return 0.0 if denom == 0 else len(a.intersection(b)) / denom
+
+        for i, left in enumerate(cohorts):
+            left_symbols = {row.symbol for row in details[left.id].candidates}
+            left_name = self._normalize_cohort_name(left.name)
+            for right in cohorts[i + 1:]:
+                if left.market != right.market or left.start_date != right.start_date:
+                    continue
+                right_symbols = {row.symbol for row in details[right.id].candidates}
+                right_name = self._normalize_cohort_name(right.name)
+                overlap = jaccard(left_symbols, right_symbols)
+                same_name = left_name == right_name
+                if same_name or overlap >= 0.8:
+                    adjacency[left.id].add(right.id)
+                    adjacency[right.id].add(left.id)
+
+        seen: set[str] = set()
+        groups: list[list[str]] = []
+        for row in cohorts:
+            if row.id in seen:
+                continue
+            stack = [row.id]
+            comp: list[str] = []
+            while stack:
+                node = stack.pop()
+                if node in seen:
+                    continue
+                seen.add(node)
+                comp.append(node)
+                stack.extend(adjacency.get(node, set()) - seen)
+            if len(comp) > 1:
+                groups.append(comp)
+
+        duplicate_groups: list[CohortDuplicateGroup] = []
+        to_archive_ids: list[str] = []
+        for idx, group_ids in enumerate(groups, start=1):
+            ranked = sorted(
+                group_ids,
+                key=lambda cid: (
+                    len(details[cid].snapshots),
+                    len(details[cid].candidates),
+                    details[cid].cohort.created_at.timestamp(),
+                ),
+                reverse=True,
+            )
+            keep_id = ranked[0]
+            archive_ids = ranked[1:]
+            to_archive_ids.extend(archive_ids)
+            duplicate_groups.append(
+                CohortDuplicateGroup(
+                    group_id=f"group-{idx}",
+                    cohort_ids=ranked,
+                    keep_cohort_id=keep_id,
+                    archive_cohort_ids=archive_ids,
+                    reasons=[
+                        "same market/start_date",
+                        "same normalized name or high symbol overlap",
+                    ],
+                    details=[
+                        {
+                            "cohort_id": cid,
+                            "name": details[cid].cohort.name,
+                            "created_at": details[cid].cohort.created_at.isoformat(),
+                            "candidates": len(details[cid].candidates),
+                            "snapshots": len(details[cid].snapshots),
+                            "latest_followup_date": max((s.snapshot_date for s in details[cid].snapshots), default=None),
+                        }
+                        for cid in ranked
+                    ],
+                )
+            )
+
+        archived_ids: list[str] = []
+        if req.apply_archive and not req.dry_run and to_archive_ids:
+            cohort_rows = self._read_cohorts()
+            updated_rows: list[CandidateCohort] = []
+            for row in cohort_rows:
+                if row.id in set(to_archive_ids):
+                    updated_rows.append(row.model_copy(update={"status": CandidateCohortStatus.ARCHIVED}))
+                    archived_ids.append(row.id)
+                else:
+                    updated_rows.append(row)
+            self._save_cohorts(updated_rows)
+            self._append_pipeline_event(
+                step_name="cohort_cleanup_duplicates_applied",
+                status="success",
+                message=f"action=cleanup_duplicates archived={len(archived_ids)}",
+            )
+
+        return CohortCleanupDuplicateResponse(
+            dry_run=req.dry_run,
+            duplicate_groups=duplicate_groups,
+            archived_cohort_ids=sorted(set(archived_ids)),
+        )
+
     def run_discovery_create_cohort(self, req: DiscoveryCreateCohortRequest) -> CohortDetail:
+        if not req.name.strip():
+            raise ValueError("Cohort name is required.")
+        if not req.categories:
+            raise ValueError("At least one scanner category is required.")
+        cohorts_existing = self._read_cohorts()
+        active_same_name = [
+            row for row in cohorts_existing
+            if row.status == CandidateCohortStatus.ACTIVE
+            and row.market == req.market
+            and row.start_date == date.today()
+            and self._normalize_cohort_name(row.name) == self._normalize_cohort_name(req.name)
+        ]
+        if active_same_name:
+            existing = sorted(active_same_name, key=lambda row: row.created_at, reverse=True)[0]
+            if req.duplicate_strategy == CohortDuplicateStrategy.USE_EXISTING:
+                self._append_pipeline_event(
+                    step_name="cohort_create_dedup_use_existing",
+                    status="success",
+                    cohort_id=existing.id,
+                    cohort_name=existing.name,
+                    message=f"duplicate detected for name={req.name}",
+                )
+                return self.get_cohort_detail(existing.id)
+            if req.duplicate_strategy == CohortDuplicateStrategy.ARCHIVE_EXISTING_CREATE_NEW:
+                cohorts_existing = [
+                    row.model_copy(update={"status": CandidateCohortStatus.ARCHIVED})
+                    if row.id in {x.id for x in active_same_name}
+                    else row
+                    for row in cohorts_existing
+                ]
+                self._save_cohorts(cohorts_existing)
+                self._append_pipeline_event(
+                    step_name="cohort_create_archive_existing",
+                    status="success",
+                    cohort_id=existing.id,
+                    cohort_name=existing.name,
+                    message=f"archived existing duplicate cohort(s) for name={req.name}",
+                )
         discovery = self.run_daily_pipeline(
             DailyPipelineRequest(
                 market=req.market,
@@ -329,6 +585,13 @@ class IntelligenceService:
         cohorts = self._read_cohorts()
         cohorts.append(cohort)
         self._save_cohorts(cohorts)
+        self._append_pipeline_event(
+            step_name="cohort_created",
+            status="success",
+            cohort_id=cohort.id,
+            cohort_name=cohort.name,
+            message=f"action=create symbols={len(discovery.symbol_results)}",
+        )
 
         cohort_candidates = self._read_cohort_candidates()
         for row in discovery.symbol_results:
@@ -370,6 +633,13 @@ class IntelligenceService:
 
     def run_cohort_followup(self, req: CohortFollowupRequest) -> CohortFollowupResponse:
         detail = self.get_cohort_detail(req.cohort_id)
+        self._append_pipeline_event(
+            step_name="cohort_followup_started",
+            status="running",
+            cohort_id=detail.cohort.id,
+            cohort_name=detail.cohort.name,
+            message=f"action=followup cohort_id={detail.cohort.id} cohort_name={detail.cohort.name}",
+        )
         snapshots = self._read_cohort_snapshots()
         today = date.today()
         new_snapshots: list[CohortDailySnapshot] = []
@@ -449,6 +719,13 @@ class IntelligenceService:
             snapshots.append(snap)
             new_snapshots.append(snap)
         self._save_cohort_snapshots(snapshots)
+        self._append_pipeline_event(
+            step_name="cohort_followup_completed",
+            status="success",
+            cohort_id=detail.cohort.id,
+            cohort_name=detail.cohort.name,
+            message=f"action=followup snapshots={len(new_snapshots)}",
+        )
         return CohortFollowupResponse(cohort_id=req.cohort_id, snapshot_date=today, snapshots=sorted(new_snapshots, key=lambda row: row.symbol))
 
     def _read_llm_logs(self) -> list[LLMDebugLog]:
@@ -479,7 +756,10 @@ class IntelligenceService:
         status: str,
         duration_ms: int = 0,
         run_id: str | None = None,
+        cohort_id: str | None = None,
+        cohort_name: str | None = None,
         symbol: str | None = None,
+        provider: str | None = None,
         category: str | None = None,
         message: str | None = None,
         error_message: str | None = None,
@@ -491,7 +771,10 @@ class IntelligenceService:
             status=status,
             duration_ms=duration_ms,
             run_id=run_id,
+            cohort_id=cohort_id,
+            cohort_name=cohort_name,
             symbol=symbol,
+            provider=provider,
             category=category,
             message=message,
             error_message=error_message,
@@ -1498,6 +1781,14 @@ class IntelligenceService:
 
     def generate_cohort_symbol_contexts(self, req: CohortSymbolContextRequest) -> SymbolContextBatchResponse:
         detail = self.get_cohort_detail(req.cohort_id)
+        self._append_pipeline_event(
+            step_name="cohort_symbol_context_batch_started",
+            status="running",
+            cohort_id=detail.cohort.id,
+            cohort_name=detail.cohort.name,
+            provider=self._normalize_provider(self.settings.llm_provider),
+            message=f"action=contexts cohort_id={detail.cohort.id} symbols_limit={req.context_symbol_limit}",
+        )
         candidates = detail.candidates
         if req.symbols:
             selected = {s.upper() for s in req.symbols}
@@ -1573,6 +1864,15 @@ class IntelligenceService:
                 stored.append(row)
                 self._save_contexts(stored)
         failed = sum(1 for row in contexts if row.status != "generated")
+        self._append_pipeline_event(
+            step_name="cohort_symbol_context_batch_completed",
+            status="success" if failed < len(contexts) else "failed",
+            cohort_id=detail.cohort.id,
+            cohort_name=detail.cohort.name,
+            provider=self._normalize_provider(self.settings.llm_provider),
+            message=f"action=contexts generated={len(contexts)-failed} failed={failed}",
+            error_message=None if failed < len(contexts) else "all cohort symbol contexts failed",
+        )
         return SymbolContextBatchResponse(
             run_id=req.cohort_id,
             generated=len(contexts) - failed,
@@ -1583,8 +1883,24 @@ class IntelligenceService:
 
     def generate_cohort_briefing(self, req: CohortBriefingRequest) -> DailyBriefing:
         detail = self.get_cohort_detail(req.cohort_id)
+        self._append_pipeline_event(
+            step_name="cohort_briefing_started",
+            status="running",
+            cohort_id=detail.cohort.id,
+            cohort_name=detail.cohort.name,
+            provider=self._normalize_provider(self.settings.llm_provider),
+            message=f"action=briefing cohort_id={detail.cohort.id}",
+        )
         by_symbol = {row.symbol: row for row in self._read_contexts() if row.cohort_id == req.cohort_id and row.status == "generated"}
         if not by_symbol:
+            self._append_pipeline_event(
+                step_name="cohort_briefing_completed",
+                status="failed",
+                cohort_id=detail.cohort.id,
+                cohort_name=detail.cohort.name,
+                provider=self._normalize_provider(self.settings.llm_provider),
+                error_message="no generated cohort symbol contexts",
+            )
             return DailyBriefing(
                 date=date.today(),
                 cohort_id=req.cohort_id,
@@ -1620,6 +1936,14 @@ class IntelligenceService:
         rows = self._read_briefings()
         rows.append(briefing)
         self._save_briefings(rows)
+        self._append_pipeline_event(
+            step_name="cohort_briefing_completed",
+            status="success",
+            cohort_id=detail.cohort.id,
+            cohort_name=detail.cohort.name,
+            provider=self._normalize_provider(self.settings.llm_provider),
+            message="action=briefing generated",
+        )
         return briefing
 
     def generate_daily_briefing(self, req: DailyBriefingRequest) -> DailyBriefing:
@@ -1892,7 +2216,9 @@ class IntelligenceService:
     def run_cohort_review(self, req: CohortReviewRequest) -> CohortReviewResponse:
         cohorts = self._read_cohorts()
         cohort_by_id = {row.id: row for row in cohorts}
-        target_ids = [req.cohort_id] if req.cohort_id else [row.id for row in cohorts if row.status == CandidateCohortStatus.ACTIVE]
+        if req.cohort_id not in cohort_by_id:
+            raise FileNotFoundError(f"Cohort not found: {req.cohort_id}")
+        target_ids = [req.cohort_id]
         candidate_rows = [row for row in self._read_cohort_candidates() if row.cohort_id in target_ids]
         snapshot_rows = [row for row in self._read_cohort_snapshots() if row.cohort_id in target_ids]
         unique_days = len({row.snapshot_date for row in snapshot_rows})
@@ -1999,6 +2325,14 @@ class IntelligenceService:
             insufficient_data=not sufficient_window,
             score_delta_vs_return_note=note,
         )
+        selected_name = cohort_by_id[req.cohort_id].name
+        self._append_pipeline_event(
+            step_name="cohort_review_completed",
+            status="success",
+            cohort_id=req.cohort_id,
+            cohort_name=selected_name,
+            message=f"action=review cohort_id={req.cohort_id} days={unique_days}/{req.days_required}",
+        )
         return CohortReviewResponse(
             cohort_id=req.cohort_id,
             readiness_message=readiness,
@@ -2095,8 +2429,8 @@ class IntelligenceService:
         briefings = self._read_briefings()
         reviews = self._read_reviews()
         details = [DailyRunDetail.model_validate(row) for row in self._read_symbol_results()]
-        cohorts = sorted(self._read_cohorts(), key=lambda row: row.created_at, reverse=True)
-        cohort_details = [self.get_cohort_detail(row.id) for row in cohorts[:8]]
+        cohorts = self.list_cohorts()
+        cohort_details = [self.get_cohort_detail(row.id) for row in cohorts[:20]]
         return IntelligenceDashboardResponse(
             runs=sorted(runs, key=lambda row: row.timestamp, reverse=True),
             latest_run_results=latest_results,
@@ -2246,12 +2580,14 @@ class IntelligenceService:
         cohort_name: str,
         cohort_id: str,
         report_mode: CohortReportMode,
-        export_date: date,
+        export_dt: datetime,
     ) -> str:
         slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in cohort_name.strip()).strip("-")
         slug = slug or cohort_id[:8].lower()
+        short_id = cohort_id[:8].lower()
         mode = report_mode.value
-        base = f"tradeghost-cohort-{slug}-{mode}-{export_date.isoformat()}"
+        ts = export_dt.strftime("%Y-%m-%d-%H%M")
+        base = f"tradeghost-cohort-{slug}-{short_id}-{mode}-{ts}"
         export_dir = self.base_dir / "exports"
         export_dir.mkdir(parents=True, exist_ok=True)
         existing = sorted(export_dir.glob(f"{base}*.md"))
@@ -2265,6 +2601,13 @@ class IntelligenceService:
         report_mode: CohortReportMode = CohortReportMode.LIFECYCLE,
     ) -> IntelligenceRunReportExport:
         detail = self.get_cohort_detail(cohort_id)
+        self._append_pipeline_event(
+            step_name="cohort_export_started",
+            status="running",
+            cohort_id=detail.cohort.id,
+            cohort_name=detail.cohort.name,
+            message=f"action=export mode={report_mode.value}",
+        )
         review = self.run_cohort_review(CohortReviewRequest(cohort_id=cohort_id))
         latest_followup_date = max((x.snapshot_date for x in detail.snapshots), default=None)
         exported_at = datetime.now(UTC)
@@ -2272,7 +2615,7 @@ class IntelligenceService:
             cohort_name=detail.cohort.name,
             cohort_id=detail.cohort.id,
             report_mode=report_mode,
-            export_date=exported_at.date(),
+            export_dt=exported_at,
         )
         lines: list[str] = []
         lines.append(f"# TradeGhost Candidate Cohort Report - {detail.cohort.name}")
@@ -2280,7 +2623,10 @@ class IntelligenceService:
         lines.append(f"- report_mode: `{report_mode.value}`")
         lines.append(f"- exported_at: `{exported_at.isoformat()}`")
         lines.append(f"- cohort_id: `{detail.cohort.id}`")
+        lines.append(f"- cohort_name: `{detail.cohort.name}`")
         lines.append(f"- latest_followup_date: `{latest_followup_date}`")
+        lines.append(f"- candidate_count: `{len(detail.candidates)}`")
+        lines.append(f"- followup_snapshot_count: `{len(detail.snapshots)}`")
         lines.append("")
         lines.append("## Initial Selection Snapshot")
         lines.append(f"- Cohort ID: `{detail.cohort.id}`")
@@ -2369,6 +2715,13 @@ class IntelligenceService:
         markdown = "\n".join(lines).strip() + "\n"
         export_path = self.base_dir / "exports" / filename
         export_path.write_text(markdown, encoding="utf-8")
+        self._append_pipeline_event(
+            step_name="cohort_export_completed",
+            status="success",
+            cohort_id=detail.cohort.id,
+            cohort_name=detail.cohort.name,
+            message=f"action=export mode={report_mode.value} file={filename}",
+        )
         return IntelligenceRunReportExport(
             run_id=cohort_id,
             filename=filename,

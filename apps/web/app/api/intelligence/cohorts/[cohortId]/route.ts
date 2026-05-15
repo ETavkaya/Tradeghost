@@ -1,6 +1,18 @@
 import { NextRequest } from "next/server";
-import { proxyGet } from "@/app/api/_lib/proxy";
+import { proxyDelete, proxyGet, proxyPost } from "@/app/api/_lib/proxy";
 
 export async function GET(request: NextRequest, { params }: { params: { cohortId: string } }) {
   return proxyGet(request, `/intelligence/cohorts/${encodeURIComponent(params.cohortId)}`);
+}
+
+export async function DELETE(request: NextRequest, { params }: { params: { cohortId: string } }) {
+  return proxyDelete(request, `/intelligence/cohorts/${encodeURIComponent(params.cohortId)}`);
+}
+
+export async function POST(request: NextRequest, { params }: { params: { cohortId: string } }) {
+  const action = request.nextUrl.searchParams.get("action");
+  if (action === "archive") {
+    return proxyPost(request, `/intelligence/cohorts/${encodeURIComponent(params.cohortId)}/archive`);
+  }
+  return proxyPost(request, `/intelligence/cohorts/${encodeURIComponent(params.cohortId)}`);
 }

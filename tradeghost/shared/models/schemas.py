@@ -1173,6 +1173,9 @@ class CandidateCohort(BaseModel):
     top_n_per_category: int = 5
     status: CandidateCohortStatus = CandidateCohortStatus.ACTIVE
     notes: str = ""
+    symbols_count: int = 0
+    latest_followup_date: date | None = None
+    short_id: str | None = None
 
 
 class CohortCandidate(BaseModel):
@@ -1277,6 +1280,12 @@ class CohortReportMode(str, Enum):
     REVIEW_28D = "review_28d"
 
 
+class CohortDuplicateStrategy(str, Enum):
+    USE_EXISTING = "use_existing"
+    ARCHIVE_EXISTING_CREATE_NEW = "archive_existing_create_new"
+    CREATE_DUPLICATE_ANYWAY = "create_duplicate_anyway"
+
+
 class DiscoveryCreateCohortRequest(BaseModel):
     name: str
     notes: str = ""
@@ -1297,6 +1306,43 @@ class DiscoveryCreateCohortRequest(BaseModel):
     scanner_max_results: int = Field(default=30, ge=5, le=100)
     scanner_universe_scope: ScannerUniverseScope = ScannerUniverseScope.CAPPED
     scanner_max_runtime_seconds: float = Field(default=18.0, ge=3.0, le=45.0)
+    duplicate_strategy: CohortDuplicateStrategy = CohortDuplicateStrategy.USE_EXISTING
+
+
+class CohortArchiveResponse(BaseModel):
+    cohort_id: str
+    status: CandidateCohortStatus
+    archived_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class CohortDeleteResponse(BaseModel):
+    cohort_id: str
+    deleted: bool = True
+    removed_candidates: int = 0
+    removed_snapshots: int = 0
+    removed_contexts: int = 0
+    removed_briefings: int = 0
+    removed_reviews: int = 0
+
+
+class CohortCleanupDuplicateRequest(BaseModel):
+    dry_run: bool = True
+    apply_archive: bool = False
+
+
+class CohortDuplicateGroup(BaseModel):
+    group_id: str
+    cohort_ids: list[str] = Field(default_factory=list)
+    keep_cohort_id: str
+    archive_cohort_ids: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+    details: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class CohortCleanupDuplicateResponse(BaseModel):
+    dry_run: bool = True
+    duplicate_groups: list[CohortDuplicateGroup] = Field(default_factory=list)
+    archived_cohort_ids: list[str] = Field(default_factory=list)
 
 
 class CohortFollowupRequest(BaseModel):
@@ -1326,7 +1372,7 @@ class CohortBriefingRequest(BaseModel):
 
 
 class CohortReviewRequest(BaseModel):
-    cohort_id: str | None = None
+    cohort_id: str
     days_required: int = Field(default=28, ge=7, le=365)
     model: str = "llama3.2:3b"
     timeout_seconds: float = Field(default=45.0, ge=5.0, le=300.0)
@@ -1528,7 +1574,10 @@ class PipelineDebugEvent(BaseModel):
     status: str
     duration_ms: int = 0
     run_id: str | None = None
+    cohort_id: str | None = None
+    cohort_name: str | None = None
     symbol: str | None = None
+    provider: str | None = None
     category: str | None = None
     message: str | None = None
     error_message: str | None = None

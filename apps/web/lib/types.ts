@@ -962,6 +962,39 @@ export type CandidateCohort = {
   top_n_per_category: number;
   status: CandidateCohortStatus;
   notes: string;
+  symbols_count: number;
+  latest_followup_date: string | null;
+  short_id: string | null;
+};
+
+export type CohortCleanupDuplicateResponse = {
+  dry_run: boolean;
+  duplicate_groups: Array<{
+    group_id: string;
+    cohort_ids: string[];
+    keep_cohort_id: string;
+    archive_cohort_ids: string[];
+    reasons: string[];
+    details: Array<{
+      cohort_id: string;
+      name: string;
+      created_at: string;
+      candidates: number;
+      snapshots: number;
+      latest_followup_date: string | null;
+    }>;
+  }>;
+  archived_cohort_ids: string[];
+};
+
+export type CohortDeleteResponse = {
+  cohort_id: string;
+  deleted: boolean;
+  removed_candidates: number;
+  removed_snapshots: number;
+  removed_contexts: number;
+  removed_briefings: number;
+  removed_reviews: number;
 };
 
 export type CohortCandidate = {
@@ -1193,7 +1226,10 @@ export type PipelineDebugEvent = {
   status: string;
   duration_ms: number;
   run_id: string | null;
+  cohort_id: string | null;
+  cohort_name: string | null;
   symbol: string | null;
+  provider: string | null;
   category: string | null;
   message: string | null;
   error_message: string | null;

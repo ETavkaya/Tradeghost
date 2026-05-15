@@ -15,6 +15,8 @@ import {
   CandidateCohort,
   CohortDetail,
   CohortFollowupResponse,
+  CohortCleanupDuplicateResponse,
+  CohortDeleteResponse,
   CohortReviewResponse,
   IntelligenceReviewApproval,
   IntelligenceRunReport,
@@ -239,6 +241,20 @@ export const api = {
       body: JSON.stringify(payload)
     }),
   listCohorts: () => fetchJson<CandidateCohort[]>("/api/intelligence/cohorts"),
+  archiveCohort: (cohortId: string) =>
+    fetchJson<{ cohort_id: string; status: string; archived_at: string }>(`/api/intelligence/cohorts/${encodeURIComponent(cohortId)}?action=archive`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({})
+    }),
+  deleteCohort: (cohortId: string) =>
+    fetchJson<CohortDeleteResponse>(`/api/intelligence/cohorts/${encodeURIComponent(cohortId)}`, { method: "DELETE" }),
+  cleanupDuplicateCohorts: (payload: { dry_run?: boolean; apply_archive?: boolean }) =>
+    fetchJson<CohortCleanupDuplicateResponse>("/api/intelligence/cohorts/cleanup-duplicates", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
   getCohortDetail: (cohortId: string) =>
     fetchJson<CohortDetail>(`/api/intelligence/cohorts/${encodeURIComponent(cohortId)}`),
   runCohortFollowup: (payload: Record<string, unknown>) =>

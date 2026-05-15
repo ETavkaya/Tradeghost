@@ -167,6 +167,8 @@ export default function ScannerPage() {
   const [llmqCopied, setLlmqCopied] = useState(false);
   const [llmqMessages, setLlmqMessages] = useState<LLMQChatMessage[]>([]);
   const [llmqInput, setLlmqInput] = useState("");
+  const [llmqCollapsed, setLlmqCollapsed] = useState(false);
+  const [llmqAutoQueryLabel, setLlmqAutoQueryLabel] = useState<string | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -476,12 +478,15 @@ export default function ScannerPage() {
     setLlmqRow(row);
     setLlmqResult(null);
     setLlmqCopied(false);
+    setLlmqCollapsed(false);
     const initial: LLMQChatMessage = {
       role: "user",
       content: "Give me a context-only explanation of why this symbol appeared in the scanner and what matters next.",
     };
-    setLlmqMessages([initial]);
+    setLlmqMessages([]);
+    setLlmqAutoQueryLabel("Auto context query running...");
     await requestLLMQ(row, [initial]);
+    setLlmqAutoQueryLabel(null);
   };
 
   const regenerateLLMQ = async () => {
@@ -490,9 +495,11 @@ export default function ScannerPage() {
       role: "user",
       content: "Give me a context-only explanation of why this symbol appeared in the scanner and what matters next.",
     };
-    setLlmqMessages([initial]);
+    setLlmqMessages([]);
+    setLlmqAutoQueryLabel("Auto context query running...");
     setLlmqResult(null);
     await requestLLMQ(llmqRow, [initial]);
+    setLlmqAutoQueryLabel(null);
   };
 
   const copyLLMQ = async () => {
@@ -530,6 +537,7 @@ export default function ScannerPage() {
     const next = [...llmqMessages, { role: "user", content: text } as LLMQChatMessage];
     setLlmqMessages(next);
     setLlmqInput("");
+    setLlmqAutoQueryLabel(null);
     await requestLLMQ(llmqRow, next);
   };
 
@@ -1017,7 +1025,7 @@ export default function ScannerPage() {
             </div>
           </Panel>
           {llmqRow ? (
-            <div className="fixed inset-y-0 right-0 z-50 w-full max-w-2xl border-l border-stroke bg-panel shadow-2xl">
+            <div className={`fixed inset-y-0 right-0 z-50 w-full max-w-2xl border-l border-stroke bg-panel shadow-2xl transition-transform duration-300 ${llmqCollapsed ? "translate-x-[calc(100%-56px)]" : "translate-x-0"}`}>
               <div className="sticky top-0 z-10 flex items-center justify-between border-b border-stroke bg-panel px-4 py-3">
                 <div>
                   <p className="text-sm font-semibold text-slate-100">LLMQ: {llmqRow.symbol}</p>
@@ -1037,11 +1045,13 @@ export default function ScannerPage() {
                 <div className="flex gap-2">
                   <button type="button" onClick={copyLLMQ} disabled={llmqMessages.length === 0} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan disabled:opacity-60">{llmqCopied ? "Copied" : "Copy Conversation"}</button>
                   <button type="button" onClick={regenerateLLMQ} disabled={llmqLoading} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan disabled:opacity-60">Regenerate</button>
-                  <button type="button" onClick={() => { setLlmqRow(null); setLlmqResult(null); setLlmqLoading(false); setLlmqCopied(false); setLlmqMessages([]); setLlmqInput(""); }} className="rounded border border-stroke px-2 py-1 text-xs">Close</button>
+                  <button type="button" onClick={() => setLlmqCollapsed((v) => !v)} className="rounded border border-stroke px-2 py-1 text-xs">{llmqCollapsed ? "Restore" : "Collapse"}</button>
+                  <button type="button" onClick={() => { setLlmqRow(null); setLlmqResult(null); setLlmqLoading(false); setLlmqCopied(false); setLlmqMessages([]); setLlmqInput(""); setLlmqCollapsed(false); setLlmqAutoQueryLabel(null); }} className="rounded border border-stroke px-2 py-1 text-xs">Close</button>
                 </div>
               </div>
               <div className="h-[calc(100vh-64px)] overflow-auto p-4">
-                {llmqLoading ? <p className="text-xs text-slate-300">Loading LLMQ...</p> : null}
+                {llmqLoading ? <p className="text-xs text-slate-300">Generating context...</p> : null}
+                {llmqAutoQueryLabel ? <p className="mb-2 text-[11px] text-slate-400">{llmqAutoQueryLabel}</p> : null}
                 {llmqResult?.warning_message ? (
                   <p className="mb-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">{llmqResult.warning_message}</p>
                 ) : null}
@@ -1059,6 +1069,15 @@ export default function ScannerPage() {
                   </div>
                 </div>
               </div>
+              {llmqCollapsed ? (
+                <button
+                  type="button"
+                  onClick={() => setLlmqCollapsed(false)}
+                  className="absolute left-0 top-1/2 -translate-x-full -translate-y-1/2 rounded-l border border-r-0 border-stroke bg-panel px-2 py-3 text-xs text-slate-200"
+                >
+                  {`LLMQ: ${llmqRow.symbol}`}
+                </button>
+              ) : null}
             </div>
           ) : null}
         </>

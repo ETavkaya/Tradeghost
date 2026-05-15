@@ -9,9 +9,20 @@ import yfinance as yf
 
 @dataclass
 class MarketMetadata:
-    market_cap: float | None
-    sector: str | None
-    industry: str | None
+    symbol: str | None = None
+    market: str | None = None
+    company_name: str | None = None
+    market_cap: float | None = None
+    sector: str | None = None
+    industry: str | None = None
+    sector_key: str | None = None
+    industry_key: str | None = None
+    country: str | None = None
+    currency: str | None = None
+    exchange: str | None = None
+    source: str = "yfinance"
+    updated_at: str | None = None
+    data_quality_status: str = "ok"
     price_to_book: float | None = None
     price_to_earnings: float | None = None
 
@@ -22,7 +33,7 @@ class MarketDataProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_metadata(self, ticker: str) -> MarketMetadata:
+    def get_metadata(self, ticker: str, market: str | None = None) -> MarketMetadata:
         raise NotImplementedError
 
 
@@ -94,12 +105,24 @@ class YFinanceMarketDataProvider(MarketDataProvider):
             selected[target] = df[source]
         return pd.DataFrame(selected, index=df.index)
 
-    def get_metadata(self, ticker: str) -> MarketMetadata:
+    def get_metadata(self, ticker: str, market: str | None = None) -> MarketMetadata:
         info = yf.Ticker(ticker).info or {}
+        now_iso = pd.Timestamp.utcnow().isoformat()
         return MarketMetadata(
+            symbol=ticker,
+            market=market,
+            company_name=info.get("longName") or info.get("shortName"),
             market_cap=info.get("marketCap"),
             sector=info.get("sector"),
             industry=info.get("industry"),
+            sector_key=info.get("sectorKey"),
+            industry_key=info.get("industryKey"),
+            country=info.get("country"),
+            currency=info.get("currency"),
+            exchange=info.get("exchange"),
+            source="yfinance",
+            updated_at=now_iso,
+            data_quality_status="ok" if (info.get("sector") or info.get("industry")) else "metadata_missing",
             price_to_book=info.get("priceToBook"),
             price_to_earnings=info.get("trailingPE"),
         )

@@ -18,6 +18,7 @@ from tradeghost.shared.models.schemas import (
     ScannerResponse,
     ScannerRuleImpact,
     ScannerResult,
+    ScannerSectorSummary,
     ScannerScopeSummary,
     ScannerUniverseScope,
 )
@@ -605,7 +606,13 @@ class ScannerEngine:
                     price_to_book=float(fundamentals.get("price_to_book")) if fundamentals.get("price_to_book") is not None else None,
                     price_to_earnings=float(fundamentals.get("price_to_earnings")) if fundamentals.get("price_to_earnings") is not None else None,
                     market_cap=float(fundamentals.get("market_cap")) if fundamentals.get("market_cap") is not None else None,
+                    company_name=bundle.metadata.company_name,
                     sector=str(fundamentals.get("sector")) if fundamentals.get("sector") else None,
+                    industry=bundle.metadata.industry,
+                    sector_key=bundle.metadata.sector_key,
+                    industry_key=bundle.metadata.industry_key,
+                    metadata_source=bundle.metadata.source,
+                    metadata_data_quality_status=bundle.metadata.data_quality_status or "ok",
                     price_vs_ema200_pct=regime.price_vs_ema200_pct,
                     ema200_slope_state=regime.ema200_slope_state,
                     ema_stack_alignment=regime.ema_stack_alignment,
@@ -652,9 +659,15 @@ class ScannerEngine:
             ]
             used_relaxed_fallback = True
 
+        if req.sector_filter:
+            normalized_sector = {x.strip().lower() for x in req.sector_filter if x.strip()}
+            source = [row for row in source if (row.sector or "unknown").strip().lower() in normalized_sector]
+        if req.industry_filter:
+            normalized_industry = {x.strip().lower() for x in req.industry_filter if x.strip()}
+            source = [row for row in source if (row.industry or "unknown").strip().lower() in normalized_industry]
+
         # Apply custom rules as an optional narrowing layer after category eligibility.
         if req.use_custom_rules and req.custom_rules:
-            narrowed: list[ScannerResult] = []
             before = len(source)
             for rule in req.custom_rules:
                 key = f"{rule.field.value} {rule.operator.value} {rule.value_number if rule.value_number is not None else (rule.value_text or ','.join(rule.value_list))}"
@@ -701,6 +714,28 @@ class ScannerEngine:
         ]
 
         runtime = round(time.monotonic() - started, 2)
+        sector_buckets: dict[str, dict[str, object]] = {}
+        for row in final_rows:
+            sector_name = (row.sector or "unknown").strip() or "unknown"
+            bucket = sector_buckets.setdefault(
+                sector_name,
+                {"count": 0, "score_sum": 0.0, "categories": {}},
+            )
+            bucket["count"] = int(bucket["count"]) + 1
+            bucket["score_sum"] = float(bucket["score_sum"]) + float(row.scanner_score)
+            cats = bucket["categories"]
+            assert isinstance(cats, dict)
+            cats[row.category_tag] = int(cats.get(row.category_tag, 0)) + 1
+        sector_summary = [
+            ScannerSectorSummary(
+                sector=sector,
+                candidate_count=int(vals["count"]),
+                average_score=round(float(vals["score_sum"]) / max(1, int(vals["count"])), 2),
+                category_distribution={k: int(v) for k, v in dict(vals["categories"]).items()},
+            )
+            for sector, vals in sector_buckets.items()
+        ]
+        sector_summary = sorted(sector_summary, key=lambda row: row.candidate_count, reverse=True)
         return ScannerResponse(
             scope=ScannerScopeSummary(
                 market=req.market,
@@ -723,5 +758,7 @@ class ScannerEngine:
                 universe_source=universe_source,
             ),
             results=final_rows,
+            sector_summary=sector_summary,
+            top_sector_by_candidate_count=(sector_summary[0].sector if sector_summary else None),
             rule_impact=impact_rows,
         )

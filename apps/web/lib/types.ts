@@ -581,6 +581,8 @@ export type ScannerRequest = {
   range_start?: string | null;
   range_end?: string | null;
   symbol_overrides?: string[];
+  sector_filter?: string[];
+  industry_filter?: string[];
 };
 
 export type ScannerResult = {
@@ -610,7 +612,13 @@ export type ScannerResult = {
   price_to_book: number | null;
   price_to_earnings: number | null;
   market_cap: number | null;
+  company_name: string | null;
   sector: string | null;
+  industry: string | null;
+  sector_key: string | null;
+  industry_key: string | null;
+  metadata_source: string | null;
+  metadata_data_quality_status: string;
   price_vs_ema200_pct: number;
   ema200_slope_state: string;
   ema_stack_alignment: string;
@@ -636,6 +644,13 @@ export type ScannerResult = {
 export type ScannerResponse = {
   scope: ScannerScopeSummary;
   results: ScannerResult[];
+  sector_summary: Array<{
+    sector: string;
+    candidate_count: number;
+    average_score: number;
+    category_distribution: Record<string, number>;
+  }>;
+  top_sector_by_candidate_count: string | null;
   rule_impact: ScannerRuleImpact[];
   generated_at: string;
 };
@@ -658,6 +673,9 @@ export type WatchlistItem = {
   score: number | null;
   score_dynamics_state: string | null;
   price_vs_ema200_pct: number | null;
+  company_name: string | null;
+  sector: string | null;
+  industry: string | null;
   last_checked: string | null;
 };
 
@@ -1035,6 +1053,9 @@ export type CohortCandidate = {
   selected_data_quality_flags: string[];
   selected_data_quality_penalty: number;
   selected_displayed_score: number;
+  selected_company_name: string | null;
+  selected_sector: string | null;
+  selected_industry: string | null;
 };
 
 export type CohortDailySnapshot = {
@@ -1076,6 +1097,9 @@ export type LatestCohortState = {
   selected_score: number;
   selected_setup_type: string;
   selected_reason: string;
+  selected_company_name: string | null;
+  selected_sector: string | null;
+  selected_industry: string | null;
   selected_categories: ScannerCategory[];
   current_price: number | null;
   current_score: number | null;
@@ -1135,6 +1159,15 @@ export type CohortReviewResponse = {
     early_return_1d_avg: number | null;
     insufficient_data: boolean;
     score_delta_vs_return_note: string;
+    average_return_by_sector_7d: Record<string, number>;
+    best_sector_by_1d: string | null;
+    worst_sector_by_1d: string | null;
+    best_sector_by_3d: string | null;
+    worst_sector_by_3d: string | null;
+    best_sector_by_7d: string | null;
+    worst_sector_by_7d: string | null;
+    sector_concentration_warning: string | null;
+    sector_candidate_distribution: Record<string, number>;
   };
   llm_summary: string | null;
 };

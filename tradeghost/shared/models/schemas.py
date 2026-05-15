@@ -572,6 +572,8 @@ class ScannerRequest(BaseModel):
     range_start: date | None = None
     range_end: date | None = None
     symbol_overrides: list[str] = Field(default_factory=list)
+    sector_filter: list[str] = Field(default_factory=list)
+    industry_filter: list[str] = Field(default_factory=list)
 
 
 class ScannerResult(BaseModel):
@@ -601,7 +603,13 @@ class ScannerResult(BaseModel):
     price_to_book: float | None = None
     price_to_earnings: float | None = None
     market_cap: float | None = None
+    company_name: str | None = None
     sector: str | None = None
+    industry: str | None = None
+    sector_key: str | None = None
+    industry_key: str | None = None
+    metadata_source: str | None = None
+    metadata_data_quality_status: str = "ok"
     price_vs_ema200_pct: float
     ema200_slope_state: str
     ema_stack_alignment: str
@@ -645,6 +653,13 @@ class ScannerScopeSummary(BaseModel):
     universe_source: str | None = None
 
 
+class ScannerSectorSummary(BaseModel):
+    sector: str
+    candidate_count: int
+    average_score: float
+    category_distribution: dict[str, int] = Field(default_factory=dict)
+
+
 class ScannerRuleImpact(BaseModel):
     rule_name: str
     before_count: int
@@ -655,6 +670,8 @@ class ScannerRuleImpact(BaseModel):
 class ScannerResponse(BaseModel):
     scope: ScannerScopeSummary
     results: list[ScannerResult]
+    sector_summary: list[ScannerSectorSummary] = Field(default_factory=list)
+    top_sector_by_candidate_count: str | None = None
     rule_impact: list[ScannerRuleImpact] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -677,6 +694,9 @@ class WatchlistItem(BaseModel):
     score: float | None = None
     score_dynamics_state: str | None = None
     price_vs_ema200_pct: float | None = None
+    company_name: str | None = None
+    sector: str | None = None
+    industry: str | None = None
     last_checked: datetime | None = None
 
 
@@ -1077,6 +1097,13 @@ class SymbolResult(BaseModel):
     return_14d: float | None = None
     max_drawdown_after_selection: float | None = None
     max_runup_after_selection: float | None = None
+    company_name: str | None = None
+    sector: str | None = None
+    industry: str | None = None
+    sector_key: str | None = None
+    industry_key: str | None = None
+    metadata_source: str | None = None
+    metadata_data_quality_status: str = "ok"
 
 
 class DailyRun(BaseModel):
@@ -1208,6 +1235,9 @@ class CohortCandidate(BaseModel):
     selected_data_quality_flags: list[str] = Field(default_factory=list)
     selected_data_quality_penalty: float = 0.0
     selected_displayed_score: float = 0.0
+    selected_company_name: str | None = None
+    selected_sector: str | None = None
+    selected_industry: str | None = None
     original_context: SymbolContext | None = None
 
 
@@ -1251,6 +1281,9 @@ class LatestCohortState(BaseModel):
     selected_score: float = 0.0
     selected_setup_type: str = ""
     selected_reason: str = ""
+    selected_company_name: str | None = None
+    selected_sector: str | None = None
+    selected_industry: str | None = None
     selected_categories: list[ScannerCategory] = Field(default_factory=list)
     current_price: float | None = None
     current_score: float | None = None
@@ -1415,6 +1448,15 @@ class CohortReviewStats(BaseModel):
     early_return_1d_avg: float | None = None
     insufficient_data: bool = False
     score_delta_vs_return_note: str = ""
+    average_return_by_sector_7d: dict[str, float] = Field(default_factory=dict)
+    best_sector_by_1d: str | None = None
+    worst_sector_by_1d: str | None = None
+    best_sector_by_3d: str | None = None
+    worst_sector_by_3d: str | None = None
+    best_sector_by_7d: str | None = None
+    worst_sector_by_7d: str | None = None
+    sector_concentration_warning: str | None = None
+    sector_candidate_distribution: dict[str, int] = Field(default_factory=dict)
 
 
 class CohortReviewResponse(BaseModel):

@@ -323,6 +323,9 @@ class IntelligenceService:
                     selected_score=cand.selected_score,
                     selected_setup_type=cand.selected_setup_type,
                     selected_reason=cand.selected_reason,
+                    selected_company_name=cand.selected_company_name,
+                    selected_sector=cand.selected_sector,
+                    selected_industry=cand.selected_industry,
                     selected_categories=cand.selected_categories,
                     current_price=latest.current_price if latest else None,
                     current_score=latest.current_score if latest else None,
@@ -650,6 +653,9 @@ class IntelligenceService:
                     selected_data_quality_flags=row.data_quality_flags,
                     selected_data_quality_penalty=row.data_quality_penalty,
                     selected_displayed_score=row.score,
+                    selected_company_name=row.company_name,
+                    selected_sector=row.sector,
+                    selected_industry=row.industry,
                 )
             )
         self._save_cohort_candidates(cohort_candidates)
@@ -883,7 +889,18 @@ class IntelligenceService:
             for row in per_category_rows:
                 if row.symbol not in category_rows:
                     built = self._build_symbol_result(row.symbol, req.market.value, [category.value], row.scanner_score)
-                    built = built.model_copy(update={"score_by_category": {category.value: float(row.scanner_score)}})
+                    built = built.model_copy(
+                        update={
+                            "score_by_category": {category.value: float(row.scanner_score)},
+                            "company_name": row.company_name,
+                            "sector": row.sector,
+                            "industry": row.industry,
+                            "sector_key": row.sector_key,
+                            "industry_key": row.industry_key,
+                            "metadata_source": row.metadata_source,
+                            "metadata_data_quality_status": row.metadata_data_quality_status,
+                        }
+                    )
                     category_rows[row.symbol] = built
                 else:
                     existing = category_rows[row.symbol]
@@ -1286,6 +1303,11 @@ class IntelligenceService:
             return_14d=None,
             max_drawdown_after_selection=None,
             max_runup_after_selection=None,
+            company_name=analysis.indicator_summary.get("name") if isinstance(analysis.indicator_summary, dict) else None,
+            sector=analysis.indicator_summary.get("sector") if isinstance(analysis.indicator_summary, dict) else None,
+            industry=analysis.indicator_summary.get("industry") if isinstance(analysis.indicator_summary, dict) else None,
+            metadata_source="analysis_market_data",
+            metadata_data_quality_status="ok",
         )
 
     def _build_risk_flags(self, analysis: Any) -> list[str]:
@@ -1596,6 +1618,9 @@ class IntelligenceService:
                 f"score_breakdown=base:{row.base_score:.2f},boost:{row.category_boost:.2f},dq:{row.data_quality_penalty:.2f},raw:{row.final_score_raw:.2f},capped:{row.final_score_capped:.2f},displayed:{row.score:.2f}\n"
                 f"trend={row.trend}\n"
                 f"setup_type={row.setup_type}\n"
+                f"company_name={row.company_name or 'unknown'}\n"
+                f"sector={row.sector or 'unknown'}\n"
+                f"industry={row.industry or 'unknown'}\n"
                 f"candidate_type={row.candidate_type}\n"
                 f"entry_readiness={row.entry_readiness}\n"
                 f"blocked_by={row.blocked_by}\n"
@@ -1616,6 +1641,9 @@ class IntelligenceService:
             f"Symbol: {row.symbol}\n"
             f"Category: {', '.join([tag.value if hasattr(tag, 'value') else str(tag) for tag in row.category_tags])}\n"
             f"Score: {row.score:.2f}\n"
+            f"Company: {row.company_name or 'unknown'}\n"
+            f"Sector: {row.sector or 'unknown'}\n"
+            f"Industry: {row.industry or 'unknown'}\n"
             f"Trend: {row.trend}\n"
             f"Distance to EMA20: {row.ema_distances.get('ema20', 0.0):.2f}\n"
             f"Distance to EMA50: {row.ema_distances.get('ema50', 0.0):.2f}\n"
@@ -1863,6 +1891,11 @@ class IntelligenceService:
                     structure_snapshot=cand.selected_structure_snapshot,
                     risk_flags=cand.selected_risk_flags,
                     data_quality_flags=cand.selected_data_quality_flags,
+                    company_name=cand.selected_company_name,
+                    sector=cand.selected_sector,
+                    industry=cand.selected_industry,
+                    metadata_source="cohort_snapshot",
+                    metadata_data_quality_status="ok" if (cand.selected_sector or cand.selected_industry) else "metadata_missing",
                 )
                 futures.append(
                     executor.submit(
@@ -2285,6 +2318,10 @@ class IntelligenceService:
         needs_data_check_count = 0
         pending_horizon_count = 0
         ret1d_vals: list[float] = []
+        by_sector_1d: dict[str, list[float]] = {}
+        by_sector_3d: dict[str, list[float]] = {}
+        by_sector_7d: dict[str, list[float]] = {}
+        sector_counts: dict[str, int] = {}
         best_symbol = None
         worst_symbol = None
         best_ret = -9999.0
@@ -2293,9 +2330,16 @@ class IntelligenceService:
         for cand in candidate_rows:
             symbol_snaps = by_symbol_snapshots.get(f"{cand.cohort_id}|{cand.symbol}", [])
             latest = symbol_snaps[-1] if symbol_snaps else None
+            sector_name = (cand.selected_sector or "unknown").strip() or "unknown"
+            sector_counts[sector_name] = sector_counts.get(sector_name, 0) + 1
             ret7 = latest.return_7d if latest else None
             if latest and latest.return_1d is not None:
                 ret1d_vals.append(float(latest.return_1d))
+                by_sector_1d.setdefault(sector_name, []).append(float(latest.return_1d))
+            if latest and latest.return_3d is not None:
+                by_sector_3d.setdefault(sector_name, []).append(float(latest.return_3d))
+            if latest and latest.return_7d is not None:
+                by_sector_7d.setdefault(sector_name, []).append(float(latest.return_7d))
             validity_state = "pending_validation"
             if latest:
                 if getattr(latest, "validity_state", None):
@@ -2334,8 +2378,25 @@ class IntelligenceService:
             if latest and latest.return_7d is not None and latest.return_7d < -3:
                 missed_follow += 1
         avg_by_cat = {k: round(sum(v) / len(v), 3) for k, v in returns_by_cat.items() if v}
+        avg_by_sector_7d = {k: round(sum(v) / len(v), 3) for k, v in by_sector_7d.items() if v}
         best_cat = max(avg_by_cat, key=avg_by_cat.get) if avg_by_cat else None
         worst_cat = min(avg_by_cat, key=avg_by_cat.get) if avg_by_cat else None
+        best_sector_by_1d = max(by_sector_1d, key=lambda k: (sum(by_sector_1d[k]) / len(by_sector_1d[k]))) if by_sector_1d else None
+        worst_sector_by_1d = min(by_sector_1d, key=lambda k: (sum(by_sector_1d[k]) / len(by_sector_1d[k]))) if by_sector_1d else None
+        best_sector_by_3d = max(by_sector_3d, key=lambda k: (sum(by_sector_3d[k]) / len(by_sector_3d[k]))) if by_sector_3d else None
+        worst_sector_by_3d = min(by_sector_3d, key=lambda k: (sum(by_sector_3d[k]) / len(by_sector_3d[k]))) if by_sector_3d else None
+        best_sector_by_7d = max(by_sector_7d, key=lambda k: (sum(by_sector_7d[k]) / len(by_sector_7d[k]))) if by_sector_7d else None
+        worst_sector_by_7d = min(by_sector_7d, key=lambda k: (sum(by_sector_7d[k]) / len(by_sector_7d[k]))) if by_sector_7d else None
+        sector_concentration_warning = None
+        if sector_counts:
+            top_sector = max(sector_counts, key=sector_counts.get)
+            top_count = sector_counts[top_sector]
+            total_count = max(1, len(candidate_rows))
+            top_ratio = (top_count / total_count) * 100.0
+            if top_ratio >= 60.0:
+                sector_concentration_warning = (
+                    f"{top_ratio:.0f}% of this cohort is {top_sector}. Review may be sector-biased."
+                )
         note = "insufficient data"
         if score_ret_pairs:
             up = sum(1 for score, ret in score_ret_pairs if score >= 75 and ret > 0)
@@ -2353,6 +2414,12 @@ class IntelligenceService:
             worst_cat = None
             best_symbol = None
             worst_symbol = None
+            best_sector_by_1d = None
+            worst_sector_by_1d = None
+            best_sector_by_3d = None
+            worst_sector_by_3d = None
+            best_sector_by_7d = None
+            worst_sector_by_7d = None
         stats = CohortReviewStats(
             average_return_by_category=avg_by_cat,
             best_candidate=best_symbol,
@@ -2371,6 +2438,15 @@ class IntelligenceService:
             early_return_1d_avg=(round(sum(ret1d_vals) / len(ret1d_vals), 3) if ret1d_vals else None),
             insufficient_data=not sufficient_window,
             score_delta_vs_return_note=note,
+            average_return_by_sector_7d=avg_by_sector_7d,
+            best_sector_by_1d=best_sector_by_1d,
+            worst_sector_by_1d=worst_sector_by_1d,
+            best_sector_by_3d=best_sector_by_3d,
+            worst_sector_by_3d=worst_sector_by_3d,
+            best_sector_by_7d=best_sector_by_7d,
+            worst_sector_by_7d=worst_sector_by_7d,
+            sector_concentration_warning=sector_concentration_warning,
+            sector_candidate_distribution=sector_counts,
         )
         self._append_pipeline_event(
             step_name="cohort_review_completed",
@@ -2701,6 +2777,9 @@ class IntelligenceService:
             lines.append(f"### Group: {group_name}")
             for row in grouped_candidates[group_name]:
                 lines.append(f"#### {row.selected_rank}. {row.symbol}")
+                lines.append(f"- Company: {row.selected_company_name or 'unknown'}")
+                lines.append(f"- Sector: {row.selected_sector or 'unknown'}")
+                lines.append(f"- Industry: {row.selected_industry or 'unknown'}")
                 lines.append(f"- Original why selected: {row.selected_reason}")
                 score_formula = (
                     f"{row.selected_base_score:.2f} base + {row.selected_category_boost:.2f} boost + "
@@ -2747,6 +2826,9 @@ class IntelligenceService:
                     current_confirm_text = "Need trigger confirmation."
                 lines.append(
                     f"- {state.symbol}: latest_date={state.latest_followup_date} "
+                    f"company={state.selected_company_name or 'unknown'} "
+                    f"sector={state.selected_sector or 'unknown'} "
+                    f"industry={state.selected_industry or 'unknown'} "
                     f"return_since_selection={state.return_since_selection if state.return_since_selection is not None else 'pending'} "
                     f"1D={state.return_1d if state.return_1d is not None else 'pending'} "
                     f"3D={state.return_3d if state.return_3d is not None else 'pending'} "
@@ -2781,6 +2863,12 @@ class IntelligenceService:
             lines.append("## Review Snapshot")
             lines.append(f"- Readiness: {review.readiness_message}")
             lines.append(f"- Deterministic stats: `{json.dumps(review.deterministic_stats.model_dump(mode='json'), default=str)}`")
+            if review.deterministic_stats.sector_candidate_distribution:
+                lines.append(f"- Sector distribution: `{json.dumps(review.deterministic_stats.sector_candidate_distribution, default=str)}`")
+            if review.deterministic_stats.average_return_by_sector_7d:
+                lines.append(f"- Average return by sector (7D): `{json.dumps(review.deterministic_stats.average_return_by_sector_7d, default=str)}`")
+            if review.deterministic_stats.sector_concentration_warning:
+                lines.append(f"- Sector concentration warning: {review.deterministic_stats.sector_concentration_warning}")
         markdown = "\n".join(lines).strip() + "\n"
         export_path = self.base_dir / "exports" / filename
         export_path.write_text(markdown, encoding="utf-8")

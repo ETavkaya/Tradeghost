@@ -709,6 +709,8 @@ export default function IntelligencePage() {
                 <thead className="sticky top-0 z-20 bg-bg">
                   <tr className="border-b border-stroke text-left text-slate-400">
                     <th className="sticky left-0 z-10 bg-bg px-2 py-2">Symbol</th>
+                    <th className="px-2 py-2">Sector</th>
+                    <th className="px-2 py-2">Industry</th>
                     <th className="px-2 py-2">Original Snapshot</th>
                     <th className="px-2 py-2">Latest Follow-up</th>
                     <th className="px-2 py-2">Return Since Selection</th>
@@ -720,18 +722,18 @@ export default function IntelligencePage() {
                 </thead>
                 <tbody>
                   {!selectedCohortId ? (
-                    <tr><td className="px-2 py-3 text-slate-400" colSpan={8}>No cohort selected.</td></tr>
+                    <tr><td className="px-2 py-3 text-slate-400" colSpan={10}>No cohort selected.</td></tr>
                   ) : (selectedCohortMeta?.status === "archived" ? (
-                    <tr><td className="px-2 py-3 text-slate-400" colSpan={8}>Selected cohort is archived. Follow-up actions are disabled.</td></tr>
+                    <tr><td className="px-2 py-3 text-slate-400" colSpan={10}>Selected cohort is archived. Follow-up actions are disabled.</td></tr>
                   ) : null)}
                   {selectedCohortId && !selectedCohortDetail ? (
-                    <tr><td className="px-2 py-3 text-slate-400" colSpan={8}>Selected cohort could not be loaded (API error or missing cohort_id).</td></tr>
+                    <tr><td className="px-2 py-3 text-slate-400" colSpan={10}>Selected cohort could not be loaded (API error or missing cohort_id).</td></tr>
                   ) : null}
                   {selectedCohortId && (selectedCohortDetail?.candidates?.length ?? 0) === 0 ? (
-                    <tr><td className="px-2 py-3 text-slate-400" colSpan={8}>No candidates found for selected cohort.</td></tr>
+                    <tr><td className="px-2 py-3 text-slate-400" colSpan={10}>No candidates found for selected cohort.</td></tr>
                   ) : null}
                   {selectedCohortId && (selectedCohortDetail?.candidates?.length ?? 0) > 0 && (selectedCohortDetail?.latest_states?.length ?? 0) === 0 ? (
-                    <tr><td className="px-2 py-3 text-slate-400" colSpan={8}>Follow-up not run yet for this cohort.</td></tr>
+                    <tr><td className="px-2 py-3 text-slate-400" colSpan={10}>Follow-up not run yet for this cohort.</td></tr>
                   ) : null}
                   {(selectedCohortDetail?.latest_states ?? []).map((row) => {
                     const original = (selectedCohortDetail?.candidates ?? []).find((x) => x.symbol === row.symbol);
@@ -739,6 +741,8 @@ export default function IntelligencePage() {
                     return (
                       <tr key={`${row.cohort_id}-${row.symbol}`} className="border-b border-stroke/50">
                         <td className="sticky left-0 z-10 bg-bg px-2 py-2">{row.symbol}</td>
+                        <td className="px-2 py-2">{row.selected_sector ?? "unknown"}</td>
+                        <td className="px-2 py-2">{row.selected_industry ?? "unknown"}</td>
                         <td className="px-2 py-2 min-w-[320px]">
                           <p>selected_score={row.selected_score.toFixed(2)} | selected_setup={row.selected_setup_type}</p>
                           <details className="mt-1">
@@ -776,6 +780,9 @@ export default function IntelligencePage() {
           </div>
         ) : null}
         {cohortReview ? <p className="mt-2 text-xs text-slate-300">{cohortReview.readiness_message}</p> : null}
+        {cohortReview?.deterministic_stats?.sector_concentration_warning ? (
+          <p className="mt-1 text-xs text-amber-300">{cohortReview.deterministic_stats.sector_concentration_warning}</p>
+        ) : null}
       </Panel>
       </section>
 
@@ -963,6 +970,8 @@ export default function IntelligencePage() {
                 <th className="px-2 py-2">Merged Rank</th>
                 <th className="px-2 py-2">Symbol</th>
                 <th className="px-2 py-2">Category Source</th>
+                <th className="px-2 py-2">Sector</th>
+                <th className="px-2 py-2">Industry</th>
                 <th className="px-2 py-2">Score / Category</th>
                 <th className="px-2 py-2">Score Breakdown</th>
                 <th className="px-2 py-2 whitespace-nowrap">Multi-Category</th>
@@ -977,6 +986,8 @@ export default function IntelligencePage() {
                   <td className="px-2 py-2">{row.merged_rank}</td>
                   <td className="px-2 py-2 font-semibold text-slate-100">{row.symbol}</td>
                   <td className="px-2 py-2">{row.category_tags.join(", ")}</td>
+                  <td className="px-2 py-2">{row.sector ?? "unknown"}</td>
+                  <td className="px-2 py-2">{row.industry ?? "unknown"}</td>
                   <td className="px-2 py-2">{Object.entries(row.score_by_category).map(([k, v]) => `${k}:${v.toFixed(1)}`).join(" | ")}</td>
                   <td className="px-2 py-2">
                     base:{row.base_score.toFixed(1)} + boost:{row.category_boost.toFixed(1)} + dq:{row.data_quality_penalty.toFixed(1)} = displayed:{row.score.toFixed(1)}

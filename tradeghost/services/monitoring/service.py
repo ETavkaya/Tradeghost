@@ -222,9 +222,15 @@ class MonitoringService:
                 )
                 added_price = float(combined.indicator_summary.get("close", 0.0)) or None
                 added_price_estimated = added_price is not None
+                company_name = str(combined.indicator_summary.get("name")) if combined.indicator_summary.get("name") else None
+                sector = str(combined.indicator_summary.get("sector")) if combined.indicator_summary.get("sector") else None
+                industry = str(combined.indicator_summary.get("industry")) if combined.indicator_summary.get("industry") else None
             except Exception:
                 added_price = None
                 added_price_estimated = False
+                company_name = None
+                sector = None
+                industry = None
 
             item = WatchlistItem(
                 watchlist_id=row.id,
@@ -234,6 +240,9 @@ class MonitoringService:
                 notes=req.notes,
                 added_price=added_price,
                 added_price_estimated=added_price_estimated,
+                company_name=company_name,
+                sector=sector,
+                industry=industry,
             )
             updated = row.model_copy(update={"items": [*row.items, item], "updated_at": datetime.now(UTC)})
             rows[idx] = updated
@@ -1478,6 +1487,9 @@ class MonitoringService:
                         "score": current_score,
                         "score_dynamics_state": score_dynamics_state,
                         "price_vs_ema200_pct": price_vs_ema200,
+                        "company_name": item.company_name,
+                        "sector": item.sector,
+                        "industry": item.industry,
                         "last_checked": now,
                     }
                 )

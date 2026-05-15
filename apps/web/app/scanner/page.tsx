@@ -147,6 +147,8 @@ export default function ScannerPage() {
   const [customRules, setCustomRules] = useState<ScannerCustomRule[]>([]);
   const [rangeStart, setRangeStart] = useState("");
   const [rangeEnd, setRangeEnd] = useState("");
+  const [sectorFilterText, setSectorFilterText] = useState("");
+  const [industryFilterText, setIndustryFilterText] = useState("");
   const [alertPlanRow, setAlertPlanRow] = useState<ScannerResult | null>(null);
   const [alertPlanRules, setAlertPlanRules] = useState<AlertProfileSuggestionRule[]>([]);
   const [alertPlanLoading, setAlertPlanLoading] = useState(false);
@@ -297,6 +299,8 @@ export default function ScannerPage() {
         use_custom_rules: useCustomRules && customRules.length > 0,
         ...(useCustomRules && customRules.length > 0 ? { custom_rules: customRules } : {}),
         ...(rangeStart && rangeEnd ? { range_start: rangeStart, range_end: rangeEnd } : {}),
+        ...(sectorFilterText.trim() ? { sector_filter: sectorFilterText.split(",").map((x) => x.trim()).filter(Boolean) } : {}),
+        ...(industryFilterText.trim() ? { industry_filter: industryFilterText.split(",").map((x) => x.trim()).filter(Boolean) } : {}),
         ...(selectedWatchlistId && universeScope === "watchlist"
           ? {
               symbol_overrides: (watchlists.find((wl) => wl.id === selectedWatchlistId)?.items ?? [])
@@ -754,11 +758,30 @@ export default function ScannerPage() {
 
           <Panel>
             <SectionTitle title="Scanner Results" subtitle="Ranked shortlist for next analysis step" />
+            <div className="mb-2 grid gap-2 md:grid-cols-2">
+              <label className="text-xs text-slate-300">Sector filter (csv)
+                <input value={sectorFilterText} onChange={(e) => setSectorFilterText(e.target.value)} placeholder="Technology, Financial Services" className="mt-1 h-9 w-full rounded border border-stroke bg-bg px-2 text-xs" />
+              </label>
+              <label className="text-xs text-slate-300">Industry filter (csv)
+                <input value={industryFilterText} onChange={(e) => setIndustryFilterText(e.target.value)} placeholder="Semiconductors, Banks - Regional" className="mt-1 h-9 w-full rounded border border-stroke bg-bg px-2 text-xs" />
+              </label>
+            </div>
+            {result?.sector_summary?.length ? (
+              <div className="mb-2 text-xs text-slate-300">
+                <p>Top sector: {result.top_sector_by_candidate_count ?? "-"}</p>
+                {result.sector_summary.map((s) => (
+                  <p key={s.sector}>{s.sector}: {s.candidate_count} candidates | avg score {s.average_score.toFixed(1)} | categories {Object.entries(s.category_distribution).map(([k, v]) => `${k}:${v}`).join(", ")}</p>
+                ))}
+              </div>
+            ) : null}
             <div className="max-h-[72vh] overflow-auto rounded-xl border border-stroke/70">
-              <table className="min-w-[2500px] table-auto text-sm">
+              <table className="min-w-[2650px] table-auto text-sm">
                 <thead>
                   <tr className="border-b border-stroke text-left text-slate-400">
                     <th className="sticky left-0 top-0 z-30 w-[120px] bg-panel px-2 py-2 shadow-[8px_0_12px_-12px_rgba(0,0,0,0.6)]">Symbol</th>
+                    <th className="sticky top-0 z-20 w-[180px] bg-panel px-2 py-2">Company</th>
+                    <th className="sticky top-0 z-20 w-[140px] bg-panel px-2 py-2">Sector</th>
+                    <th className="sticky top-0 z-20 w-[160px] bg-panel px-2 py-2">Industry</th>
                     {sortOptions.map((option) => (
                       <th key={option.key} className="sticky top-0 z-20 w-[88px] bg-panel px-2 py-2">
                         <button type="button" onClick={() => toggleSort(option.key)} className="inline-flex items-center gap-1 hover:text-slate-200">
@@ -791,7 +814,7 @@ export default function ScannerPage() {
                   {sortedResults.length === 0 ? (
                     <tr>
                       <td className="sticky left-0 z-10 bg-panel px-2 py-3 text-slate-400 shadow-[8px_0_12px_-12px_rgba(0,0,0,0.6)]">No candidates found for selected scope.</td>
-                      <td className="px-2 py-3 text-slate-400" colSpan={26}></td>
+                      <td className="px-2 py-3 text-slate-400" colSpan={29}></td>
                     </tr>
                   ) : (
                     sortedResults.map((row) => (
@@ -801,6 +824,9 @@ export default function ScannerPage() {
                           <div className="text-[11px] text-slate-400">Score {row.scanner_score.toFixed(1)} | {row.priority}</div>
                           <button type="button" onClick={() => openPreview(row)} className="mt-1 rounded border border-stroke px-1 py-0.5 text-[10px] hover:text-cyan">Preview</button>
                         </td>
+                        <td className="px-2 py-2">{row.company_name ?? "unknown"}</td>
+                        <td className="px-2 py-2">{row.sector ?? "unknown"}</td>
+                        <td className="px-2 py-2">{row.industry ?? "unknown"}</td>
                         <td className="px-2 py-2">{row.scanner_score.toFixed(2)}</td>
                         <td className="px-2 py-2">{row.current_score.toFixed(2)}</td>
                         <td className={`px-2 py-2 ${row.score_delta_short >= 0 ? "text-green" : "text-red"}`}>{row.score_delta_short.toFixed(2)}</td>

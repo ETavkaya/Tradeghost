@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     data_cache_ttl_seconds: int = Field(default=60 * 60 * 6)
     data_default_period: str = Field(default="2y")
     data_default_interval: str = Field(default="1d")
+    symbol_metadata_ttl_seconds: int = Field(default=60 * 60 * 24 * 7)
 
     score_momentum_weight: float = Field(default=0.25)
     score_trend_weight: float = Field(default=0.25)

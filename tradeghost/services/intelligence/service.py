@@ -19,7 +19,6 @@ from tradeghost.shared.config.settings import get_settings
 from tradeghost.shared.models.schemas import (
     CandidateCohort,
     CandidateCohortStatus,
-    CohortArchiveResponse,
     CohortCandidate,
     CohortCleanupDuplicateRequest,
     CohortCleanupDuplicateResponse,
@@ -36,6 +35,7 @@ from tradeghost.shared.models.schemas import (
     CohortReviewRequest,
     CohortReviewResponse,
     CohortReviewStats,
+    CohortStatusUpdateResponse,
     DailyBriefing,
     DailyBriefingRequest,
     DiscoveryCreateCohortRequest,
@@ -347,7 +347,7 @@ class IntelligenceService:
             )
         return rows
 
-    def archive_cohort(self, cohort_id: str) -> CohortArchiveResponse:
+    def archive_cohort(self, cohort_id: str) -> CohortStatusUpdateResponse:
         cohorts = self._read_cohorts()
         found = False
         updated: list[CandidateCohort] = []
@@ -369,7 +369,31 @@ class IntelligenceService:
             cohort_name=cohort_name,
             message="action=archive",
         )
-        return CohortArchiveResponse(cohort_id=cohort_id, status=CandidateCohortStatus.ARCHIVED)
+        return CohortStatusUpdateResponse(cohort_id=cohort_id, status=CandidateCohortStatus.ARCHIVED)
+
+    def activate_cohort(self, cohort_id: str) -> CohortStatusUpdateResponse:
+        cohorts = self._read_cohorts()
+        found = False
+        updated: list[CandidateCohort] = []
+        cohort_name = None
+        for row in cohorts:
+            if row.id == cohort_id:
+                found = True
+                cohort_name = row.name
+                updated.append(row.model_copy(update={"status": CandidateCohortStatus.ACTIVE}))
+            else:
+                updated.append(row)
+        if not found:
+            raise FileNotFoundError(f"Cohort not found: {cohort_id}")
+        self._save_cohorts(updated)
+        self._append_pipeline_event(
+            step_name="cohort_activated",
+            status="success",
+            cohort_id=cohort_id,
+            cohort_name=cohort_name,
+            message="action=activate",
+        )
+        return CohortStatusUpdateResponse(cohort_id=cohort_id, status=CandidateCohortStatus.ACTIVE)
 
     def delete_cohort(self, cohort_id: str) -> CohortDeleteResponse:
         cohorts = self._read_cohorts()

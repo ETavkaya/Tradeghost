@@ -997,6 +997,12 @@ export type CohortDeleteResponse = {
   removed_reviews: number;
 };
 
+export type CohortStatusUpdateResponse = {
+  cohort_id: string;
+  status: CandidateCohortStatus;
+  changed_at: string;
+};
+
 export type CohortCandidate = {
   cohort_id: string;
   symbol: string;

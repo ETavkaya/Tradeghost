@@ -1,4 +1,4 @@
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { proxyDelete, proxyGet, proxyPost } from "@/app/api/_lib/proxy";
 
 export async function GET(request: NextRequest, { params }: { params: { cohortId: string } }) {
@@ -14,5 +14,11 @@ export async function POST(request: NextRequest, { params }: { params: { cohortI
   if (action === "archive") {
     return proxyPost(request, `/intelligence/cohorts/${encodeURIComponent(params.cohortId)}/archive`);
   }
-  return proxyPost(request, `/intelligence/cohorts/${encodeURIComponent(params.cohortId)}`);
+  if (action === "activate") {
+    return proxyPost(request, `/intelligence/cohorts/${encodeURIComponent(params.cohortId)}/activate`);
+  }
+  return NextResponse.json(
+    { detail: "Invalid cohort action", action, supported_actions: ["archive", "activate"] },
+    { status: 400 },
+  );
 }

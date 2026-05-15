@@ -37,10 +37,10 @@ from tradeghost.shared.models.schemas import (
     CohortFollowupResponse,
     CohortSymbolContextRequest,
     CohortBriefingRequest,
-    CohortArchiveResponse,
     CohortCleanupDuplicateRequest,
     CohortCleanupDuplicateResponse,
     CohortDeleteResponse,
+    CohortStatusUpdateResponse,
     CohortReviewRequest,
     CohortReviewResponse,
     DiscoveryCreateCohortRequest,
@@ -560,10 +560,20 @@ def get_intelligence_cohort_detail(cohort_id: str) -> CohortDetail:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/intelligence/cohorts/{cohort_id}/archive", response_model=CohortArchiveResponse)
-def archive_intelligence_cohort(cohort_id: str) -> CohortArchiveResponse:
+@app.post("/intelligence/cohorts/{cohort_id}/archive", response_model=CohortStatusUpdateResponse)
+def archive_intelligence_cohort(cohort_id: str) -> CohortStatusUpdateResponse:
     try:
         return intelligence_service.archive_cohort(cohort_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/cohorts/{cohort_id}/activate", response_model=CohortStatusUpdateResponse)
+def activate_intelligence_cohort(cohort_id: str) -> CohortStatusUpdateResponse:
+    try:
+        return intelligence_service.activate_cohort(cohort_id)
     except FileNotFoundError as exc:  # pragma: no cover
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover

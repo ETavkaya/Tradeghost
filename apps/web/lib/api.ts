@@ -18,6 +18,7 @@ import {
   CohortCleanupDuplicateResponse,
   CohortDeleteResponse,
   CohortReviewResponse,
+  CohortStatusUpdateResponse,
   IntelligenceReviewApproval,
   IntelligenceRunReport,
   IntelligenceRunReportExport,
@@ -242,7 +243,13 @@ export const api = {
     }),
   listCohorts: () => fetchJson<CandidateCohort[]>("/api/intelligence/cohorts"),
   archiveCohort: (cohortId: string) =>
-    fetchJson<{ cohort_id: string; status: string; archived_at: string }>(`/api/intelligence/cohorts/${encodeURIComponent(cohortId)}?action=archive`, {
+    fetchJson<CohortStatusUpdateResponse>(`/api/intelligence/cohorts/${encodeURIComponent(cohortId)}?action=archive`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({})
+    }),
+  activateCohort: (cohortId: string) =>
+    fetchJson<CohortStatusUpdateResponse>(`/api/intelligence/cohorts/${encodeURIComponent(cohortId)}?action=activate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({})

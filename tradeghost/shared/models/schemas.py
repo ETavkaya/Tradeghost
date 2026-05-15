@@ -1315,6 +1315,12 @@ class CohortArchiveResponse(BaseModel):
     archived_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class CohortStatusUpdateResponse(BaseModel):
+    cohort_id: str
+    status: CandidateCohortStatus
+    changed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class CohortDeleteResponse(BaseModel):
     cohort_id: str
     deleted: bool = True

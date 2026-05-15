@@ -64,9 +64,21 @@ export default function IntelligencePage() {
     try {
       const parsed = JSON.parse(err.message) as Record<string, unknown>;
       const status = parsed.status ? ` status=${String(parsed.status)}` : "";
-      const detailObj = parsed.detail as Record<string, unknown> | string | undefined;
+      const detailObj = parsed.detail as Record<string, unknown> | string | Array<Record<string, unknown>> | undefined;
+      if (Array.isArray(detailObj)) {
+        const first = detailObj[0] ?? {};
+        const loc = Array.isArray(first.loc) ? first.loc.join(".") : "unknown";
+        const msg = String(first.msg ?? "validation error");
+        const type = first.type ? ` type=${String(first.type)}` : "";
+        return `${stage} failed: ${msg} (field=${loc}).${status}${type}`;
+      }
       if (detailObj && typeof detailObj === "object") {
-        const detail = String(detailObj.detail ?? `${stage} failed`);
+        const detail =
+          typeof detailObj.detail === "string"
+            ? detailObj.detail
+            : detailObj.error_message
+              ? String(detailObj.error_message)
+              : `${stage} failed`;
         const failedStage = detailObj.failed_stage ? ` failed_stage=${String(detailObj.failed_stage)}` : "";
         const failedSymbol = detailObj.failed_symbol ? ` failed_symbol=${String(detailObj.failed_symbol)}` : "";
         const model = detailObj.model ? ` model=${String(detailObj.model)}` : "";
@@ -154,6 +166,7 @@ export default function IntelligencePage() {
   const latestCohortSnapshotCount = selectedCohortDetail?.snapshots?.length ?? 0;
   const selectedCohortCandidateCount = selectedCohortDetail?.candidates?.length ?? 0;
   const selectedIsActive = selectedCohortMeta?.status === "active";
+  const selectedIsArchived = selectedCohortMeta?.status === "archived";
   const canCreateCohort = Boolean(market && duration && categories.length > 0 && cohortName.trim().length > 0);
   const canRunFollowup = Boolean(selectedCohortId) && selectedIsActive && selectedCohortCandidateCount > 0;
   const canRunCohortContexts = Boolean(selectedCohortId) && selectedIsActive && selectedCohortCandidateCount > 0 && Boolean(llmStatus?.connected);
@@ -268,6 +281,22 @@ export default function IntelligencePage() {
       await load();
     } catch (err) {
       setError(formatError(err, "Archive Cohort"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const activateSelectedCohort = async () => {
+    if (!selectedCohortId) return;
+    setError(null);
+    setNotice(null);
+    setLoading(true);
+    try {
+      const res = await api.activateCohort(selectedCohortId);
+      setNotice(`Cohort re-activated: ${res.cohort_id}`);
+      await load();
+    } catch (err) {
+      setError(formatError(err, "Activate Cohort"));
     } finally {
       setLoading(false);
     }
@@ -445,6 +474,12 @@ export default function IntelligencePage() {
       </aside>
 
       <div className="space-y-4">
+      {notice ? (
+        <div className="rounded-lg border border-green/40 bg-green/10 px-3 py-2 text-xs text-green">{notice}</div>
+      ) : null}
+      {error ? (
+        <div className="rounded-lg border border-red/40 bg-red/10 px-3 py-2 text-xs text-red">{error}</div>
+      ) : null}
       <section id="intelligence-layer">
       <Panel>
         <SectionTitle title="Intelligence Layer" subtitle="Deterministic pipeline + optional LLM interpretation layer" />
@@ -589,8 +624,6 @@ export default function IntelligencePage() {
           <p className="text-xs text-slate-400">Runs scanner category-by-category, merges candidates, and stores immutable cohort candidate snapshots.</p>
         </div>
 
-        {notice ? <p className="mt-3 text-xs text-green">{notice}</p> : null}
-        {error ? <p className="mt-3 text-xs text-red">{error}</p> : null}
       </Panel>
       </section>
 
@@ -665,6 +698,7 @@ export default function IntelligencePage() {
                 <option value="review_28d">Export: 28-Day Review</option>
               </select>
               <button type="button" onClick={exportCohortReport} disabled={loading || !canExportCohortReport} className={actionButtonClass(exportDone)}>Export Cohort Report</button>
+              <button type="button" onClick={activateSelectedCohort} disabled={loading || !selectedCohortId || !selectedIsArchived} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Reactivate Cohort</button>
               <button type="button" onClick={archiveSelectedCohort} disabled={loading || !selectedCohortId || !selectedIsActive} className="h-10 rounded-lg border border-stroke px-3 text-sm hover:text-cyan disabled:opacity-60">Archive Cohort</button>
               <button type="button" onClick={deleteSelectedCohort} disabled={loading || !selectedCohortId} className="h-10 rounded-lg border border-red/60 px-3 text-sm text-red hover:bg-red/10 disabled:opacity-60">Delete Cohort</button>
               <button type="button" onClick={() => { setLlmConsoleExpanded(true); jumpTo("cohort-console"); }} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan">Jump to Console</button>

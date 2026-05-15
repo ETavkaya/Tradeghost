@@ -694,6 +694,27 @@ class ScannerLLMQResponse(BaseModel):
     report_text: str
 
 
+class LLMQChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ScannerLLMQChatRequest(BaseModel):
+    symbol: str
+    scanner_snapshot: ScannerResult
+    messages: list[LLMQChatMessage] = Field(default_factory=list)
+
+
+class ScannerLLMQChatResponse(BaseModel):
+    provider: str
+    model: str
+    status: str
+    fallback_used: bool = False
+    answer: str
+    error_message: str | None = None
+    warning_message: str | None = None
+
+
 class WatchlistItem(BaseModel):
     watchlist_id: str
     symbol: str

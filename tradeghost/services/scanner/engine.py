@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from datetime import date
@@ -24,6 +25,8 @@ from tradeghost.shared.models.schemas import (
     ScannerResponse,
     ScannerLLMQRequest,
     ScannerLLMQResponse,
+    ScannerLLMQChatRequest,
+    ScannerLLMQChatResponse,
     ScannerRuleImpact,
     ScannerResult,
     ScannerSectorSummary,
@@ -125,6 +128,7 @@ class ScannerEngine:
     def __init__(self, analysis_engine: AnalysisEngine | None = None) -> None:
         self.settings = get_settings()
         self.analysis_engine = analysis_engine or AnalysisEngine()
+        self._logger = logging.getLogger(__name__)
         self._llm_providers = {
             "openai": OpenAIProvider(self.settings),
             "ollama": OllamaProvider(self.settings),
@@ -865,18 +869,34 @@ class ScannerEngine:
             f"company_name={row.company_name or 'unknown'}\nsector={row.sector or 'unknown'}\nindustry={row.industry or 'unknown'}\n"
             f"news_last_3_months={news_text}\nsector_macro_context={sector_macro}\ntechnical_context={technical_merge}\n"
         )
-        primary = self._normalize_provider(self.settings.llm_provider)
         fallback = self._normalize_provider(self.settings.llm_fallback_provider)
-        sequence = [primary] if primary == fallback else [primary, fallback]
+        # Always try OpenAI first for LLMQ quality; fallback provider is used only on failure.
+        sequence = ["openai"] if fallback == "openai" else ["openai", fallback]
         last_err = None
+        fallback_used = False
         for provider_name in sequence:
             try:
                 model = self.settings.openai_model if provider_name == "openai" else self.settings.ollama_model
+                timeout_seconds = 70.0 if provider_name == "openai" else 45.0
+                self._logger.info(
+                    "action=scanner_llmq provider=%s model=%s timeout=%s openai_key_present=%s fallback_used=%s",
+                    provider_name,
+                    model,
+                    timeout_seconds,
+                    str(bool(self.settings.openai_api_key)).lower(),
+                    str(fallback_used).lower(),
+                )
                 result = self._llm_providers[provider_name].generate(
                     prompt=prompt,
                     model=model,
-                    timeout_seconds=70.0 if provider_name == "openai" else 45.0,
+                    timeout_seconds=timeout_seconds,
                     options={"temperature": 0.1},
+                )
+                self._logger.info(
+                    "action=scanner_llmq provider=%s model=%s status=success fallback_used=%s",
+                    provider_name,
+                    model,
+                    str(fallback_used).lower(),
                 )
                 disclaimer = (
                     "This is not financial advice.\n"
@@ -895,6 +915,14 @@ class ScannerEngine:
                 )
             except Exception as exc:  # pragma: no cover
                 last_err = exc
+                self._logger.warning(
+                    "action=scanner_llmq provider=%s model=%s status=failed error=%s fallback_used=%s",
+                    provider_name,
+                    (self.settings.openai_model if provider_name == "openai" else self.settings.ollama_model),
+                    str(exc),
+                    str(fallback_used).lower(),
+                )
+                fallback_used = True
                 continue
         base = (
             "1. Scanner Snapshot\n"
@@ -924,6 +952,114 @@ class ScannerEngine:
             model_used="none",
             external_news_available=news_available,
             fallback_only=True,
-            warning_message="LLM provider unavailable, showing deterministic fallback only.",
+            warning_message=(
+                f"LLM provider unavailable ({type(last_err).__name__}: {last_err}). "
+                "Showing deterministic fallback only."
+                if last_err
+                else "LLM provider unavailable, showing deterministic fallback only."
+            ),
             report_text=disclaimer + base,
+        )
+
+    def chat_llmq(self, req: ScannerLLMQChatRequest) -> ScannerLLMQChatResponse:
+        row = req.scanner_snapshot
+        started = time.monotonic()
+        news_available, news_text = self._recent_news_summary(row.symbol)
+        sector_macro = self._fallback_sector_macro(row.sector)
+        snapshot = (
+            f"symbol={row.symbol}\ncompany_name={row.company_name or 'unknown'}\nsector={row.sector or 'unknown'}\nindustry={row.industry or 'unknown'}\n"
+            f"market={getattr(row.market, 'value', row.market)}\ncategory={row.category_tag}\nscore={row.scanner_score:.2f}\npriority={row.priority}\n"
+            f"current_price={row.current_score:.2f}\nd5={row.score_delta_short:.2f}\nd20={row.score_delta_medium:.2f}\n"
+            f"price_vs_ema200={row.price_vs_ema200_pct:.2f}\nsupport_distance={row.support_distance_pct:.2f}\nresistance_room={row.resistance_room_pct:.2f}\n"
+            f"volume_ratio_20={row.volume_ratio_20:.2f}\nresistance_tests={row.resistance_test_count}\nema200_tests={row.ema200_test_count}\n"
+            f"dynamics={row.score_dynamics_state}\nmomentum_fit={row.momentum_fit_score:.2f}\next_state={row.extension_state}\nopportunity={row.opportunity_type}\n"
+            f"fib_confluence={row.fib_ema_confluence_score if row.fib_ema_confluence_score is not None else 'n/a'}\nfib_room={row.fib_target_room_pct if row.fib_target_room_pct is not None else 'n/a'}\n"
+            f"p_b={row.price_to_book if row.price_to_book is not None else 'n/a'}\np_e={row.price_to_earnings if row.price_to_earnings is not None else 'n/a'}\n"
+            f"trend_state={row.trend_state}\nema200_slope={row.ema200_slope_state}\nrep_tests={row.repeated_test_count}\nreason={row.short_reason}\n"
+        )
+        history = "\n".join([f"{m.role}: {m.content}" for m in req.messages[-12:]])
+        prompt = (
+            "You are TradeGhost LLMQ, a context-only analyst.\n"
+            "You explain deterministic scanner outputs but never override them.\n"
+            "No buy/sell/hold recommendations. No trade advice.\n"
+            "Do not change score/category/priority/alerts. Scanner snapshot is ground truth.\n"
+            "Interpret values; avoid raw repetition.\n"
+            "Focus on what makes this interesting, what weakens it, what confirms improvement, sector/macro context, and what to watch next.\n"
+            "If live news provider is unavailable, say exactly: Live news provider is not connected yet.\n"
+            "For Financial Services/Banks mention rate expectations, yield curve, net interest income, credit quality, and earnings/trading sensitivity.\n\n"
+            f"scanner_snapshot:\n{snapshot}\n"
+            f"news_context:\n{news_text}\n"
+            f"sector_macro_context:\n{sector_macro}\n\n"
+            f"conversation:\n{history}\n"
+        )
+        fallback = self._normalize_provider(self.settings.llm_fallback_provider)
+        sequence = ["openai"] if fallback == "openai" else ["openai", fallback]
+        last_err: Exception | None = None
+        fallback_used = False
+        for provider_name in sequence:
+            model = self.settings.openai_model if provider_name == "openai" else self.settings.ollama_model
+            timeout_seconds = 70.0 if provider_name == "openai" else 45.0
+            try:
+                self._logger.info(
+                    "action=llmq_chat provider=%s model=%s timeout=%s openai_key_present=%s fallback_used=%s",
+                    provider_name,
+                    model,
+                    timeout_seconds,
+                    str(bool(self.settings.openai_api_key)).lower(),
+                    str(fallback_used).lower(),
+                )
+                result = self._llm_providers[provider_name].generate(
+                    prompt=prompt,
+                    model=model,
+                    timeout_seconds=timeout_seconds,
+                    options={"temperature": 0.15},
+                )
+                duration_ms = int((time.monotonic() - started) * 1000)
+                self._logger.info(
+                    "action=llmq_chat provider=%s model=%s status=success duration_ms=%s fallback_used=%s",
+                    provider_name,
+                    model,
+                    duration_ms,
+                    str(fallback_used).lower(),
+                )
+                return ScannerLLMQChatResponse(
+                    provider=provider_name,
+                    model=model,
+                    status="success",
+                    fallback_used=fallback_used,
+                    answer=result.text.strip(),
+                    error_message=None,
+                    warning_message=(None if news_available else "Live news provider is not connected yet."),
+                )
+            except Exception as exc:  # pragma: no cover
+                last_err = exc
+                self._logger.warning(
+                    "action=llmq_chat provider=%s model=%s status=failed error=%s fallback_used=%s",
+                    provider_name,
+                    model,
+                    str(exc),
+                    str(fallback_used).lower(),
+                )
+                fallback_used = True
+                continue
+        duration_ms = int((time.monotonic() - started) * 1000)
+        deterministic = (
+            f"{row.symbol} appears as {row.priority} priority {row.category_tag.replace('_', ' ')}. "
+            f"Trend state is {row.trend_state}, EMA200 slope is {row.ema200_slope_state}, and dynamics are {row.score_dynamics_state}. "
+            f"Price vs EMA200 is {row.price_vs_ema200_pct:.2f}% with support distance {row.support_distance_pct:.2f}% and resistance room {row.resistance_room_pct:.2f}%. "
+            "This is context-only and not a trading signal."
+        )
+        self._logger.warning(
+            "action=llmq_chat provider=none status=fallback duration_ms=%s fallback_used=true error=%s",
+            duration_ms,
+            str(last_err) if last_err else "none",
+        )
+        return ScannerLLMQChatResponse(
+            provider="none",
+            model="none",
+            status="fallback_only",
+            fallback_used=True,
+            answer=deterministic,
+            error_message=(str(last_err) if last_err else None),
+            warning_message="LLM provider unavailable, showing deterministic fallback only.",
         )

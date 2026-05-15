@@ -36,6 +36,8 @@ import {
   ScannerResponse,
   ScannerLLMQRequest,
   ScannerLLMQResponse,
+  LLMQChatMessage,
+  ScannerLLMQChatResponse,
   ScannerUniverseScope,
   BacktestResponse,
   CombinedAnalysisResponse,
@@ -130,6 +132,12 @@ export const api = {
     }),
   scannerLLMQ: (payload: ScannerLLMQRequest) =>
     fetchJson<ScannerLLMQResponse>("/api/scanner/llmq", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
+  llmqChat: (payload: { symbol: string; scanner_snapshot: Record<string, unknown>; messages: LLMQChatMessage[] }) =>
+    fetchJson<ScannerLLMQChatResponse>("/api/intelligence/llmq/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)

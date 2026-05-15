@@ -14,7 +14,8 @@ import {
   ScannerRequest,
   ScannerResponse,
   ScannerResult,
-  ScannerLLMQResponse,
+  LLMQChatMessage,
+  ScannerLLMQChatResponse,
   ScannerRuleField,
   ScannerRuleOperator,
   ScannerUniverseScope,
@@ -162,8 +163,10 @@ export default function ScannerPage() {
   const [previewAnalysis, setPreviewAnalysis] = useState<CombinedAnalysisResponse | null>(null);
   const [llmqRow, setLlmqRow] = useState<ScannerResult | null>(null);
   const [llmqLoading, setLlmqLoading] = useState(false);
-  const [llmqResult, setLlmqResult] = useState<ScannerLLMQResponse | null>(null);
+  const [llmqResult, setLlmqResult] = useState<ScannerLLMQChatResponse | null>(null);
   const [llmqCopied, setLlmqCopied] = useState(false);
+  const [llmqMessages, setLlmqMessages] = useState<LLMQChatMessage[]>([]);
+  const [llmqInput, setLlmqInput] = useState("");
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -452,19 +455,16 @@ export default function ScannerPage() {
     }
   };
 
-  const openLLMQ = async (row: ScannerResult) => {
-    setLlmqRow(row);
-    setLlmqResult(null);
-    setLlmqCopied(false);
+  const requestLLMQ = async (row: ScannerResult, messages: LLMQChatMessage[]) => {
     setLlmqLoading(true);
     try {
-      const response = await api.scannerLLMQ({
-        market,
-        category: result?.scope.category ?? category,
-        duration: result?.scope.duration ?? duration,
-        row,
+      const response = await api.llmqChat({
+        symbol: row.symbol,
+        scanner_snapshot: row as unknown as Record<string, unknown>,
+        messages,
       });
       setLlmqResult(response);
+      setLlmqMessages((prev) => [...prev, { role: "assistant", content: response.answer }]);
     } catch (err) {
       setNotice(err instanceof Error ? err.message : "Failed to load LLMQ context.");
     } finally {
@@ -472,8 +472,31 @@ export default function ScannerPage() {
     }
   };
 
+  const openLLMQ = async (row: ScannerResult) => {
+    setLlmqRow(row);
+    setLlmqResult(null);
+    setLlmqCopied(false);
+    const initial: LLMQChatMessage = {
+      role: "user",
+      content: "Give me a context-only explanation of why this symbol appeared in the scanner and what matters next.",
+    };
+    setLlmqMessages([initial]);
+    await requestLLMQ(row, [initial]);
+  };
+
+  const regenerateLLMQ = async () => {
+    if (!llmqRow) return;
+    const initial: LLMQChatMessage = {
+      role: "user",
+      content: "Give me a context-only explanation of why this symbol appeared in the scanner and what matters next.",
+    };
+    setLlmqMessages([initial]);
+    setLlmqResult(null);
+    await requestLLMQ(llmqRow, [initial]);
+  };
+
   const copyLLMQ = async () => {
-    const text = llmqResult?.report_text ?? "";
+    const text = llmqMessages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n\n");
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
@@ -498,6 +521,16 @@ export default function ScannerPage() {
     } catch {
       setNotice("Copy failed. Select text and copy manually.");
     }
+  };
+
+  const sendLLMQ = async () => {
+    if (!llmqRow) return;
+    const text = llmqInput.trim();
+    if (!text) return;
+    const next = [...llmqMessages, { role: "user", content: text } as LLMQChatMessage];
+    setLlmqMessages(next);
+    setLlmqInput("");
+    await requestLLMQ(llmqRow, next);
   };
 
   const ruleMeaning = (rule: ScannerCustomRule): string => {
@@ -856,6 +889,8 @@ export default function ScannerPage() {
             <div className="mb-2 flex flex-wrap gap-2 text-xs">
               <span className="rounded border border-stroke px-2 py-1">{selectedSectors.length ? `Sectors: ${selectedSectors.join(", ")}` : "All sectors"}</span>
               <span className="rounded border border-stroke px-2 py-1">{selectedIndustries.length ? `Industries: ${selectedIndustries.join(", ")}` : "All industries"}</span>
+              <button type="button" onClick={() => setSelectedSectors([])} className="rounded border border-stroke px-2 py-1 hover:text-cyan">All sectors</button>
+              <button type="button" onClick={() => setSelectedIndustries([])} className="rounded border border-stroke px-2 py-1 hover:text-cyan">All industries</button>
               <button type="button" onClick={() => { setSelectedSectors([]); setSelectedIndustries([]); }} className="rounded border border-stroke px-2 py-1 hover:text-cyan">Clear filters</button>
             </div>
             {result?.sector_summary?.length ? (
@@ -974,26 +1009,6 @@ export default function ScannerPage() {
                           <button type="button" onClick={() => openLLMQ(row)} disabled={llmqLoading} className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan disabled:opacity-60">LLMQ</button>
                         </td>
                       </tr>
-                      {llmqRow?.normalized_symbol === row.normalized_symbol ? (
-                        <tr className="border-b border-stroke/50">
-                          <td colSpan={30} className="bg-panelSoft px-3 py-3">
-                            <div className="mb-2 flex items-center justify-between">
-                              <p className="text-xs text-slate-300">LLMQ: {row.symbol}</p>
-                              <div className="flex gap-2">
-                                <button type="button" onClick={copyLLMQ} disabled={!llmqResult} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan disabled:opacity-60">{llmqCopied ? "Copied" : "Copy"}</button>
-                                <button type="button" onClick={() => { setLlmqRow(null); setLlmqResult(null); setLlmqLoading(false); }} className="rounded border border-stroke px-2 py-1 text-xs">Close</button>
-                              </div>
-                            </div>
-                            {llmqLoading ? <p className="text-xs text-slate-300">Loading LLMQ...</p> : null}
-                            {llmqResult?.warning_message ? (
-                              <p className="mb-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">{llmqResult.warning_message}</p>
-                            ) : null}
-                            {llmqResult ? (
-                              <textarea readOnly value={llmqResult.report_text} className="h-[320px] w-full rounded border border-stroke bg-bg p-2 text-xs text-slate-200" />
-                            ) : null}
-                          </td>
-                        </tr>
-                      ) : null}
                       </Fragment>
                     ))
                   )}
@@ -1001,6 +1016,51 @@ export default function ScannerPage() {
               </table>
             </div>
           </Panel>
+          {llmqRow ? (
+            <div className="fixed inset-y-0 right-0 z-50 w-full max-w-2xl border-l border-stroke bg-panel shadow-2xl">
+              <div className="sticky top-0 z-10 flex items-center justify-between border-b border-stroke bg-panel px-4 py-3">
+                <div>
+                  <p className="text-sm font-semibold text-slate-100">LLMQ: {llmqRow.symbol}</p>
+                  <p className="text-xs text-slate-400">
+                    {(llmqRow.company_name ?? llmqRow.symbol)} · {(llmqRow.sector ?? "unknown")} · {llmqRow.category_tag.replaceAll("_", " ")} · Score {llmqRow.scanner_score.toFixed(1)}
+                  </p>
+                  <p className="text-xs text-slate-400">
+                    {llmqLoading
+                      ? "Provider status: loading..."
+                      : llmqResult?.fallback_used
+                        ? "Provider status: fallback only"
+                        : llmqResult
+                          ? `Provider status: ${llmqResult.provider.toUpperCase()} success`
+                          : "Provider status: idle"}
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button type="button" onClick={copyLLMQ} disabled={llmqMessages.length === 0} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan disabled:opacity-60">{llmqCopied ? "Copied" : "Copy Conversation"}</button>
+                  <button type="button" onClick={regenerateLLMQ} disabled={llmqLoading} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan disabled:opacity-60">Regenerate</button>
+                  <button type="button" onClick={() => { setLlmqRow(null); setLlmqResult(null); setLlmqLoading(false); setLlmqCopied(false); setLlmqMessages([]); setLlmqInput(""); }} className="rounded border border-stroke px-2 py-1 text-xs">Close</button>
+                </div>
+              </div>
+              <div className="h-[calc(100vh-64px)] overflow-auto p-4">
+                {llmqLoading ? <p className="text-xs text-slate-300">Loading LLMQ...</p> : null}
+                {llmqResult?.warning_message ? (
+                  <p className="mb-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">{llmqResult.warning_message}</p>
+                ) : null}
+                <div className="space-y-3 pb-24">
+                  {llmqMessages.map((m, i) => (
+                    <div key={`m-${i}`} className={`rounded border px-3 py-2 text-xs whitespace-pre-wrap ${m.role === "user" ? "border-cyan/40 bg-cyan/10 text-cyan-100" : "border-stroke bg-bg text-slate-200"}`}>
+                      {m.content}
+                    </div>
+                  ))}
+                </div>
+                <div className="sticky bottom-0 mt-2 border-t border-stroke bg-panel pt-2">
+                  <div className="flex gap-2">
+                    <textarea value={llmqInput} onChange={(e) => setLlmqInput(e.target.value)} placeholder="Ask a follow-up question..." className="h-16 flex-1 rounded border border-stroke bg-bg p-2 text-xs text-slate-200" />
+                    <button type="button" onClick={sendLLMQ} disabled={llmqLoading || !llmqInput.trim()} className="h-16 rounded border border-stroke px-3 text-xs hover:text-cyan disabled:opacity-60">Send</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </>
       ) : null}
     </main>

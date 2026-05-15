@@ -673,6 +673,21 @@ export type ScannerLLMQResponse = {
   report_text: string;
 };
 
+export type LLMQChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+export type ScannerLLMQChatResponse = {
+  provider: string;
+  model: string;
+  status: string;
+  fallback_used: boolean;
+  answer: string;
+  error_message: string | null;
+  warning_message: string | null;
+};
+
 export type WatchlistItem = {
   watchlist_id: string;
   symbol: string;

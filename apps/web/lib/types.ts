@@ -908,6 +908,14 @@ export type SymbolResult = {
   return_14d: number | null;
   max_drawdown_after_selection: number | null;
   max_runup_after_selection: number | null;
+  company_name: string | null;
+  sector: string | null;
+  industry: string | null;
+  sector_key: string | null;
+  industry_key: string | null;
+  metadata_source: string | null;
+  metadata_data_quality_status: string;
+  exchange: string | null;
 };
 
 export type SymbolContext = {

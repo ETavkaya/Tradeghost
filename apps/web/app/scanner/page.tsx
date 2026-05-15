@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { UnifiedAnalysisChart } from "@/components/unified-analysis-chart";
 import { Panel, SectionTitle, StatCard } from "@/components/ui";
@@ -148,8 +148,8 @@ export default function ScannerPage() {
   const [customRules, setCustomRules] = useState<ScannerCustomRule[]>([]);
   const [rangeStart, setRangeStart] = useState("");
   const [rangeEnd, setRangeEnd] = useState("");
-  const [sectorFilterText, setSectorFilterText] = useState("");
-  const [industryFilterText, setIndustryFilterText] = useState("");
+  const [selectedSectors, setSelectedSectors] = useState<string[]>([]);
+  const [selectedIndustries, setSelectedIndustries] = useState<string[]>([]);
   const [alertPlanRow, setAlertPlanRow] = useState<ScannerResult | null>(null);
   const [alertPlanRules, setAlertPlanRules] = useState<AlertProfileSuggestionRule[]>([]);
   const [alertPlanLoading, setAlertPlanLoading] = useState(false);
@@ -163,6 +163,7 @@ export default function ScannerPage() {
   const [llmqRow, setLlmqRow] = useState<ScannerResult | null>(null);
   const [llmqLoading, setLlmqLoading] = useState(false);
   const [llmqResult, setLlmqResult] = useState<ScannerLLMQResponse | null>(null);
+  const [llmqCopied, setLlmqCopied] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -303,8 +304,6 @@ export default function ScannerPage() {
         use_custom_rules: useCustomRules && customRules.length > 0,
         ...(useCustomRules && customRules.length > 0 ? { custom_rules: customRules } : {}),
         ...(rangeStart && rangeEnd ? { range_start: rangeStart, range_end: rangeEnd } : {}),
-        ...(sectorFilterText.trim() ? { sector_filter: sectorFilterText.split(",").map((x) => x.trim()).filter(Boolean) } : {}),
-        ...(industryFilterText.trim() ? { industry_filter: industryFilterText.split(",").map((x) => x.trim()).filter(Boolean) } : {}),
         ...(selectedWatchlistId && universeScope === "watchlist"
           ? {
               symbol_overrides: (watchlists.find((wl) => wl.id === selectedWatchlistId)?.items ?? [])
@@ -339,6 +338,26 @@ export default function ScannerPage() {
     });
     return next;
   }, [result, sortKey, sortDirection]);
+
+  const sectorOptions = useMemo(() => {
+    const s = new Set<string>();
+    for (const row of result?.results ?? []) s.add(row.sector ?? "unknown");
+    return [...s].sort((a, b) => a.localeCompare(b));
+  }, [result]);
+
+  const industryOptions = useMemo(() => {
+    const s = new Set<string>();
+    for (const row of result?.results ?? []) s.add(row.industry ?? "unknown");
+    return [...s].sort((a, b) => a.localeCompare(b));
+  }, [result]);
+
+  const filteredResults = useMemo(() => {
+    return sortedResults.filter((row) => {
+      const sectorPass = selectedSectors.length === 0 || selectedSectors.includes(row.sector ?? "unknown");
+      const industryPass = selectedIndustries.length === 0 || selectedIndustries.includes(row.industry ?? "unknown");
+      return sectorPass && industryPass;
+    });
+  }, [sortedResults, selectedSectors, selectedIndustries]);
 
   const toggleSort = (key: keyof ScannerResult) => {
     if (sortKey === key) {
@@ -436,6 +455,7 @@ export default function ScannerPage() {
   const openLLMQ = async (row: ScannerResult) => {
     setLlmqRow(row);
     setLlmqResult(null);
+    setLlmqCopied(false);
     setLlmqLoading(true);
     try {
       const response = await api.scannerLLMQ({
@@ -449,6 +469,34 @@ export default function ScannerPage() {
       setNotice(err instanceof Error ? err.message : "Failed to load LLMQ context.");
     } finally {
       setLlmqLoading(false);
+    }
+  };
+
+  const copyLLMQ = async () => {
+    const text = llmqResult?.report_text ?? "";
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setLlmqCopied(true);
+      setTimeout(() => setLlmqCopied(false), 1500);
+      return;
+    } catch {
+      // fallback below
+    }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      setLlmqCopied(true);
+      setTimeout(() => setLlmqCopied(false), 1500);
+    } catch {
+      setNotice("Copy failed. Select text and copy manually.");
     }
   };
 
@@ -554,20 +602,6 @@ export default function ScannerPage() {
             <button type="button" onClick={applyAlertPlan} className="rounded-lg border border-stroke px-3 py-2 text-xs hover:text-cyan">Apply Selected</button>
             <button type="button" onClick={() => { setAlertPlanRow(null); setAlertPlanRules([]); }} className="rounded-lg border border-stroke px-3 py-2 text-xs">Close</button>
           </div>
-        </Panel>
-      ) : null}
-
-      {llmqRow ? (
-        <Panel>
-          <SectionTitle title={`LLMQ: ${llmqRow.symbol}`} subtitle="Context-only explanatory summary (deterministic outputs unchanged)" />
-          <div className="mb-2 flex gap-2">
-            <button type="button" onClick={() => navigator.clipboard.writeText(llmqResult?.report_text ?? "")} disabled={!llmqResult} className="rounded-lg border border-stroke px-3 py-2 text-xs hover:text-cyan disabled:opacity-60">Copy</button>
-            <button type="button" onClick={() => { setLlmqRow(null); setLlmqResult(null); }} className="rounded-lg border border-stroke px-3 py-2 text-xs">Close</button>
-          </div>
-          {llmqLoading ? <p className="text-xs text-slate-300">Loading LLMQ...</p> : null}
-          {llmqResult ? (
-            <textarea readOnly value={llmqResult.report_text} className="h-[380px] w-full rounded-lg border border-stroke bg-bg p-2 text-xs text-slate-200" />
-          ) : null}
         </Panel>
       ) : null}
 
@@ -796,12 +830,33 @@ export default function ScannerPage() {
           <Panel>
             <SectionTitle title="Scanner Results" subtitle="Ranked shortlist for next analysis step" />
             <div className="mb-2 grid gap-2 md:grid-cols-2">
-              <label className="text-xs text-slate-300">Sector filter (csv)
-                <input value={sectorFilterText} onChange={(e) => setSectorFilterText(e.target.value)} placeholder="Technology, Financial Services" className="mt-1 h-9 w-full rounded border border-stroke bg-bg px-2 text-xs" />
+              <label className="text-xs text-slate-300">Sector filter
+                <select
+                  multiple
+                  value={selectedSectors}
+                  onChange={(e) => setSelectedSectors(Array.from(e.target.selectedOptions).map((o) => o.value))}
+                  className="mt-1 h-24 w-full rounded border border-stroke bg-bg px-2 text-xs"
+                >
+                  {sectorOptions.map((x) => <option key={x} value={x}>{x}</option>)}
+                </select>
+                <p className="mt-1 text-[11px] text-slate-400">All sectors (default) when none selected.</p>
               </label>
-              <label className="text-xs text-slate-300">Industry filter (csv)
-                <input value={industryFilterText} onChange={(e) => setIndustryFilterText(e.target.value)} placeholder="Semiconductors, Banks - Regional" className="mt-1 h-9 w-full rounded border border-stroke bg-bg px-2 text-xs" />
+              <label className="text-xs text-slate-300">Industry filter
+                <select
+                  multiple
+                  value={selectedIndustries}
+                  onChange={(e) => setSelectedIndustries(Array.from(e.target.selectedOptions).map((o) => o.value))}
+                  className="mt-1 h-24 w-full rounded border border-stroke bg-bg px-2 text-xs"
+                >
+                  {industryOptions.map((x) => <option key={x} value={x}>{x}</option>)}
+                </select>
+                <p className="mt-1 text-[11px] text-slate-400">All industries (default) when none selected.</p>
               </label>
+            </div>
+            <div className="mb-2 flex flex-wrap gap-2 text-xs">
+              <span className="rounded border border-stroke px-2 py-1">{selectedSectors.length ? `Sectors: ${selectedSectors.join(", ")}` : "All sectors"}</span>
+              <span className="rounded border border-stroke px-2 py-1">{selectedIndustries.length ? `Industries: ${selectedIndustries.join(", ")}` : "All industries"}</span>
+              <button type="button" onClick={() => { setSelectedSectors([]); setSelectedIndustries([]); }} className="rounded border border-stroke px-2 py-1 hover:text-cyan">Clear filters</button>
             </div>
             {result?.sector_summary?.length ? (
               <div className="mb-2 text-xs text-slate-300">
@@ -849,14 +904,15 @@ export default function ScannerPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedResults.length === 0 ? (
+                  {filteredResults.length === 0 ? (
                     <tr>
                       <td className="sticky left-0 z-10 bg-panel px-2 py-3 text-slate-400 shadow-[8px_0_12px_-12px_rgba(0,0,0,0.6)]">No candidates found for selected scope.</td>
                       <td className="px-2 py-3 text-slate-400" colSpan={30}></td>
                     </tr>
                   ) : (
-                    sortedResults.map((row) => (
-                      <tr key={row.normalized_symbol} className="border-b border-stroke/50 align-top">
+                    filteredResults.map((row) => (
+                      <Fragment key={`${row.normalized_symbol}-wrap`}>
+                      <tr className="border-b border-stroke/50 align-top">
                         <td className="sticky left-0 z-10 bg-panel px-2 py-2 shadow-[8px_0_12px_-12px_rgba(0,0,0,0.6)]">
                           <div className="font-medium text-slate-100">{row.symbol}</div>
                           <div className="text-[11px] text-slate-400">Score {row.scanner_score.toFixed(1)} | {row.priority}</div>
@@ -918,6 +974,27 @@ export default function ScannerPage() {
                           <button type="button" onClick={() => openLLMQ(row)} disabled={llmqLoading} className="rounded-md border border-stroke px-2 py-1 text-xs text-slate-300 hover:text-cyan disabled:opacity-60">LLMQ</button>
                         </td>
                       </tr>
+                      {llmqRow?.normalized_symbol === row.normalized_symbol ? (
+                        <tr className="border-b border-stroke/50">
+                          <td colSpan={30} className="bg-panelSoft px-3 py-3">
+                            <div className="mb-2 flex items-center justify-between">
+                              <p className="text-xs text-slate-300">LLMQ: {row.symbol}</p>
+                              <div className="flex gap-2">
+                                <button type="button" onClick={copyLLMQ} disabled={!llmqResult} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan disabled:opacity-60">{llmqCopied ? "Copied" : "Copy"}</button>
+                                <button type="button" onClick={() => { setLlmqRow(null); setLlmqResult(null); setLlmqLoading(false); }} className="rounded border border-stroke px-2 py-1 text-xs">Close</button>
+                              </div>
+                            </div>
+                            {llmqLoading ? <p className="text-xs text-slate-300">Loading LLMQ...</p> : null}
+                            {llmqResult?.warning_message ? (
+                              <p className="mb-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">{llmqResult.warning_message}</p>
+                            ) : null}
+                            {llmqResult ? (
+                              <textarea readOnly value={llmqResult.report_text} className="h-[320px] w-full rounded border border-stroke bg-bg p-2 text-xs text-slate-200" />
+                            ) : null}
+                          </td>
+                        </tr>
+                      ) : null}
+                      </Fragment>
                     ))
                   )}
                 </tbody>

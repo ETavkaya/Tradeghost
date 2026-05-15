@@ -821,7 +821,7 @@ class ScannerEngine:
         try:
             rows: list[dict[str, Any]] = list(yf.Ticker(symbol).news or [])
             if not rows:
-                return False, "External news context unavailable"
+                return False, "Live news provider is not connected yet."
             picked = rows[:8]
             bullets: list[str] = []
             for row in picked:
@@ -831,26 +831,36 @@ class ScannerEngine:
                 publisher = str(row.get("publisher") or "unknown")
                 bullets.append(f"- {title} ({publisher})")
             if not bullets:
-                return False, "External news context unavailable"
+                return False, "Live news provider is not connected yet."
             return True, "\n".join(bullets)
         except Exception:
-            return False, "External news context unavailable"
+            return False, "Live news provider is not connected yet."
 
     def generate_llmq(self, req: ScannerLLMQRequest) -> ScannerLLMQResponse:
         row = req.row
         news_available, news_text = self._recent_news_summary(row.symbol)
         sector_macro = self._fallback_sector_macro(row.sector)
         technical_merge = (
-            f"score={row.scanner_score:.2f}, category={row.category_tag}, priority={row.priority}, "
-            f"trend={row.trend_state}, setup={row.opportunity_type}, dynamics={row.score_dynamics_state}, "
-            f"support_distance={row.support_distance_pct:.2f}%, resistance_room={row.resistance_room_pct:.2f}%."
+            f"score={row.scanner_score:.2f}; priority={row.priority}; category={row.category_tag}; "
+            f"trend_state={row.trend_state}; ema200_slope={row.ema200_slope_state}; price_vs_ema200={row.price_vs_ema200_pct:.2f}%; "
+            f"support_distance={row.support_distance_pct:.2f}%; resistance_room={row.resistance_room_pct:.2f}%; "
+            f"volume_ratio_20={row.volume_ratio_20:.2f}; dynamics={row.score_dynamics_state}; momentum_fit={row.momentum_fit_score:.2f}; "
+            f"opportunity={row.opportunity_type}; fib_confluence={row.fib_ema_confluence_score if row.fib_ema_confluence_score is not None else 'n/a'}; "
+            f"fib_room={row.fib_target_room_pct if row.fib_target_room_pct is not None else 'n/a'}; p_b={row.price_to_book if row.price_to_book is not None else 'n/a'}; "
+            f"p_e={row.price_to_earnings if row.price_to_earnings is not None else 'n/a'}; reason={row.short_reason}"
         )
         prompt = (
-            "You are an explanatory assistant. No financial advice.\n"
-            "Do NOT output buy/sell recommendations.\n"
-            "Do NOT change deterministic score/category/priority.\n"
+            "You are an explanatory market-context assistant.\n"
+            "No financial advice. Do NOT output buy/sell recommendations.\n"
+            "Do NOT change deterministic score/category/priority and do not imply trade execution.\n"
+            "Do not just repeat values; interpret what they imply in context.\n"
+            "If setup resembles build_up near EMA200, explain early-watch / not-confirmed nature.\n"
+            "If dynamics is deteriorating and trend is damaged, explicitly call out weakness.\n"
+            "If price_vs_ema200 is near 0, explain EMA200 reclaim/watch logic.\n"
+            "If resistance_room is positive, explain available room without buy signal.\n"
+            "For Financial Services/Banks mention: rate expectations, yield curve, net interest income, credit quality, and earnings/trading sensitivity.\n"
             "Return plain text with exactly these sections:\n"
-            "1. Scanner Snapshot\n2. Company / Sector\n3. Recent News Context\n4. Sector Context\n5. Technical Setup Interpretation\n6. What to Watch Next\n7. Risks / Missing Data\n\n"
+            "1. Scanner Snapshot\n2. Company / Sector\n3. Recent News Context\n4. Sector / Macro Context\n5. Technical + Context Interpretation\n6. What to Watch Next\n7. Risks / Missing Data\n\n"
             f"symbol={row.symbol}\nmarket={req.market.value}\nduration={req.duration.value}\ncategory={req.category.value}\n"
             f"company_name={row.company_name or 'unknown'}\nsector={row.sector or 'unknown'}\nindustry={row.industry or 'unknown'}\n"
             f"news_last_3_months={news_text}\nsector_macro_context={sector_macro}\ntechnical_context={technical_merge}\n"
@@ -865,7 +875,7 @@ class ScannerEngine:
                 result = self._llm_providers[provider_name].generate(
                     prompt=prompt,
                     model=model,
-                    timeout_seconds=45.0,
+                    timeout_seconds=70.0 if provider_name == "openai" else 45.0,
                     options={"temperature": 0.1},
                 )
                 disclaimer = (
@@ -879,6 +889,8 @@ class ScannerEngine:
                     provider_used=provider_name,
                     model_used=model,
                     external_news_available=news_available,
+                    fallback_only=False,
+                    warning_message=(None if news_available else "Live news provider is not connected yet."),
                     report_text=disclaimer + result.text.strip(),
                 )
             except Exception as exc:  # pragma: no cover
@@ -891,14 +903,14 @@ class ScannerEngine:
             f"- company_name={row.company_name or 'unknown'}, sector={row.sector or 'unknown'}, industry={row.industry or 'unknown'}\n\n"
             "3. Recent News Context\n"
             f"- {news_text}\n\n"
-            "4. Sector Context\n"
+            "4. Sector / Macro Context\n"
             f"- {sector_macro}\n\n"
-            "5. Technical Setup Interpretation\n"
+            "5. Technical + Context Interpretation\n"
             f"- {technical_merge}\n\n"
             "6. What to Watch Next\n"
             "- Trigger quality, resistance room, and score dynamics.\n\n"
             "7. Risks / Missing Data\n"
-            "- External news or metadata may be incomplete.\n"
+            "- This is early context only, not confirmation. News and metadata may be incomplete.\n"
         )
         disclaimer = (
             "This is not financial advice.\n"
@@ -906,12 +918,12 @@ class ScannerEngine:
             "LLM does not issue buy/sell signals.\n"
             "LLM explains context only.\n\n"
         )
-        if last_err:
-            base += f"\nLLM unavailable: {last_err}"
         return ScannerLLMQResponse(
             symbol=row.symbol,
             provider_used="none",
             model_used="none",
             external_news_available=news_available,
+            fallback_only=True,
+            warning_message="LLM provider unavailable, showing deterministic fallback only.",
             report_text=disclaimer + base,
         )

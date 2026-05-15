@@ -689,6 +689,8 @@ class ScannerLLMQResponse(BaseModel):
     provider_used: str
     model_used: str
     external_news_available: bool = False
+    fallback_only: bool = False
+    warning_message: str | None = None
     report_text: str
 
 

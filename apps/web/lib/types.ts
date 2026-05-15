@@ -668,6 +668,8 @@ export type ScannerLLMQResponse = {
   provider_used: string;
   model_used: string;
   external_news_available: boolean;
+  fallback_only: boolean;
+  warning_message: string | null;
   report_text: string;
 };
 

@@ -939,8 +939,10 @@ export type IntelligenceRunReportExport = {
   filename: string;
   report_mode?: string | null;
   cohort_id?: string | null;
+  selected_cohort_id_used?: string | null;
   exported_at?: string;
   latest_followup_date?: string | null;
+  followup_snapshot_count?: number;
   markdown: string;
 };
 

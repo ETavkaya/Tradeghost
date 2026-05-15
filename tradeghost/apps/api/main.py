@@ -650,7 +650,7 @@ def run_intelligence_cohort_review(payload: CohortReviewRequest) -> CohortReview
 @app.get("/intelligence/cohorts/{cohort_id}/export", response_model=IntelligenceRunReportExport)
 def export_intelligence_cohort_report(
     cohort_id: str,
-    mode: CohortReportMode = Query(default=CohortReportMode.LIFECYCLE),
+    mode: CohortReportMode = Query(default=CohortReportMode.FOLLOWUP),
 ) -> IntelligenceRunReportExport:
     try:
         return intelligence_service.export_cohort_report_markdown(cohort_id, report_mode=mode)

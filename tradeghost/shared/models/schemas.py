@@ -1484,8 +1484,10 @@ class IntelligenceRunReportExport(BaseModel):
     filename: str
     report_mode: str | None = None
     cohort_id: str | None = None
+    selected_cohort_id_used: str | None = None
     exported_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     latest_followup_date: date | None = None
+    followup_snapshot_count: int = 0
     markdown: str
 
 

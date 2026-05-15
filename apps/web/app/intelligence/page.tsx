@@ -54,7 +54,7 @@ export default function IntelligencePage() {
   const [cohortReview, setCohortReview] = useState<CohortReviewResponse | null>(null);
   const [cohortContextFailedSymbols, setCohortContextFailedSymbols] = useState<string[]>([]);
   const [cohortActionSuccess, setCohortActionSuccess] = useState<Record<string, { followup?: boolean; contexts?: boolean; briefing?: boolean; review?: boolean; export?: boolean }>>({});
-  const [exportMode, setExportMode] = useState<"initial" | "followup" | "lifecycle" | "review_28d">("lifecycle");
+  const [exportMode, setExportMode] = useState<"initial" | "followup" | "lifecycle" | "review_28d">("followup");
   const [cohortFilter, setCohortFilter] = useState<"active" | "archived" | "all">("active");
   const [duplicateStrategy, setDuplicateStrategy] = useState<"use_existing" | "archive_existing_create_new" | "create_duplicate_anyway">("use_existing");
   const [cleanupResult, setCleanupResult] = useState<CohortCleanupDuplicateResponse | null>(null);

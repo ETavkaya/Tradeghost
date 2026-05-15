@@ -662,7 +662,7 @@ class IntelligenceService:
             status="running",
             cohort_id=detail.cohort.id,
             cohort_name=detail.cohort.name,
-            message=f"action=followup cohort_id={detail.cohort.id} cohort_name={detail.cohort.name}",
+            message=f"action=followup selected_cohort_id={detail.cohort.id} cohort_name={detail.cohort.name}",
         )
         snapshots = self._read_cohort_snapshots()
         today = date.today()
@@ -694,14 +694,16 @@ class IntelligenceService:
             has_min_horizon = perf.get("7d") is not None
             severe_structure_break = str(analysis.setup_interpretation.trend_state or "") in {"damaged_trend", "weakening_trend"}
             severe_gate_failure = str(analysis.entry_gate.skip_reason or "") in {"regime_filter", "location_filter"} and has_min_horizon
+            hard_invalidation = bool(severe_structure_break and severe_gate_failure)
+            hard_invalidation_reason = str(analysis.entry_gate.skip_reason or "severe_structure_break") if hard_invalidation else None
             if self._is_serious_data_quality(data_quality_flags):
                 validity_state = "needs_data_check"
                 still_valid_candidate = None
-                invalidation_reason = "data_quality_flags_detected"
-            elif severe_structure_break and severe_gate_failure:
+                invalidation_reason = hard_invalidation_reason if hard_invalidation else None
+            elif hard_invalidation:
                 validity_state = "invalid"
                 still_valid_candidate = False
-                invalidation_reason = str(analysis.entry_gate.skip_reason or "severe_structure_break")
+                invalidation_reason = hard_invalidation_reason
             elif analysis.entry_gate.final_entry_decision and has_min_horizon:
                 validity_state = "valid"
                 still_valid_candidate = True
@@ -742,13 +744,22 @@ class IntelligenceService:
             snapshots = [row for row in snapshots if not (row.cohort_id == req.cohort_id and row.symbol == cand.symbol and row.snapshot_date == today)]
             snapshots.append(snap)
             new_snapshots.append(snap)
+            self._logger.info(
+                "action=followup_validity selected_cohort_id=%s cohort_name=%s symbol=%s validity_state=%s hard_invalidation=%s invalidation_reason=%s",
+                detail.cohort.id,
+                detail.cohort.name,
+                cand.symbol,
+                validity_state,
+                str(hard_invalidation).lower(),
+                hard_invalidation_reason or "null",
+            )
         self._save_cohort_snapshots(snapshots)
         self._append_pipeline_event(
             step_name="cohort_followup_completed",
             status="success",
             cohort_id=detail.cohort.id,
             cohort_name=detail.cohort.name,
-            message=f"action=followup snapshots={len(new_snapshots)}",
+            message=f"action=followup selected_cohort_id={detail.cohort.id} cohort_name={detail.cohort.name} snapshots={len(new_snapshots)}",
         )
         return CohortFollowupResponse(cohort_id=req.cohort_id, snapshot_date=today, snapshots=sorted(new_snapshots, key=lambda row: row.symbol))
 
@@ -818,7 +829,7 @@ class IntelligenceService:
                 if row.status == "running":
                     age = (now - row.timestamp).total_seconds()
                     if age > stale_after_seconds:
-                        row = row.model_copy(update={"status": "failed", "error_message": "stale_running_timeout"})
+                        row = row.model_copy(update={"error_message": "stale_warning: stale_running_timeout"})
                         changed = True
                 updated.append(row)
             if changed:
@@ -1077,9 +1088,9 @@ class IntelligenceService:
                 f"(current_state={analysis.trigger.trigger_state}, current_score={trigger_score:.1f})."
             )
         elif blocked_by != "none":
-            confirm_entry = f"Trigger is already confirmed. Entry still needs `{blocked_by}` to improve."
+            confirm_entry = f"Trigger is confirmed, but entry is blocked by {blocked_by}."
         else:
-            confirm_entry = "Entry conditions are currently met."
+            confirm_entry = "Entry trigger is confirmed."
         invalidate = skip_reason or "Invalidate if trend weakens and price loses key EMA support with no trigger confirmation."
         if data_quality_flags:
             return {
@@ -1811,7 +1822,7 @@ class IntelligenceService:
             cohort_id=detail.cohort.id,
             cohort_name=detail.cohort.name,
             provider=self._normalize_provider(self.settings.llm_provider),
-            message=f"action=contexts cohort_id={detail.cohort.id} symbols_limit={req.context_symbol_limit}",
+            message=f"action=contexts selected_cohort_id={detail.cohort.id} cohort_name={detail.cohort.name} symbols_limit={req.context_symbol_limit}",
         )
         candidates = detail.candidates
         if req.symbols:
@@ -1894,7 +1905,7 @@ class IntelligenceService:
             cohort_id=detail.cohort.id,
             cohort_name=detail.cohort.name,
             provider=self._normalize_provider(self.settings.llm_provider),
-            message=f"action=contexts generated={len(contexts)-failed} failed={failed}",
+            message=f"action=contexts selected_cohort_id={detail.cohort.id} cohort_name={detail.cohort.name} generated={len(contexts)-failed} failed={failed}",
             error_message=None if failed < len(contexts) else "all cohort symbol contexts failed",
         )
         return SymbolContextBatchResponse(
@@ -1913,7 +1924,7 @@ class IntelligenceService:
             cohort_id=detail.cohort.id,
             cohort_name=detail.cohort.name,
             provider=self._normalize_provider(self.settings.llm_provider),
-            message=f"action=briefing cohort_id={detail.cohort.id}",
+            message=f"action=briefing selected_cohort_id={detail.cohort.id} cohort_name={detail.cohort.name}",
         )
         by_symbol = {row.symbol: row for row in self._read_contexts() if row.cohort_id == req.cohort_id and row.status == "generated"}
         if not by_symbol:
@@ -2242,6 +2253,14 @@ class IntelligenceService:
         cohort_by_id = {row.id: row for row in cohorts}
         if req.cohort_id not in cohort_by_id:
             raise FileNotFoundError(f"Cohort not found: {req.cohort_id}")
+        selected_name = cohort_by_id[req.cohort_id].name
+        self._append_pipeline_event(
+            step_name="cohort_review_started",
+            status="running",
+            cohort_id=req.cohort_id,
+            cohort_name=selected_name,
+            message=f"action=review selected_cohort_id={req.cohort_id} cohort_name={selected_name}",
+        )
         target_ids = [req.cohort_id]
         candidate_rows = [row for row in self._read_cohort_candidates() if row.cohort_id in target_ids]
         snapshot_rows = [row for row in self._read_cohort_snapshots() if row.cohort_id in target_ids]
@@ -2325,11 +2344,15 @@ class IntelligenceService:
         if not sufficient_window:
             note = (
                 f"insufficient data: {unique_days}/{req.days_required} days collected. "
-                "False-positive and quick-invalidation stats are deferred."
+                "False-positive and quick-invalidation stats are deferred. 1D figures are early signal only."
             )
             false_positives = 0
             invalidated_quickly = 0
             missed_follow = 0
+            best_cat = None
+            worst_cat = None
+            best_symbol = None
+            worst_symbol = None
         stats = CohortReviewStats(
             average_return_by_category=avg_by_cat,
             best_candidate=best_symbol,
@@ -2349,13 +2372,12 @@ class IntelligenceService:
             insufficient_data=not sufficient_window,
             score_delta_vs_return_note=note,
         )
-        selected_name = cohort_by_id[req.cohort_id].name
         self._append_pipeline_event(
             step_name="cohort_review_completed",
             status="success",
             cohort_id=req.cohort_id,
             cohort_name=selected_name,
-            message=f"action=review cohort_id={req.cohort_id} days={unique_days}/{req.days_required}",
+            message=f"action=review selected_cohort_id={req.cohort_id} cohort_name={selected_name} days={unique_days}/{req.days_required}",
         )
         return CohortReviewResponse(
             cohort_id=req.cohort_id,
@@ -2622,18 +2644,21 @@ class IntelligenceService:
     def export_cohort_report_markdown(
         self,
         cohort_id: str,
-        report_mode: CohortReportMode = CohortReportMode.LIFECYCLE,
+        report_mode: CohortReportMode = CohortReportMode.FOLLOWUP,
     ) -> IntelligenceRunReportExport:
         detail = self.get_cohort_detail(cohort_id)
+        selected_cohort_id_used = detail.cohort.id
+        mode_label = "latest_followup" if report_mode == CohortReportMode.FOLLOWUP else report_mode.value
         self._append_pipeline_event(
             step_name="cohort_export_started",
             status="running",
             cohort_id=detail.cohort.id,
             cohort_name=detail.cohort.name,
-            message=f"action=export mode={report_mode.value}",
+            message=f"action=export selected_cohort_id={selected_cohort_id_used} cohort_name={detail.cohort.name} report_mode={mode_label}",
         )
         review = self.run_cohort_review(CohortReviewRequest(cohort_id=cohort_id))
         latest_followup_date = max((x.snapshot_date for x in detail.snapshots), default=None)
+        followup_snapshot_count = len(detail.snapshots)
         exported_at = datetime.now(UTC)
         filename = self._build_versioned_cohort_export_filename(
             cohort_name=detail.cohort.name,
@@ -2644,13 +2669,14 @@ class IntelligenceService:
         lines: list[str] = []
         lines.append(f"# TradeGhost Candidate Cohort Report - {detail.cohort.name}")
         lines.append("")
-        lines.append(f"- report_mode: `{report_mode.value}`")
+        lines.append(f"- report_mode: `{mode_label}`")
         lines.append(f"- exported_at: `{exported_at.isoformat()}`")
         lines.append(f"- cohort_id: `{detail.cohort.id}`")
         lines.append(f"- cohort_name: `{detail.cohort.name}`")
+        lines.append(f"- selected_cohort_id_used: `{selected_cohort_id_used}`")
         lines.append(f"- latest_followup_date: `{latest_followup_date}`")
         lines.append(f"- candidate_count: `{len(detail.candidates)}`")
-        lines.append(f"- followup_snapshot_count: `{len(detail.snapshots)}`")
+        lines.append(f"- followup_snapshot_count: `{followup_snapshot_count}`")
         lines.append("")
         lines.append("## Initial Selection Snapshot")
         lines.append(f"- Cohort ID: `{detail.cohort.id}`")
@@ -2687,7 +2713,7 @@ class IntelligenceService:
                 lines.append(f"- Readiness Explanation: {row.selected_readiness_explanation or '-'}")
                 lines.append(f"- Main Opportunity Reason: {row.selected_main_opportunity_reason or '-'}")
                 lines.append(f"- Main Risk: {row.selected_main_risk_reason or '-'}")
-                lines.append(f"- What would confirm entry: {row.selected_confirm_entry_condition or '-'}")
+                lines.append(f"- Original selection-time confirm condition: {row.selected_confirm_entry_condition or '-'}")
                 lines.append(f"- What would invalidate candidate: {row.selected_invalidation_condition or '-'}")
                 lines.append(f"- Structure snapshot: `{json.dumps(row.selected_structure_snapshot, default=str)}`")
                 lines.append(f"- Risk flags: `{', '.join(row.selected_risk_flags) if row.selected_risk_flags else '-'}`")
@@ -2698,9 +2724,27 @@ class IntelligenceService:
             lines.append("- Not included in initial report mode.")
         else:
             lines.append("## Latest Follow-up State")
+            candidate_by_symbol = {cand.symbol: cand for cand in detail.candidates}
             if not detail.latest_states:
-                lines.append("- No follow-up snapshots yet.")
+                lines.append("- No follow-up snapshot exists yet.")
             for state in detail.latest_states:
+                selected = candidate_by_symbol.get(state.symbol)
+                selected_threshold = 65.0
+                if selected and isinstance(selected.selected_structure_snapshot, dict):
+                    raw_thr = selected.selected_structure_snapshot.get("trigger_threshold")
+                    if isinstance(raw_thr, (int, float)):
+                        selected_threshold = float(raw_thr)
+                trigger_confirmed = (
+                    str(state.current_trigger_state or "").lower() == "confirmed"
+                    and state.current_trigger_score is not None
+                    and float(state.current_trigger_score) >= selected_threshold
+                )
+                if trigger_confirmed and state.blocked_by and state.blocked_by != "none":
+                    current_confirm_text = f"Trigger is confirmed, but entry is blocked by {state.blocked_by}."
+                elif trigger_confirmed:
+                    current_confirm_text = "Entry trigger is confirmed."
+                else:
+                    current_confirm_text = "Need trigger confirmation."
                 lines.append(
                     f"- {state.symbol}: latest_date={state.latest_followup_date} "
                     f"return_since_selection={state.return_since_selection if state.return_since_selection is not None else 'pending'} "
@@ -2714,11 +2758,12 @@ class IntelligenceService:
                 if state.data_quality_flags:
                     lines.append(f"  - data_quality_flags={','.join(state.data_quality_flags)}")
                 lines.append(f"  - readiness={state.entry_readiness}; explanation={state.readiness_explanation}")
+                lines.append(f"  - current_confirm_entry_condition={current_confirm_text}")
         if report_mode == CohortReportMode.LIFECYCLE:
             lines.append("")
             lines.append("## Full Follow-up Timeline")
             if not detail.snapshots:
-                lines.append("- No follow-up snapshots yet.")
+                lines.append("- No follow-up snapshot exists yet.")
             for snap in detail.snapshots:
                 lines.append(
                     f"- {snap.snapshot_date} | {snap.symbol} | score={snap.current_score if snap.current_score is not None else '-'} "
@@ -2744,15 +2789,17 @@ class IntelligenceService:
             status="success",
             cohort_id=detail.cohort.id,
             cohort_name=detail.cohort.name,
-            message=f"action=export mode={report_mode.value} file={filename}",
+            message=f"action=export selected_cohort_id={selected_cohort_id_used} cohort_name={detail.cohort.name} report_mode={mode_label} file={filename}",
         )
         return IntelligenceRunReportExport(
             run_id=cohort_id,
             filename=filename,
-            report_mode=report_mode.value,
+            report_mode=mode_label,
             cohort_id=cohort_id,
+            selected_cohort_id_used=selected_cohort_id_used,
             exported_at=exported_at,
             latest_followup_date=latest_followup_date,
+            followup_snapshot_count=followup_snapshot_count,
             markdown=markdown,
         )
 

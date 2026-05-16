@@ -966,9 +966,16 @@ class ScannerEngine:
         started = time.monotonic()
         news_available, news_text = self._recent_news_summary(row.symbol)
         sector_macro = self._fallback_sector_macro(row.sector)
+        raw_market = getattr(row, "market", None)
+        if raw_market is None:
+            inferred_exchange = (row.exchange or "").upper()
+            inferred_symbol = (row.symbol or "").upper()
+            market_value = "bist" if inferred_exchange == "BIST" or inferred_symbol.endswith(".IS") else "us"
+        else:
+            market_value = getattr(raw_market, "value", raw_market)
         snapshot = (
             f"symbol={row.symbol}\ncompany_name={row.company_name or 'unknown'}\nsector={row.sector or 'unknown'}\nindustry={row.industry or 'unknown'}\n"
-            f"market={getattr(row.market, 'value', row.market)}\ncategory={row.category_tag}\nscore={row.scanner_score:.2f}\npriority={row.priority}\n"
+            f"market={market_value}\ncategory={row.category_tag}\nscore={row.scanner_score:.2f}\npriority={row.priority}\n"
             f"current_price={row.current_score:.2f}\nd5={row.score_delta_short:.2f}\nd20={row.score_delta_medium:.2f}\n"
             f"price_vs_ema200={row.price_vs_ema200_pct:.2f}\nsupport_distance={row.support_distance_pct:.2f}\nresistance_room={row.resistance_room_pct:.2f}\n"
             f"volume_ratio_20={row.volume_ratio_20:.2f}\nresistance_tests={row.resistance_test_count}\nema200_tests={row.ema200_test_count}\n"

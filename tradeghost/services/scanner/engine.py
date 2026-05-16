@@ -828,6 +828,82 @@ class ScannerEngine:
             raw = raw.split(".")[-1]
         return raw.replace("_", " ").strip().lower()
 
+    @staticmethod
+    def _format_optional_number(value: float | None, digits: int = 1) -> str:
+        if value is None:
+            return "n/a"
+        return f"{value:.{digits}f}"
+
+    @staticmethod
+    def _latest_user_question(messages: list) -> str:
+        for msg in reversed(messages):
+            role = str(getattr(msg, "role", "")).lower()
+            if role == "user":
+                content = str(getattr(msg, "content", "")).strip()
+                if content:
+                    return content
+        return "Give me a context-only explanation of why this symbol appeared in the scanner and what matters next."
+
+    def _question_aware_fallback(self, *, row: ScannerResult, latest_question: str, sector_macro: str, news_available: bool) -> str:
+        q = latest_question.lower()
+        priority_label = self._humanize_value(row.priority)
+        category_label = self._humanize_value(row.category_tag).replace("build up", "build-up")
+        trend_label = self._humanize_value(row.trend_state)
+        ema_slope_label = self._humanize_value(row.ema200_slope_state)
+        dynamics_label = self._humanize_value(row.score_dynamics_state)
+        sector = row.sector or "unknown sector"
+        is_banking = "financial" in sector.lower() or "bank" in (row.industry or "").lower()
+        macro_terms = ["macro", "conditions", "sector", "rates", "economy", "backdrop", "environment", "yield curve", "credit"]
+        invalidation_terms = ["invalidate", "invalidation", "fail", "breakdown", "risk", "what could go wrong"]
+        confirm_terms = ["confirm", "improve", "better", "strengthen", "repair"]
+        valuation_terms = ["valuation", "p/e", "pe", "p/b", "pb", "expensive", "cheap", "multiple"]
+        news_terms = ["news", "catalyst", "headline", "earnings", "event"]
+
+        if any(t in q for t in macro_terms):
+            macro_detail = (
+                "For a bank like this, the most relevant macro conditions are interest-rate expectations, yield curve shape, net interest income, credit quality, loan growth, deposit costs, credit spreads, and the investment-banking/trading cycle."
+                if is_banking
+                else f"The most relevant macro conditions here are: {sector_macro}"
+            )
+            return (
+                f"For {row.symbol}, macro conditions matter a lot because this is still a {priority_label} {category_label} setup near a potential repair zone around EMA200.\n\n"
+                f"{macro_detail}\n\n"
+                f"Technically, trend quality is still {trend_label} with {dynamics_label} dynamics, so macro support would need to align with improving structure before the setup quality improves."
+            )
+
+        if any(t in q for t in invalidation_terms):
+            return (
+                f"The clearest invalidation path is failed repair: if price loses nearby support ({row.support_distance_pct:.2f}% away), cannot hold EMA200, and dynamics stay {dynamics_label}, the setup weakens further.\n\n"
+                f"Additional warning signs would be weak participation (volume ratio not improving), shrinking room before resistance (currently {row.resistance_room_pct:.2f}%), and sector-level headwinds."
+            )
+
+        if any(t in q for t in confirm_terms):
+            return (
+                f"What would improve this setup is a cleaner repair sequence: reclaim and hold around EMA200, dynamics shifting from {dynamics_label} toward stable/improving, and stronger participation.\n\n"
+                f"A higher scanner score, better trend state than {trend_label}, and enough resistance room ({row.resistance_room_pct:.2f}% now) would make this less of an early radar case."
+            )
+
+        if any(t in q for t in valuation_terms):
+            pe = self._format_optional_number(row.price_to_earnings, 1)
+            pb = self._format_optional_number(row.price_to_book, 1)
+            return (
+                f"Valuation context right now is P/E around {pe} and P/B around {pb}. That helps frame expectations, but valuation alone does not confirm a technical repair.\n\n"
+                f"For this {category_label} setup, valuation is most useful when read together with trend quality ({trend_label}), EMA200 behavior, and participation."
+            )
+
+        if any(t in q for t in news_terms):
+            missing = "Live news provider is not connected yet, so I cannot verify recent catalysts."
+            catalysts = "The most relevant catalysts would typically include earnings quality, guidance revisions, credit updates, and macro-sensitive headlines."
+            if not is_banking:
+                catalysts = "The most relevant catalysts would typically include earnings/guidance, sector-specific policy or demand signals, and company-specific execution updates."
+            return f"{missing if not news_available else 'Recent headlines can materially shift setup quality.'}\n\n{catalysts}"
+
+        return (
+            f"{row.symbol} is showing up as a {priority_label} {category_label} candidate, which means early radar more than confirmation.\n\n"
+            f"The interesting part is proximity to EMA200 ({row.price_vs_ema200_pct:.2f}% vs EMA200), but the weak side is trend quality: {trend_label}, {ema_slope_label} EMA200 slope, and {dynamics_label} dynamics.\n\n"
+            f"This is not a buy/sell call; it is a context read."
+        )
+
     def _recent_news_summary(self, symbol: str) -> tuple[bool, str]:
         try:
             rows: list[dict[str, Any]] = list(yf.Ticker(symbol).news or [])
@@ -971,8 +1047,23 @@ class ScannerEngine:
     def chat_llmq(self, req: ScannerLLMQChatRequest) -> ScannerLLMQChatResponse:
         row = req.scanner_snapshot
         started = time.monotonic()
+        provider_config_loaded = bool(self.settings.openai_model and self.settings.llm_provider)
+        self._logger.info(
+            "[LLMQ] provider_config_loaded=%s openai_api_key_present=%s",
+            str(provider_config_loaded).lower(),
+            str(bool(self.settings.openai_api_key)).lower(),
+        )
+        self._logger.info(
+            "[LLMQ] received_snapshot symbol=%s trend_state=%s price_vs_ema200=%.2f category=%s score=%.2f",
+            row.symbol,
+            row.trend_state,
+            row.price_vs_ema200_pct,
+            row.category_tag,
+            row.scanner_score,
+        )
         news_available, news_text = self._recent_news_summary(row.symbol)
         sector_macro = self._fallback_sector_macro(row.sector)
+        latest_question = self._latest_user_question(req.messages)
         raw_market = getattr(row, "market", None)
         if raw_market is None:
             inferred_exchange = (row.exchange or "").upper()
@@ -1015,6 +1106,8 @@ class ScannerEngine:
             "For Healthcare/Drug Manufacturers mention pipeline risk, regulatory approvals, reimbursement pressure, patent cliffs, and earnings guidance sensitivity.\n"
             "Respond in seven concise sections:\n"
             "1. Scanner Snapshot\n2. Company / Sector\n3. Recent News Context\n4. Sector / Macro Context\n5. Technical + Context Interpretation\n6. What to Watch Next\n7. Risks / Missing Data\n\n"
+            f"latest_user_question:\n{latest_question}\n\n"
+            "Instruction: Answer the latest user question directly. Do not repeat the initial scanner summary unless needed for context.\n\n"
             f"scanner_snapshot:\n{snapshot}\n"
             f"news_context:\n{news_text}\n"
             f"sector_macro_context:\n{sector_macro}\n\n"
@@ -1028,6 +1121,7 @@ class ScannerEngine:
             model = self.settings.openai_model if provider_name == "openai" else self.settings.ollama_model
             timeout_seconds = 70.0 if provider_name == "openai" else 45.0
             try:
+                self._logger.info("[LLMQ] selected_provider=%s selected_model=%s request_started", provider_name.upper(), model)
                 self._logger.info(
                     "[LLMQ] symbol=%s provider selected=%s model=%s timeout=%s openai_key_present=%s fallback_used=%s",
                     row.symbol,
@@ -1052,8 +1146,9 @@ class ScannerEngine:
                     str(fallback_used).lower(),
                     duration_ms,
                 )
+                self._logger.info("[LLMQ] request_success fallback_used=%s duration_ms=%s", str(fallback_used).lower(), duration_ms)
                 return ScannerLLMQChatResponse(
-                    provider=provider_name,
+                    provider=provider_name.upper(),
                     model=model,
                     status="success",
                     fallback_used=fallback_used,
@@ -1063,6 +1158,7 @@ class ScannerEngine:
                 )
             except Exception as exc:  # pragma: no cover
                 last_err = exc
+                self._logger.warning("[LLMQ] request_failed error=%s", str(exc))
                 self._logger.warning(
                     "[LLMQ] symbol=%s provider=%s model=%s success=false fallback_used=%s error=%s",
                     row.symbol,
@@ -1074,28 +1170,12 @@ class ScannerEngine:
                 fallback_used = True
                 continue
         duration_ms = int((time.monotonic() - started) * 1000)
-        deterministic_parts = [
-            (
-                f"{row.symbol} is showing up as a {priority_label} {category_label} candidate, more like early radar than confirmation. "
-                f"The interesting piece is price sitting around EMA200 ({row.price_vs_ema200_pct:.2f}% vs EMA200), which can matter if trend repair starts."
-            ),
-            (
-                f"The weak side is trend quality: the trend is {trend_label}, EMA200 slope is {ema_slope_label}, and dynamics are {dynamics_label}. "
-                f"Support is about {row.support_distance_pct:.2f}% away and resistance room is around {row.resistance_room_pct:.2f}%, "
-                "so structure can improve, but participation and trend repair still need to confirm."
-            ),
-        ]
-        if row.sector:
-            deterministic_parts.append(f"For {row.sector}, macro backdrop matters: {sector_macro}")
-        if row.price_to_earnings is not None or row.price_to_book is not None:
-            deterministic_parts.append(
-                f"Valuation context: P/E {row.price_to_earnings if row.price_to_earnings is not None else 'n/a'}, "
-                f"P/B {row.price_to_book if row.price_to_book is not None else 'n/a'}."
-            )
-        if not news_available:
-            deterministic_parts.append("Live news provider is not connected yet, so recent catalyst checks are limited.")
-        deterministic_parts.append("This is not a buy/sell call; it is a context read.")
-        deterministic = "\n\n".join(deterministic_parts)
+        deterministic = self._question_aware_fallback(
+            row=row,
+            latest_question=latest_question,
+            sector_macro=sector_macro,
+            news_available=news_available,
+        )
         self._logger.warning(
             "[LLMQ] symbol=%s provider=none success=false fallback_used=true duration_ms=%s error=%s",
             row.symbol,
@@ -1103,11 +1183,11 @@ class ScannerEngine:
             str(last_err) if last_err else "none",
         )
         return ScannerLLMQChatResponse(
-            provider="none",
-            model="none",
-            status="fallback_only",
+            provider="fallback",
+            model="deterministic",
+            status="fallback",
             fallback_used=True,
             answer=deterministic,
-            error_message=(str(last_err) if last_err else None),
+            error_message=(f"OpenAI failed: {str(last_err)}" if last_err else "OpenAI failed"),
             warning_message="LLM provider unavailable, showing deterministic fallback only.",
         )

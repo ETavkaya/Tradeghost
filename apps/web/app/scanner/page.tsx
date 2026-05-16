@@ -507,6 +507,7 @@ export default function ScannerPage() {
         scanner_snapshot: row as unknown as Record<string, unknown>,
         messages: backendMessages,
       };
+      console.log("[LLMQ] scanner_snapshot sent", payload.scanner_snapshot);
       console.log("[LLMQ] payload", payload);
       const response = (await api.llmqChat(payload)) as ScannerLLMQChatResponse & Record<string, unknown>;
       const responseMap = response as Record<string, unknown>;
@@ -530,7 +531,7 @@ export default function ScannerPage() {
       const withAssistant = [...nextVisible, { role: "assistant", content: answer } as LLMQChatMessage];
       setLlmqMessages(withAssistant);
       setLlmqBySymbol((prev) => ({ ...prev, [row.symbol]: withAssistant }));
-      setLlmqStatus(normalized.fallback_used || normalized.status === "fallback_only" ? "fallback" : "success");
+      setLlmqStatus(normalized.fallback_used || normalized.status === "fallback" || normalized.status === "fallback_only" ? "fallback" : "success");
     } catch (error) {
       console.error("[LLMQ] error", error);
       const detail = error instanceof Error ? error.message : "Failed to load LLMQ context.";

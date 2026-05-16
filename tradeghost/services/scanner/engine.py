@@ -821,6 +821,13 @@ class ScannerEngine:
             return "Regulatory updates, reimbursement trends, and product pipeline outcomes matter."
         return "Cross-asset risk sentiment, rates, and earnings revisions are key macro variables."
 
+    @staticmethod
+    def _humanize_value(value: Any) -> str:
+        raw = str(value)
+        if "." in raw:
+            raw = raw.split(".")[-1]
+        return raw.replace("_", " ").strip().lower()
+
     def _recent_news_summary(self, symbol: str) -> tuple[bool, str]:
         try:
             rows: list[dict[str, Any]] = list(yf.Ticker(symbol).news or [])
@@ -973,16 +980,23 @@ class ScannerEngine:
             market_value = "bist" if inferred_exchange == "BIST" or inferred_symbol.endswith(".IS") else "us"
         else:
             market_value = getattr(raw_market, "value", raw_market)
+        priority_label = self._humanize_value(row.priority)
+        category_label = self._humanize_value(row.category_tag)
+        trend_label = self._humanize_value(row.trend_state)
+        ema_slope_label = self._humanize_value(row.ema200_slope_state)
+        dynamics_label = self._humanize_value(row.score_dynamics_state)
+        extension_label = self._humanize_value(row.extension_state)
+        opportunity_label = self._humanize_value(row.opportunity_type)
         snapshot = (
             f"symbol={row.symbol}\ncompany_name={row.company_name or 'unknown'}\nsector={row.sector or 'unknown'}\nindustry={row.industry or 'unknown'}\n"
-            f"market={market_value}\ncategory={row.category_tag}\nscore={row.scanner_score:.2f}\npriority={row.priority}\n"
+            f"market={market_value}\ncategory={category_label}\nscore={row.scanner_score:.2f}\npriority={priority_label}\n"
             f"current_price={row.current_score:.2f}\nd5={row.score_delta_short:.2f}\nd20={row.score_delta_medium:.2f}\n"
             f"price_vs_ema200={row.price_vs_ema200_pct:.2f}\nsupport_distance={row.support_distance_pct:.2f}\nresistance_room={row.resistance_room_pct:.2f}\n"
             f"volume_ratio_20={row.volume_ratio_20:.2f}\nresistance_tests={row.resistance_test_count}\nema200_tests={row.ema200_test_count}\n"
-            f"dynamics={row.score_dynamics_state}\nmomentum_fit={row.momentum_fit_score:.2f}\next_state={row.extension_state}\nopportunity={row.opportunity_type}\n"
+            f"dynamics={dynamics_label}\nmomentum_fit={row.momentum_fit_score:.2f}\next_state={extension_label}\nopportunity={opportunity_label}\n"
             f"fib_confluence={row.fib_ema_confluence_score if row.fib_ema_confluence_score is not None else 'n/a'}\nfib_room={row.fib_target_room_pct if row.fib_target_room_pct is not None else 'n/a'}\n"
             f"p_b={row.price_to_book if row.price_to_book is not None else 'n/a'}\np_e={row.price_to_earnings if row.price_to_earnings is not None else 'n/a'}\n"
-            f"trend_state={row.trend_state}\nema200_slope={row.ema200_slope_state}\nrep_tests={row.repeated_test_count}\nreason={row.short_reason}\n"
+            f"trend_state={trend_label}\nema200_slope={ema_slope_label}\nrep_tests={row.repeated_test_count}\nreason={row.short_reason}\n"
         )
         history = "\n".join([f"{m.role}: {m.content}" for m in req.messages[-12:]])
         prompt = (
@@ -991,6 +1005,8 @@ class ScannerEngine:
             "No buy/sell/hold recommendations. No trade advice.\n"
             "Do not change score/category/priority/alerts. Scanner snapshot is ground truth.\n"
             "Interpret values; avoid raw repetition and avoid generic indicator tutorials.\n"
+            "Never expose raw enum/code values such as ScannerPriority.LOW or snake_case tags; rewrite them in plain English.\n"
+            "Write 2-4 short paragraphs in a conversational style instead of one dry field-dump.\n"
             "Explain contradiction/confirmation across score, trend_state, ema200_slope, price_vs_ema200, support_distance, resistance_room, volume_ratio_20, dynamics, p_e, and p_b.\n"
             "For build_up cases near EMA200, frame this as early radar unless trend quality confirms.\n"
             "Focus on what makes this interesting, what weakens it, what confirms improvement, sector/macro context, valuation context, institutional perspective, and what to watch next.\n"
@@ -1058,12 +1074,28 @@ class ScannerEngine:
                 fallback_used = True
                 continue
         duration_ms = int((time.monotonic() - started) * 1000)
-        deterministic = (
-            f"{row.symbol} appears as {row.priority} priority {row.category_tag.replace('_', ' ')} because scanner structure is notable but not fully confirmed. "
-            f"Trend state is {row.trend_state}, EMA200 slope is {row.ema200_slope_state}, dynamics are {row.score_dynamics_state}, and price vs EMA200 is {row.price_vs_ema200_pct:.2f}%. "
-            f"Support distance is {row.support_distance_pct:.2f}% while resistance room is {row.resistance_room_pct:.2f}%, so confirmation quality depends on trend repair plus participation. "
-            "This is context-only and not a trading signal."
-        )
+        deterministic_parts = [
+            (
+                f"{row.symbol} is showing up as a {priority_label} {category_label} candidate, more like early radar than confirmation. "
+                f"The interesting piece is price sitting around EMA200 ({row.price_vs_ema200_pct:.2f}% vs EMA200), which can matter if trend repair starts."
+            ),
+            (
+                f"The weak side is trend quality: the trend is {trend_label}, EMA200 slope is {ema_slope_label}, and dynamics are {dynamics_label}. "
+                f"Support is about {row.support_distance_pct:.2f}% away and resistance room is around {row.resistance_room_pct:.2f}%, "
+                "so structure can improve, but participation and trend repair still need to confirm."
+            ),
+        ]
+        if row.sector:
+            deterministic_parts.append(f"For {row.sector}, macro backdrop matters: {sector_macro}")
+        if row.price_to_earnings is not None or row.price_to_book is not None:
+            deterministic_parts.append(
+                f"Valuation context: P/E {row.price_to_earnings if row.price_to_earnings is not None else 'n/a'}, "
+                f"P/B {row.price_to_book if row.price_to_book is not None else 'n/a'}."
+            )
+        if not news_available:
+            deterministic_parts.append("Live news provider is not connected yet, so recent catalyst checks are limited.")
+        deterministic_parts.append("This is not a buy/sell call; it is a context read.")
+        deterministic = "\n\n".join(deterministic_parts)
         self._logger.warning(
             "[LLMQ] symbol=%s provider=none success=false fallback_used=true duration_ms=%s error=%s",
             row.symbol,

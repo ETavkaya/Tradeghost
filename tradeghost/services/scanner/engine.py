@@ -983,10 +983,15 @@ class ScannerEngine:
             "You explain deterministic scanner outputs but never override them.\n"
             "No buy/sell/hold recommendations. No trade advice.\n"
             "Do not change score/category/priority/alerts. Scanner snapshot is ground truth.\n"
-            "Interpret values; avoid raw repetition.\n"
-            "Focus on what makes this interesting, what weakens it, what confirms improvement, sector/macro context, and what to watch next.\n"
+            "Interpret values; avoid raw repetition and avoid generic indicator tutorials.\n"
+            "Explain contradiction/confirmation across score, trend_state, ema200_slope, price_vs_ema200, support_distance, resistance_room, volume_ratio_20, dynamics, p_e, and p_b.\n"
+            "For build_up cases near EMA200, frame this as early radar unless trend quality confirms.\n"
+            "Focus on what makes this interesting, what weakens it, what confirms improvement, sector/macro context, valuation context, institutional perspective, and what to watch next.\n"
             "If live news provider is unavailable, say exactly: Live news provider is not connected yet.\n"
-            "For Financial Services/Banks mention rate expectations, yield curve, net interest income, credit quality, and earnings/trading sensitivity.\n\n"
+            "For Financial Services/Banks mention rate expectations, yield curve, net interest income, credit quality, and earnings/trading sensitivity.\n"
+            "For Healthcare/Drug Manufacturers mention pipeline risk, regulatory approvals, reimbursement pressure, patent cliffs, and earnings guidance sensitivity.\n"
+            "Respond in seven concise sections:\n"
+            "1. Scanner Snapshot\n2. Company / Sector\n3. Recent News Context\n4. Sector / Macro Context\n5. Technical + Context Interpretation\n6. What to Watch Next\n7. Risks / Missing Data\n\n"
             f"scanner_snapshot:\n{snapshot}\n"
             f"news_context:\n{news_text}\n"
             f"sector_macro_context:\n{sector_macro}\n\n"
@@ -1044,9 +1049,9 @@ class ScannerEngine:
                 continue
         duration_ms = int((time.monotonic() - started) * 1000)
         deterministic = (
-            f"{row.symbol} appears as {row.priority} priority {row.category_tag.replace('_', ' ')}. "
-            f"Trend state is {row.trend_state}, EMA200 slope is {row.ema200_slope_state}, and dynamics are {row.score_dynamics_state}. "
-            f"Price vs EMA200 is {row.price_vs_ema200_pct:.2f}% with support distance {row.support_distance_pct:.2f}% and resistance room {row.resistance_room_pct:.2f}%. "
+            f"{row.symbol} appears as {row.priority} priority {row.category_tag.replace('_', ' ')} because scanner structure is notable but not fully confirmed. "
+            f"Trend state is {row.trend_state}, EMA200 slope is {row.ema200_slope_state}, dynamics are {row.score_dynamics_state}, and price vs EMA200 is {row.price_vs_ema200_pct:.2f}%. "
+            f"Support distance is {row.support_distance_pct:.2f}% while resistance room is {row.resistance_room_pct:.2f}%, so confirmation quality depends on trend repair plus participation. "
             "This is context-only and not a trading signal."
         )
         self._logger.warning(

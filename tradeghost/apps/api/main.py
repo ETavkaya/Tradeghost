@@ -314,8 +314,10 @@ def scanner_llmq(payload: ScannerLLMQRequest) -> ScannerLLMQResponse:
 @app.post("/intelligence/llmq/chat", response_model=ScannerLLMQChatResponse)
 def intelligence_llmq_chat(payload: ScannerLLMQChatRequest) -> ScannerLLMQChatResponse:
     try:
+        logger.info("[LLMQ] /chat called symbol=%s messages=%s", payload.symbol, len(payload.messages))
         return scanner_engine.chat_llmq(payload)
     except Exception as exc:  # pragma: no cover
+        logger.exception("[LLMQ] /chat failed symbol=%s error=%s", payload.symbol, str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

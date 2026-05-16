@@ -176,6 +176,7 @@ export default function ScannerPage() {
   const [llmqRow, setLlmqRow] = useState<ScannerResult | null>(null);
   const [llmqLoading, setLlmqLoading] = useState(false);
   const [llmqResult, setLlmqResult] = useState<ScannerLLMQChatResponse | null>(null);
+  const [llmqStatus, setLlmqStatus] = useState<"idle" | "loading" | "success" | "fallback" | "error">("idle");
   const [llmqCopied, setLlmqCopied] = useState(false);
   const [llmqMessages, setLlmqMessages] = useState<LLMQChatMessage[]>([]);
   const [llmqBySymbol, setLlmqBySymbol] = useState<Record<string, LLMQChatMessage[]>>({});
@@ -480,28 +481,84 @@ export default function ScannerPage() {
     }
   };
 
-  const requestLLMQ = async (row: ScannerResult, messages: LLMQChatMessage[]) => {
+  const sendMessage = async (
+    row: ScannerResult,
+    messageText: string,
+    options?: { hiddenUserPrompt?: boolean; clearConversation?: boolean }
+  ) => {
+    const text = messageText.trim();
+    if (!text) return;
+    const hiddenUserPrompt = options?.hiddenUserPrompt ?? false;
+    const clearConversation = options?.clearConversation ?? false;
+    const baseVisible = clearConversation ? [] : llmqMessages;
+    const userMessage = { role: "user", content: text } as LLMQChatMessage;
+    const nextVisible = hiddenUserPrompt ? baseVisible : [...baseVisible, userMessage];
+    const backendMessages = [...nextVisible, userMessage];
+    console.log("[LLMQ] sendMessage called", { symbol: row.symbol, message: text, hiddenUserPrompt, clearConversation });
     setLlmqLoading(true);
+    setLlmqStatus("loading");
+    setLlmqAutoQueryLabel(hiddenUserPrompt ? "Auto context query" : null);
+    setLlmqMessages(nextVisible);
+    setLlmqBySymbol((prev) => ({ ...prev, [row.symbol]: nextVisible }));
+    if (!hiddenUserPrompt) setLlmqInput("");
     try {
-      const response = await api.llmqChat({
+      const payload = {
         symbol: row.symbol,
         scanner_snapshot: row as unknown as Record<string, unknown>,
-        messages,
-      });
-      setLlmqResult(response);
-      const withAssistant = [...messages, { role: "assistant", content: response.answer } as LLMQChatMessage];
+        messages: backendMessages,
+      };
+      console.log("[LLMQ] payload", payload);
+      const response = (await api.llmqChat(payload)) as ScannerLLMQChatResponse & Record<string, unknown>;
+      const responseMap = response as Record<string, unknown>;
+      console.log("[LLMQ] response", response);
+      const answer =
+        (typeof response.answer === "string" && response.answer.trim()) ||
+        (typeof responseMap["content"] === "string" && (responseMap["content"] as string).trim()) ||
+        (typeof responseMap["text"] === "string" && (responseMap["text"] as string).trim()) ||
+        (typeof responseMap["message"] === "string" && (responseMap["message"] as string).trim()) ||
+        "LLMQ returned empty content. Showing deterministic fallback summary is recommended.";
+      const normalized: ScannerLLMQChatResponse = {
+        provider: String(response.provider ?? "unknown"),
+        model: String(response.model ?? "unknown"),
+        status: String(response.status ?? "success"),
+        fallback_used: Boolean(response.fallback_used),
+        answer,
+        error_message: (response.error_message as string | null) ?? null,
+        warning_message: (response.warning_message as string | null) ?? null,
+      };
+      setLlmqResult(normalized);
+      const withAssistant = [...nextVisible, { role: "assistant", content: answer } as LLMQChatMessage];
       setLlmqMessages(withAssistant);
       setLlmqBySymbol((prev) => ({ ...prev, [row.symbol]: withAssistant }));
-    } catch (err) {
-      setNotice(err instanceof Error ? err.message : "Failed to load LLMQ context.");
+      setLlmqStatus(normalized.fallback_used || normalized.status === "fallback_only" ? "fallback" : "success");
+    } catch (error) {
+      console.error("[LLMQ] error", error);
+      const detail = error instanceof Error ? error.message : "Failed to load LLMQ context.";
+      const errorReply = `LLMQ request failed. ${detail}`;
+      const withError = [...nextVisible, { role: "assistant", content: errorReply } as LLMQChatMessage];
+      setLlmqMessages(withError);
+      setLlmqBySymbol((prev) => ({ ...prev, [row.symbol]: withError }));
+      setLlmqStatus("error");
+      setLlmqResult({
+        provider: "none",
+        model: "none",
+        status: "error",
+        fallback_used: false,
+        answer: errorReply,
+        error_message: detail,
+        warning_message: "LLMQ request failed. Showing error response in chat.",
+      });
+      setNotice(detail);
     } finally {
       setLlmqLoading(false);
+      setLlmqAutoQueryLabel(null);
     }
   };
 
   const openLLMQ = async (row: ScannerResult) => {
     setLlmqRow(row);
     setLlmqResult(null);
+    setLlmqStatus("idle");
     setLlmqCopied(false);
     setLlmqCollapsed(false);
     const existing = llmqBySymbol[row.symbol];
@@ -510,22 +567,17 @@ export default function ScannerPage() {
       setLlmqAutoQueryLabel(null);
       return;
     }
-    const initial: LLMQChatMessage = { role: "user", content: LLMQ_INITIAL_QUERY };
     setLlmqMessages([]);
-    setLlmqAutoQueryLabel("Auto context query");
-    await requestLLMQ(row, [initial]);
-    setLlmqAutoQueryLabel(null);
+    await sendMessage(row, LLMQ_INITIAL_QUERY, { hiddenUserPrompt: true, clearConversation: true });
   };
 
   const regenerateLLMQ = async () => {
     if (!llmqRow) return;
-    const initial: LLMQChatMessage = { role: "user", content: LLMQ_INITIAL_QUERY };
     setLlmqMessages([]);
     setLlmqBySymbol((prev) => ({ ...prev, [llmqRow.symbol]: [] }));
-    setLlmqAutoQueryLabel("Auto context query");
     setLlmqResult(null);
-    await requestLLMQ(llmqRow, [initial]);
-    setLlmqAutoQueryLabel(null);
+    setLlmqStatus("idle");
+    await sendMessage(llmqRow, LLMQ_INITIAL_QUERY, { hiddenUserPrompt: true, clearConversation: true });
   };
 
   const copyLLMQ = async () => {
@@ -560,21 +612,11 @@ export default function ScannerPage() {
     if (!llmqRow) return;
     const text = llmqInput.trim();
     if (!text) return;
-    const next = [...llmqMessages, { role: "user", content: text } as LLMQChatMessage];
-    setLlmqMessages(next);
-    setLlmqBySymbol((prev) => ({ ...prev, [llmqRow.symbol]: next }));
-    setLlmqInput("");
-    setLlmqAutoQueryLabel(null);
-    await requestLLMQ(llmqRow, next);
+    await sendMessage(llmqRow, text);
   };
   const sendChipLLMQ = async (chipText: string) => {
     if (!llmqRow || llmqLoading) return;
-    const next = [...llmqMessages, { role: "user", content: chipText } as LLMQChatMessage];
-    setLlmqMessages(next);
-    setLlmqBySymbol((prev) => ({ ...prev, [llmqRow.symbol]: next }));
-    setLlmqInput("");
-    setLlmqAutoQueryLabel(null);
-    await requestLLMQ(llmqRow, next);
+    await sendMessage(llmqRow, chipText);
   };
 
   const ruleMeaning = (rule: ScannerCustomRule): string => {
@@ -1068,20 +1110,22 @@ export default function ScannerPage() {
                     {llmqRow ? `${llmqRow.company_name ?? llmqRow.symbol} · ${llmqRow.sector ?? "unknown"} · ${llmqRow.category_tag.replaceAll("_", " ")} · Score ${llmqRow.scanner_score.toFixed(1)}` : "Click LLMQ on any row for contextual interpretation."}
                   </p>
                   <p className="text-xs text-slate-400">
-                    {llmqLoading
+                    {llmqStatus === "loading"
                       ? "Provider status: loading..."
-                      : llmqResult?.fallback_used
-                        ? "Provider status: fallback only"
-                        : llmqResult
-                          ? `Provider status: ${llmqResult.provider.toUpperCase()} success`
-                          : "Provider status: idle"}
+                      : llmqStatus === "fallback"
+                        ? "Provider status: fallback"
+                        : llmqStatus === "error"
+                          ? "Provider status: error"
+                          : llmqStatus === "success" && llmqResult
+                            ? `Provider: ${llmqResult.provider.toUpperCase()} / ${llmqResult.model}`
+                            : "Provider status: idle"}
                   </p>
                 </div>
                 <div className="flex gap-2">
                   <button type="button" onClick={copyLLMQ} disabled={llmqMessages.length === 0} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan disabled:opacity-60">{llmqCopied ? "Copied" : "Copy Conversation"}</button>
                   <button type="button" onClick={regenerateLLMQ} disabled={llmqLoading || !llmqRow} className="rounded border border-stroke px-2 py-1 text-xs hover:text-cyan disabled:opacity-60">Regenerate</button>
                   <button type="button" onClick={() => setLlmqCollapsed((v) => !v)} className="rounded border border-stroke px-2 py-1 text-xs">{llmqCollapsed ? "Restore" : "Collapse"}</button>
-                  <button type="button" onClick={() => { setLlmqCollapsed(true); setLlmqCopied(false); setLlmqInput(""); setLlmqAutoQueryLabel(null); }} className="rounded border border-stroke px-2 py-1 text-xs">Close</button>
+                  <button type="button" onClick={() => { setLlmqCollapsed(true); setLlmqCopied(false); setLlmqInput(""); setLlmqAutoQueryLabel(null); setLlmqStatus("idle"); }} className="rounded border border-stroke px-2 py-1 text-xs">Close</button>
                 </div>
               </div>
               <div className="h-[calc(100vh-64px)] overflow-auto p-4">
@@ -1111,7 +1155,18 @@ export default function ScannerPage() {
                 ) : null}
                 <div className="sticky bottom-0 mt-2 border-t border-stroke bg-panel pt-2">
                   <div className="flex gap-2">
-                    <textarea value={llmqInput} onChange={(e) => setLlmqInput(e.target.value)} placeholder="Ask a follow-up question..." className="h-16 flex-1 rounded border border-stroke bg-bg p-2 text-xs text-slate-200" />
+                    <textarea
+                      value={llmqInput}
+                      onChange={(e) => setLlmqInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          void sendLLMQ();
+                        }
+                      }}
+                      placeholder="Ask a follow-up question..."
+                      className="h-16 flex-1 rounded border border-stroke bg-bg p-2 text-xs text-slate-200"
+                    />
                     <button type="button" onClick={sendLLMQ} disabled={llmqLoading || !llmqInput.trim() || !llmqRow} className="h-16 rounded border border-stroke px-3 text-xs hover:text-cyan disabled:opacity-60">Send</button>
                   </div>
                 </div>

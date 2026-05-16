@@ -1006,7 +1006,8 @@ class ScannerEngine:
             timeout_seconds = 70.0 if provider_name == "openai" else 45.0
             try:
                 self._logger.info(
-                    "action=llmq_chat provider=%s model=%s timeout=%s openai_key_present=%s fallback_used=%s",
+                    "[LLMQ] symbol=%s provider selected=%s model=%s timeout=%s openai_key_present=%s fallback_used=%s",
+                    row.symbol,
                     provider_name,
                     model,
                     timeout_seconds,
@@ -1021,11 +1022,12 @@ class ScannerEngine:
                 )
                 duration_ms = int((time.monotonic() - started) * 1000)
                 self._logger.info(
-                    "action=llmq_chat provider=%s model=%s status=success duration_ms=%s fallback_used=%s",
+                    "[LLMQ] symbol=%s provider=%s model=%s success=true fallback_used=%s duration_ms=%s",
+                    row.symbol,
                     provider_name,
                     model,
-                    duration_ms,
                     str(fallback_used).lower(),
+                    duration_ms,
                 )
                 return ScannerLLMQChatResponse(
                     provider=provider_name,
@@ -1039,11 +1041,12 @@ class ScannerEngine:
             except Exception as exc:  # pragma: no cover
                 last_err = exc
                 self._logger.warning(
-                    "action=llmq_chat provider=%s model=%s status=failed error=%s fallback_used=%s",
+                    "[LLMQ] symbol=%s provider=%s model=%s success=false fallback_used=%s error=%s",
+                    row.symbol,
                     provider_name,
                     model,
-                    str(exc),
                     str(fallback_used).lower(),
+                    str(exc),
                 )
                 fallback_used = True
                 continue
@@ -1055,7 +1058,8 @@ class ScannerEngine:
             "This is context-only and not a trading signal."
         )
         self._logger.warning(
-            "action=llmq_chat provider=none status=fallback duration_ms=%s fallback_used=true error=%s",
+            "[LLMQ] symbol=%s provider=none success=false fallback_used=true duration_ms=%s error=%s",
+            row.symbol,
             duration_ms,
             str(last_err) if last_err else "none",
         )

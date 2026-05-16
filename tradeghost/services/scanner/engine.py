@@ -1054,12 +1054,22 @@ class ScannerEngine:
             str(bool(self.settings.openai_api_key)).lower(),
         )
         self._logger.info(
+            "[LLMQ] provider config source=settings env_file=.env selected_llm_provider=%s fallback_provider=%s",
+            self.settings.llm_provider,
+            self.settings.llm_fallback_provider,
+        )
+        self._logger.info(
             "[LLMQ] received_snapshot symbol=%s trend_state=%s price_vs_ema200=%.2f category=%s score=%.2f",
             row.symbol,
             row.trend_state,
             row.price_vs_ema200_pct,
             row.category_tag,
             row.scanner_score,
+        )
+        self._logger.info(
+            "[LLMQ] received_snapshot ema200_slope=%s dynamics=%s",
+            row.ema200_slope_state,
+            row.score_dynamics_state,
         )
         news_available, news_text = self._recent_news_summary(row.symbol)
         sector_macro = self._fallback_sector_macro(row.sector)
@@ -1122,6 +1132,9 @@ class ScannerEngine:
             timeout_seconds = 70.0 if provider_name == "openai" else 45.0
             try:
                 self._logger.info("[LLMQ] selected_provider=%s selected_model=%s request_started", provider_name.upper(), model)
+                if provider_name == "openai":
+                    self._logger.info("[LLMQ] timeout_seconds=%.1f", timeout_seconds)
+                    self._logger.info("[LLMQ] openai request starting")
                 self._logger.info(
                     "[LLMQ] symbol=%s provider selected=%s model=%s timeout=%s openai_key_present=%s fallback_used=%s",
                     row.symbol,
@@ -1137,6 +1150,9 @@ class ScannerEngine:
                     timeout_seconds=timeout_seconds,
                     options={"temperature": 0.15},
                 )
+                llm_text = (result.raw_response or "").strip()
+                if not llm_text:
+                    raise RuntimeError("LLMQ provider returned empty text")
                 duration_ms = int((time.monotonic() - started) * 1000)
                 self._logger.info(
                     "[LLMQ] symbol=%s provider=%s model=%s success=true fallback_used=%s duration_ms=%s",
@@ -1147,18 +1163,26 @@ class ScannerEngine:
                     duration_ms,
                 )
                 self._logger.info("[LLMQ] request_success fallback_used=%s duration_ms=%s", str(fallback_used).lower(), duration_ms)
+                if provider_name == "openai":
+                    self._logger.info("[LLMQ] openai request success")
                 return ScannerLLMQChatResponse(
                     provider=provider_name.upper(),
                     model=model,
                     status="success",
                     fallback_used=fallback_used,
-                    answer=result.text.strip(),
+                    answer=llm_text,
                     error_message=None,
                     warning_message=(None if news_available else "Live news provider is not connected yet."),
                 )
             except Exception as exc:  # pragma: no cover
                 last_err = exc
                 self._logger.warning("[LLMQ] request_failed error=%s", str(exc))
+                if provider_name == "openai":
+                    self._logger.warning(
+                        "[LLMQ] openai request failed error_type=%s error_message=%s",
+                        type(exc).__name__,
+                        str(exc),
+                    )
                 self._logger.warning(
                     "[LLMQ] symbol=%s provider=%s model=%s success=false fallback_used=%s error=%s",
                     row.symbol,
@@ -1182,6 +1206,7 @@ class ScannerEngine:
             duration_ms,
             str(last_err) if last_err else "none",
         )
+        self._logger.warning("[LLMQ] fallback_used=true duration_ms=%s", duration_ms)
         return ScannerLLMQChatResponse(
             provider="fallback",
             model="deterministic",

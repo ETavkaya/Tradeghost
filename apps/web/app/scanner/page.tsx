@@ -557,6 +557,7 @@ export default function ScannerPage() {
   };
 
   const openLLMQ = async (row: ScannerResult) => {
+    console.log("[LLMQ] clicked row snapshot", row);
     setLlmqRow(row);
     setLlmqResult(null);
     setLlmqStatus("idle");

@@ -622,6 +622,9 @@ class IntelligenceService:
 
         cohort_candidates = self._read_cohort_candidates()
         for row in discovery.symbol_results:
+            selected_blocked_by = row.blocked_by
+            if selected_blocked_by == "none":
+                selected_blocked_by = self._blocked_by_from_risk_flags(row.risk_flags, fallback="none")
             cohort_candidates.append(
                 CohortCandidate(
                     cohort_id=cohort.id,
@@ -639,7 +642,7 @@ class IntelligenceService:
                     selected_setup_type=row.setup_type,
                     selected_candidate_type=row.candidate_type,
                     selected_entry_readiness=row.entry_readiness,
-                    selected_blocked_by=row.blocked_by,
+                    selected_blocked_by=selected_blocked_by,
                     selected_readiness_explanation=row.readiness_explanation,
                     selected_trend_state=row.trend,
                     selected_score_dynamics=str(row.structure_snapshot.get("score_dynamics_state")) if row.structure_snapshot.get("score_dynamics_state") is not None else None,
@@ -652,7 +655,7 @@ class IntelligenceService:
                     selected_risk_flags=row.risk_flags,
                     selected_data_quality_flags=row.data_quality_flags,
                     selected_data_quality_penalty=row.data_quality_penalty,
-                    selected_displayed_score=row.score,
+                    selected_displayed_score=(row.score if row.score is not None else row.base_score),
                     selected_company_name=row.company_name,
                     selected_sector=row.sector,
                     selected_industry=row.industry,
@@ -684,6 +687,8 @@ class IntelligenceService:
             selected_price = cand.selected_price
             perf = self._forward_returns_from_selection(cand.symbol, cand.market.value, cand.selected_at.date(), selected_price)
             data_quality_flags = self._build_data_quality_flags(analysis)
+            data_quality_flags.extend([str(x) for x in perf.get("data_quality_flags", []) if x])
+            data_quality_flags = sorted(set(data_quality_flags))
             normalized_setup = self._normalize_setup_type(
                 analysis,
                 [x.value if hasattr(x, "value") else str(x) for x in cand.selected_categories],
@@ -730,8 +735,8 @@ class IntelligenceService:
                 current_score_dynamics=analysis.entry_gate.score_dynamics_state,
                 current_trigger_state=analysis.trigger.trigger_state,
                 current_trigger_score=float(analysis.trigger.trigger_score),
-                price_change_since_selection=((close / selected_price - 1.0) * 100.0) if selected_price and selected_price > 0 else None,
-                return_since_selection=((close / selected_price - 1.0) * 100.0) if selected_price and selected_price > 0 else None,
+                price_change_since_selection=perf.get("since_selection"),
+                return_since_selection=perf.get("since_selection"),
                 return_1d=perf.get("1d"),
                 return_3d=perf.get("3d"),
                 return_7d=perf.get("7d"),
@@ -743,7 +748,14 @@ class IntelligenceService:
                 validity_state=validity_state,
                 invalidation_reason=invalidation_reason,
                 entry_readiness=classification["entry_readiness"] if validity_state != "needs_data_check" else "needs_data_check",
-                blocked_by=classification["blocked_by"] if validity_state != "needs_data_check" else "data_quality",
+                blocked_by=(
+                    self._blocked_by_from_risk_flags(
+                        risk_flags,
+                        fallback=(classification["blocked_by"] if classification["blocked_by"] != "none" else "none"),
+                    )
+                    if validity_state != "needs_data_check"
+                    else "data_quality"
+                ),
                 readiness_explanation=classification["readiness_explanation"] if validity_state != "needs_data_check" else "Metrics may be distorted by adjusted price / split / EMA inconsistency. Review data before interpreting.",
                 data_quality_flags=data_quality_flags,
             )
@@ -1021,8 +1033,50 @@ class IntelligenceService:
 
     @staticmethod
     def _is_serious_data_quality(flags: list[str]) -> bool:
-        serious = {"possible_split_or_unadjusted_price_jump", "non_positive_price_or_ema"}
+        serious = {
+            "possible_split_or_unadjusted_price_jump",
+            "non_positive_price_or_ema",
+            "return_outlier_1d",
+            "return_outlier_3d",
+            "non_positive_reference_price",
+        }
         return any(flag in serious for flag in flags)
+
+    @staticmethod
+    def _blocked_by_from_risk_flags(risk_flags: list[str], fallback: str = "none") -> str:
+        lowered = {str(x).lower() for x in (risk_flags or [])}
+        if "resistance_room_filter" in lowered:
+            return "resistance_room_filter"
+        if "overextended_filter" in lowered:
+            return "overextended_filter"
+        if "overextended" in lowered:
+            return "overextended"
+        if "location_filter" in lowered:
+            return "location_filter"
+        if "score_threshold" in lowered:
+            return "score_threshold"
+        if "weak_volume_confirmation" in lowered:
+            return "weak_volume_confirmation"
+        return fallback
+
+    @staticmethod
+    def _build_confirm_entry_text(trigger_state: str | None, trigger_score: float | None, trigger_threshold: float | None, blocked_by: str | None) -> str:
+        thr = float(trigger_threshold) if trigger_threshold is not None else 65.0
+        score = float(trigger_score) if trigger_score is not None else 0.0
+        state = str(trigger_state or "").lower()
+        confirmed = state == "confirmed" or score >= thr
+        blocked = str(blocked_by or "none")
+        if not confirmed:
+            return f"Need trigger confirmation and trigger score >= {thr:.1f}."
+        if blocked in {"resistance_room_filter", "resistance_room"}:
+            return "Trigger is confirmed, but entry is blocked by resistance room."
+        if blocked in {"overextended_filter", "overextended"}:
+            return "Trigger is confirmed, but entry is blocked by overextension."
+        if blocked == "location_filter":
+            return "Trigger is confirmed, but entry is blocked by location filter."
+        if blocked and blocked != "none":
+            return f"Trigger is confirmed, but entry is blocked by {blocked}."
+        return "Entry trigger is confirmed."
 
     @staticmethod
     def _map_blocked_by(skip_reason: str, risk_flags: list[str], data_quality_flags: list[str], analysis: Any) -> str:
@@ -1098,16 +1152,13 @@ class IntelligenceService:
             or f"{setup_type} structure with {analysis.entry_gate.score_dynamics_state or 'unknown'} dynamics"
         )
         risk_reason = str(analysis.chartmap.opportunity_risk_reason or (risk_flags[0] if risk_flags else "normal_risk_profile"))
-        trigger_confirmed = trigger_state == "confirmed" and trigger_score >= min_trigger
-        if not trigger_confirmed:
-            confirm_entry = (
-                f"Needs trigger confirmation and trigger score >= {min_trigger:.1f} "
-                f"(current_state={analysis.trigger.trigger_state}, current_score={trigger_score:.1f})."
-            )
-        elif blocked_by != "none":
-            confirm_entry = f"Trigger is confirmed, but entry is blocked by {blocked_by}."
-        else:
-            confirm_entry = "Entry trigger is confirmed."
+        trigger_confirmed = trigger_state == "confirmed" or trigger_score >= min_trigger
+        confirm_entry = self._build_confirm_entry_text(
+            trigger_state=str(analysis.trigger.trigger_state),
+            trigger_score=trigger_score,
+            trigger_threshold=min_trigger,
+            blocked_by=blocked_by,
+        )
         invalidate = skip_reason or "Invalidate if trend weakens and price loses key EMA support with no trigger confirmation."
         if data_quality_flags:
             return {
@@ -2252,7 +2303,7 @@ class IntelligenceService:
             bundle = self.analysis_engine.data_service.get_market_data(symbol, market=market, period="1y")
             close = bundle.daily["close"].dropna().astype(float)
             if close.empty:
-                return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None}
+                return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None, "since_selection": None, "data_quality_flags": ["missing_price_series"]}
             if selected_price is None or selected_price <= 0:
                 selected_price = float(close.iloc[0])
             from_idx = 0
@@ -2262,24 +2313,41 @@ class IntelligenceService:
                     break
             series = close.iloc[from_idx:]
             if series.empty:
-                return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None}
-            def ret_at(days: int) -> float | None:
+                return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None, "since_selection": None, "data_quality_flags": ["missing_selection_window"]}
+            dq_flags: list[str] = []
+            latest_price = float(series.iloc[-1])
+            def ret_from_latest(days: int, label: str) -> float | None:
                 if len(series) <= days:
                     return None
-                return float((series.iloc[days] / selected_price - 1.0) * 100.0)
+                ref = float(series.iloc[-(days + 1)])
+                if ref <= 0:
+                    dq_flags.append("non_positive_reference_price")
+                    return None
+                ret = float((latest_price - ref) / ref * 100.0)
+                if market == "us" and abs(ret) > 40.0:
+                    dq_flags.append(f"return_outlier_{label}")
+                    return None
+                return ret
+            since_selection = None
+            if selected_price and selected_price > 0:
+                since_selection = float((latest_price - float(selected_price)) / float(selected_price) * 100.0)
+            else:
+                dq_flags.append("non_positive_selection_price")
             runup = float((series.max() / selected_price - 1.0) * 100.0)
             drawdown = float((series.min() / selected_price - 1.0) * 100.0)
             return {
-                "1d": ret_at(1),
-                "3d": ret_at(3),
-                "7d": ret_at(7),
-                "14d": ret_at(14),
-                "28d": ret_at(28),
+                "1d": ret_from_latest(1, "1d"),
+                "3d": ret_from_latest(3, "3d"),
+                "7d": ret_from_latest(7, "7d"),
+                "14d": ret_from_latest(14, "14d"),
+                "28d": ret_from_latest(28, "28d"),
+                "since_selection": since_selection,
                 "max_runup": runup,
                 "max_drawdown": drawdown,
+                "data_quality_flags": sorted(set(dq_flags)),
             }
         except Exception:
-            return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None}
+            return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None, "since_selection": None, "data_quality_flags": ["forward_return_calc_error"]}
 
     def run_cohort_review(self, req: CohortReviewRequest) -> CohortReviewResponse:
         cohorts = self._read_cohorts()
@@ -2332,13 +2400,21 @@ class IntelligenceService:
             latest = symbol_snaps[-1] if symbol_snaps else None
             sector_name = (cand.selected_sector or "unknown").strip() or "unknown"
             sector_counts[sector_name] = sector_counts.get(sector_name, 0) + 1
+            latest_is_data_quality = bool(
+                latest
+                and (
+                    str(getattr(latest, "entry_readiness", "")) == "needs_data_check"
+                    or str(getattr(latest, "blocked_by", "")) == "data_quality"
+                    or bool(getattr(latest, "data_quality_flags", []))
+                )
+            )
             ret7 = latest.return_7d if latest else None
-            if latest and latest.return_1d is not None:
+            if latest and latest.return_1d is not None and not latest_is_data_quality:
                 ret1d_vals.append(float(latest.return_1d))
                 by_sector_1d.setdefault(sector_name, []).append(float(latest.return_1d))
-            if latest and latest.return_3d is not None:
+            if latest and latest.return_3d is not None and not latest_is_data_quality:
                 by_sector_3d.setdefault(sector_name, []).append(float(latest.return_3d))
-            if latest and latest.return_7d is not None:
+            if latest and latest.return_7d is not None and not latest_is_data_quality:
                 by_sector_7d.setdefault(sector_name, []).append(float(latest.return_7d))
             validity_state = "pending_validation"
             if latest:
@@ -2351,7 +2427,7 @@ class IntelligenceService:
             has_required_horizon = latest is not None and latest.return_7d is not None
             if not has_required_horizon:
                 pending_horizon_count += 1
-            if ret7 is not None:
+            if ret7 is not None and not latest_is_data_quality:
                 for cat in cand.selected_categories:
                     key = cat.value if hasattr(cat, "value") else str(cat)
                     returns_by_cat.setdefault(key, []).append(float(ret7))
@@ -2364,7 +2440,7 @@ class IntelligenceService:
                     worst_ret, worst_symbol = ret7, cand.symbol
             if validity_state == "pending_validation":
                 pending_validation_count += 1
-            if validity_state == "needs_data_check":
+            if validity_state == "needs_data_check" or latest_is_data_quality:
                 needs_data_check_count += 1
             if sufficient_window and validity_state == "invalid" and latest and latest.return_7d is not None and latest.return_7d < 0:
                 false_positives += 1
@@ -2777,22 +2853,40 @@ class IntelligenceService:
             lines.append(f"### Group: {group_name}")
             for row in grouped_candidates[group_name]:
                 lines.append(f"#### {row.selected_rank}. {row.symbol}")
+                snapshot = row.selected_structure_snapshot if isinstance(row.selected_structure_snapshot, dict) else {}
+                selected_trigger_state = snapshot.get("trigger_state")
+                selected_trigger_score = snapshot.get("trigger_score")
+                selected_trigger_threshold = snapshot.get("trigger_threshold")
+                selected_blocked_by = row.selected_blocked_by
+                if selected_blocked_by == "none":
+                    selected_blocked_by = self._blocked_by_from_risk_flags(row.selected_risk_flags, fallback="none")
+                selected_displayed_score = (
+                    row.selected_displayed_score
+                    if row.selected_displayed_score and row.selected_displayed_score > 0
+                    else (row.selected_score if row.selected_score > 0 else row.selected_final_score_capped)
+                )
+                selected_confirm_text = self._build_confirm_entry_text(
+                    trigger_state=str(selected_trigger_state) if selected_trigger_state is not None else None,
+                    trigger_score=float(selected_trigger_score) if isinstance(selected_trigger_score, (int, float)) else None,
+                    trigger_threshold=float(selected_trigger_threshold) if isinstance(selected_trigger_threshold, (int, float)) else None,
+                    blocked_by=selected_blocked_by,
+                )
                 lines.append(f"- Company: {row.selected_company_name or 'unknown'}")
                 lines.append(f"- Sector: {row.selected_sector or 'unknown'}")
                 lines.append(f"- Industry: {row.selected_industry or 'unknown'}")
                 lines.append(f"- Original why selected: {row.selected_reason}")
                 score_formula = (
                     f"{row.selected_base_score:.2f} base + {row.selected_category_boost:.2f} boost + "
-                    f"{row.selected_data_quality_penalty:.2f} data_quality_penalty => {row.selected_displayed_score:.2f} displayed"
+                    f"{row.selected_data_quality_penalty:.2f} data_quality_penalty => {selected_displayed_score:.2f} displayed"
                 )
                 lines.append(f"- Score Breakdown: `{score_formula}`")
                 lines.append(f"- Candidate Type: `{row.selected_candidate_type}`")
                 lines.append(f"- Entry Readiness: `{row.selected_entry_readiness}`")
-                lines.append(f"- Blocked By: `{row.selected_blocked_by}`")
+                lines.append(f"- Blocked By: `{selected_blocked_by}`")
                 lines.append(f"- Readiness Explanation: {row.selected_readiness_explanation or '-'}")
                 lines.append(f"- Main Opportunity Reason: {row.selected_main_opportunity_reason or '-'}")
                 lines.append(f"- Main Risk: {row.selected_main_risk_reason or '-'}")
-                lines.append(f"- Original selection-time confirm condition: {row.selected_confirm_entry_condition or '-'}")
+                lines.append(f"- Original selection-time confirm condition: {selected_confirm_text}")
                 lines.append(f"- What would invalidate candidate: {row.selected_invalidation_condition or '-'}")
                 lines.append(f"- Structure snapshot: `{json.dumps(row.selected_structure_snapshot, default=str)}`")
                 lines.append(f"- Risk flags: `{', '.join(row.selected_risk_flags) if row.selected_risk_flags else '-'}`")
@@ -2815,15 +2909,17 @@ class IntelligenceService:
                         selected_threshold = float(raw_thr)
                 trigger_confirmed = (
                     str(state.current_trigger_state or "").lower() == "confirmed"
-                    and state.current_trigger_score is not None
-                    and float(state.current_trigger_score) >= selected_threshold
+                    or (
+                        state.current_trigger_score is not None
+                        and float(state.current_trigger_score) >= selected_threshold
+                    )
                 )
-                if trigger_confirmed and state.blocked_by and state.blocked_by != "none":
-                    current_confirm_text = f"Trigger is confirmed, but entry is blocked by {state.blocked_by}."
-                elif trigger_confirmed:
-                    current_confirm_text = "Entry trigger is confirmed."
-                else:
-                    current_confirm_text = "Need trigger confirmation."
+                current_confirm_text = self._build_confirm_entry_text(
+                    trigger_state=state.current_trigger_state,
+                    trigger_score=state.current_trigger_score,
+                    trigger_threshold=selected_threshold,
+                    blocked_by=state.blocked_by,
+                )
                 lines.append(
                     f"- {state.symbol}: latest_date={state.latest_followup_date} "
                     f"company={state.selected_company_name or 'unknown'} "

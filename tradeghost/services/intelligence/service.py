@@ -685,7 +685,13 @@ class IntelligenceService:
             )
             close = float(analysis.chart.current_price)
             selected_price = cand.selected_price
-            perf = self._forward_returns_from_selection(cand.symbol, cand.market.value, cand.selected_at.date(), selected_price)
+            perf = self._forward_returns_from_selection(
+                cand.symbol,
+                cand.market.value,
+                cand.selected_at.date(),
+                selected_price,
+                latest_price_for_since=close,
+            )
             data_quality_flags = self._build_data_quality_flags(analysis)
             data_quality_flags.extend([str(x) for x in perf.get("data_quality_flags", []) if x])
             data_quality_flags = sorted(set(data_quality_flags))
@@ -770,6 +776,13 @@ class IntelligenceService:
                 validity_state,
                 str(hard_invalidation).lower(),
                 hard_invalidation_reason or "null",
+            )
+            self._logger.info(
+                "[return_since_selection] symbol=%s selected_price=%.4f latest_price=%.4f return=%s",
+                cand.symbol,
+                float(selected_price or 0.0),
+                close,
+                f"{perf.get('since_selection'):.4f}" if perf.get("since_selection") is not None else "pending_or_flagged",
             )
         self._save_cohort_snapshots(snapshots)
         self._append_pipeline_event(
@@ -2298,6 +2311,7 @@ class IntelligenceService:
         market: str,
         selection_date: date,
         selected_price: float | None,
+        latest_price_for_since: float | None = None,
     ) -> dict[str, float | None]:
         try:
             bundle = self.analysis_engine.data_service.get_market_data(symbol, market=market, period="1y")
@@ -2329,8 +2343,12 @@ class IntelligenceService:
                     return None
                 return ret
             since_selection = None
+            effective_latest_for_since = float(latest_price_for_since) if latest_price_for_since is not None else latest_price
             if selected_price and selected_price > 0:
-                since_selection = float((latest_price - float(selected_price)) / float(selected_price) * 100.0)
+                since_selection = float((effective_latest_for_since - float(selected_price)) / float(selected_price) * 100.0)
+                if market == "us" and abs(since_selection) > 40.0:
+                    dq_flags.append("possible_selected_price_mismatch")
+                    since_selection = None
             else:
                 dq_flags.append("non_positive_selection_price")
             runup = float((series.max() / selected_price - 1.0) * 100.0)
@@ -2933,6 +2951,12 @@ class IntelligenceService:
                     f"28D={state.return_28d if state.return_28d is not None else 'pending'} "
                     f"validity={state.validity_state} blocked_by={state.blocked_by}"
                 )
+                if selected:
+                    lines.append(
+                        f"  - selected_price={selected.selected_price if selected.selected_price is not None else 'pending'} "
+                        f"latest_price={state.current_price if state.current_price is not None else 'pending'} "
+                        f"return_since_selection={state.return_since_selection if state.return_since_selection is not None else 'pending'}"
+                    )
                 if state.data_quality_flags:
                     lines.append(f"  - data_quality_flags={','.join(state.data_quality_flags)}")
                 lines.append(f"  - readiness={state.entry_readiness}; explanation={state.readiness_explanation}")

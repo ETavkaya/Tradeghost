@@ -2324,6 +2324,11 @@ class IntelligenceService:
             close = bundle.daily["close"].dropna().astype(float)
             if close.empty:
                 return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None, "since_selection": None, "data_quality_flags": ["missing_price_series"]}
+            dq_flags: list[str] = []
+            requested_symbol = str(symbol or "").strip().upper()
+            bundle_symbol = str(getattr(bundle, "normalized_ticker", "") or "").strip().upper()
+            if requested_symbol and bundle_symbol and requested_symbol != bundle_symbol:
+                dq_flags.append("possible_symbol_price_mismatch")
             if selected_price is None or selected_price <= 0:
                 selected_price = float(close.iloc[0])
             from_idx = 0
@@ -2334,7 +2339,6 @@ class IntelligenceService:
             series = close.iloc[from_idx:]
             if series.empty:
                 return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None, "since_selection": None, "data_quality_flags": ["missing_selection_window"]}
-            dq_flags: list[str] = []
             latest_price = float(series.iloc[-1])
             def ret_from_latest(days: int, label: str) -> float | None:
                 if len(series) <= days:
@@ -2347,6 +2351,15 @@ class IntelligenceService:
                 if market == "us" and abs(ret) > 40.0:
                     dq_flags.append(f"return_outlier_{label}")
                     return None
+                self._logger.info(
+                    "[horizon_return] symbol=%s price_now=%.6f price_%sd_ago=%.6f return_%s=%.12f",
+                    symbol,
+                    latest_price,
+                    days,
+                    ref,
+                    label,
+                    ret,
+                )
                 return ret
             since_selection = None
             effective_latest_for_since = float(latest_price_for_since) if latest_price_for_since is not None else latest_price

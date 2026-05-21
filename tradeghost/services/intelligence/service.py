@@ -713,7 +713,8 @@ class IntelligenceService:
             severe_gate_failure = str(analysis.entry_gate.skip_reason or "") in {"regime_filter", "location_filter"} and has_min_horizon
             hard_invalidation = bool(severe_structure_break and severe_gate_failure)
             hard_invalidation_reason = str(analysis.entry_gate.skip_reason or "severe_structure_break") if hard_invalidation else None
-            if self._is_serious_data_quality(data_quality_flags):
+            has_any_data_quality = bool(data_quality_flags)
+            if has_any_data_quality:
                 validity_state = "needs_data_check"
                 still_valid_candidate = None
                 invalidation_reason = hard_invalidation_reason if hard_invalidation else None
@@ -1052,6 +1053,11 @@ class IntelligenceService:
             "return_outlier_1d",
             "return_outlier_3d",
             "non_positive_reference_price",
+            "missing_selected_price",
+            "missing_latest_price",
+            "suspicious_return_since_selection",
+            "possible_adjusted_unadjusted_mismatch",
+            "possible_symbol_price_mismatch",
         }
         return any(flag in serious for flag in flags)
 
@@ -2344,15 +2350,21 @@ class IntelligenceService:
                 return ret
             since_selection = None
             effective_latest_for_since = float(latest_price_for_since) if latest_price_for_since is not None else latest_price
-            if selected_price and selected_price > 0:
+            if latest_price_for_since is None:
+                dq_flags.append("missing_latest_price")
+            if selected_price is None or selected_price <= 0:
+                dq_flags.append("missing_selected_price")
+            elif effective_latest_for_since <= 0:
+                dq_flags.append("missing_latest_price")
+            else:
                 since_selection = float((effective_latest_for_since - float(selected_price)) / float(selected_price) * 100.0)
                 if market == "us" and abs(since_selection) > 40.0:
-                    dq_flags.append("possible_selected_price_mismatch")
+                    dq_flags.append("suspicious_return_since_selection")
+                    dq_flags.append("possible_adjusted_unadjusted_mismatch")
+                    dq_flags.append("possible_symbol_price_mismatch")
                     since_selection = None
-            else:
-                dq_flags.append("non_positive_selection_price")
-            runup = float((series.max() / selected_price - 1.0) * 100.0)
-            drawdown = float((series.min() / selected_price - 1.0) * 100.0)
+            runup = float((series.max() / selected_price - 1.0) * 100.0) if selected_price and selected_price > 0 else None
+            drawdown = float((series.min() / selected_price - 1.0) * 100.0) if selected_price and selected_price > 0 else None
             return {
                 "1d": ret_from_latest(1, "1d"),
                 "3d": ret_from_latest(3, "3d"),
@@ -2442,6 +2454,8 @@ class IntelligenceService:
                     validity_state = "valid"
                 elif latest.still_valid_candidate is False:
                     validity_state = "invalid"
+            if latest_is_data_quality:
+                validity_state = "needs_data_check"
             has_required_horizon = latest is not None and latest.return_7d is not None
             if not has_required_horizon:
                 pending_horizon_count += 1
@@ -2458,7 +2472,7 @@ class IntelligenceService:
                     worst_ret, worst_symbol = ret7, cand.symbol
             if validity_state == "pending_validation":
                 pending_validation_count += 1
-            if validity_state == "needs_data_check" or latest_is_data_quality:
+            elif validity_state == "needs_data_check":
                 needs_data_check_count += 1
             if sufficient_window and validity_state == "invalid" and latest and latest.return_7d is not None and latest.return_7d < 0:
                 false_positives += 1

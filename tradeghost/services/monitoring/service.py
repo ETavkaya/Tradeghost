@@ -13,6 +13,7 @@ import pandas as pd
 from tradeghost.services.analysis_engine import AnalysisEngine
 from tradeghost.services.scanner.engine import ScannerEngine
 from tradeghost.shared.config.settings import get_settings
+from tradeghost.shared.market import normalize_symbol
 from tradeghost.shared.models.schemas import (
     AlertProfileApplyRequest,
     AlertProfileSuggestRequest,
@@ -1453,6 +1454,35 @@ class MonitoringService:
         )
         return float(best.close)
 
+    def _symbol_close_series(self, symbol: str, market) -> pd.Series:
+        bundle = self.analysis_engine.data_service.get_market_data(
+            symbol,
+            market=market.value,
+            period="2y",
+            use_cache=False,
+        )
+        expected = normalize_symbol(symbol, market.value).upper()
+        actual = str(getattr(bundle, "normalized_ticker", "") or "").upper()
+        if actual and actual != expected:
+            raise RuntimeError(f"symbol price mismatch: requested={expected} received={actual}")
+        close = bundle.daily["close"].dropna().astype(float)
+        if close.empty:
+            raise RuntimeError(f"missing close series for {expected}")
+        return close
+
+    @staticmethod
+    def _nearest_close_to_watch_time(close: pd.Series, ts: datetime) -> float | None:
+        if close.empty:
+            return None
+        target = ts.astimezone(UTC) if ts.tzinfo else ts.replace(tzinfo=UTC)
+        best_idx = min(
+            close.index,
+            key=lambda idx: abs(
+                datetime.combine(idx.date(), datetime.min.time(), tzinfo=UTC).timestamp() - target.timestamp()
+            ),
+        )
+        return float(close.loc[best_idx])
+
     def _refresh_watchlist_metrics_for_symbol(
         self,
         symbol: str,
@@ -1474,10 +1504,15 @@ class MonitoringService:
         except Exception:
             return
 
-        chart_candles = combined.chart.candles
-        closes = [float(c.close) for c in chart_candles]
-        current_price = closes[-1] if closes else float(combined.indicator_summary.get("close", 0.0))
-        price_vs_ema200 = combined.regime.price_vs_ema200_pct
+        try:
+            close_series = self._symbol_close_series(symbol, market)
+        except Exception as exc:
+            self._logger.warning("watchlist metric price refresh failed for %s: %s", symbol, exc)
+            return
+        closes = [float(value) for value in close_series.tolist()]
+        current_price = float(close_series.iloc[-1])
+        ema200 = close_series.ewm(span=200, adjust=False).mean().iloc[-1]
+        price_vs_ema200 = float((current_price - ema200) / max(float(ema200), 0.01) * 100.0)
 
         for wl_idx, watchlist in enumerate(watchlists):
             updated_items: list[WatchlistItem] = []
@@ -1489,7 +1524,7 @@ class MonitoringService:
                 added_price = item.added_price
                 added_price_estimated = item.added_price_estimated
                 if added_price is None:
-                    estimated = self._nearest_close_to_datetime(chart_candles, item.added_at)
+                    estimated = self._nearest_close_to_watch_time(close_series, item.added_at)
                     if estimated is not None:
                         added_price = estimated
                         added_price_estimated = True

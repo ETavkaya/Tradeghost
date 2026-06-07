@@ -2,20 +2,25 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, date, datetime, timedelta
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from threading import Lock
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from tradeghost.services.analysis_engine import AnalysisEngine
 from tradeghost.services.backtest.engine import BacktestEngine
+from tradeghost.services.intelligence.daily_report_store import CohortDailyReportStore
 from tradeghost.services.intelligence.providers import LLMProvider, OllamaProvider, OpenAIProvider
 from tradeghost.services.scanner.engine import ScannerEngine
 from tradeghost.shared.config.settings import get_settings
+from tradeghost.shared.market import normalize_symbol
 from tradeghost.shared.models.schemas import (
     CandidateCohort,
     CandidateCohortStatus,
@@ -23,12 +28,16 @@ from tradeghost.shared.models.schemas import (
     CohortCleanupDuplicateRequest,
     CohortCleanupDuplicateResponse,
     CohortDailySnapshot,
+    CohortDailyReportDetail,
+    CohortDailyReportRunResponse,
+    CohortDailyReportSummary,
     CohortDetail,
     CohortDeleteResponse,
     CohortDuplicateGroup,
     CohortDuplicateStrategy,
     CohortReportMode,
     CohortFollowupRequest,
+    CohortFollowupSettingsRequest,
     CohortFollowupResponse,
     CohortSymbolContextRequest,
     CohortBriefingRequest,
@@ -67,6 +76,11 @@ from tradeghost.shared.models.schemas import (
 )
 
 
+DAILY_REPORT_PROMPT_VERSION = "daily_cohort_followup_v1"
+MARKET_CONTEXT_PROMPT_VERSION = "market_context_note_v1"
+FINAL_28D_REVIEW_PROMPT_VERSION = "final_28d_cohort_review_v1"
+
+
 class IntelligenceService:
     def __init__(
         self,
@@ -88,12 +102,14 @@ class IntelligenceService:
         self.cohort_snapshots_path = self.base_dir / "cohort_daily_snapshots.json"
         self.llm_logs_path = self.base_dir / "llm_calls.json"
         self.pipeline_logs_path = self.base_dir / "pipeline_events.json"
+        self.daily_report_store = CohortDailyReportStore(self.settings.database_url)
         self.analysis_engine = analysis_engine or AnalysisEngine()
         self.scanner_engine = scanner_engine or ScannerEngine(analysis_engine=self.analysis_engine)
         self.backtest_engine = backtest_engine or BacktestEngine(analysis_engine=self.analysis_engine)
         self._logger = logging.getLogger(__name__)
         self._llm_logs_lock = Lock()
         self._pipeline_logs_lock = Lock()
+        self._daily_followup_db_warning_logged = False
         self._providers: dict[str, LLMProvider] = {
             "openai": OpenAIProvider(self.settings),
             "ollama": OllamaProvider(self.settings),
@@ -226,10 +242,10 @@ class IntelligenceService:
         self._write_rows(self.approvals_path, [row.model_dump(mode="json") for row in rows])
 
     def _read_cohorts(self) -> list[CandidateCohort]:
-        return [CandidateCohort.model_validate(row) for row in self._read_rows(self.cohorts_path)]
+        return [self._normalize_cohort_followup_defaults(CandidateCohort.model_validate(row)) for row in self._read_rows(self.cohorts_path)]
 
     def _save_cohorts(self, rows: list[CandidateCohort]) -> None:
-        self._write_rows(self.cohorts_path, [row.model_dump(mode="json") for row in rows])
+        self._write_rows(self.cohorts_path, [self._normalize_cohort_followup_defaults(row).model_dump(mode="json") for row in rows])
 
     def _read_cohort_candidates(self) -> list[CohortCandidate]:
         return [CohortCandidate.model_validate(row) for row in self._read_rows(self.cohort_candidates_path)]
@@ -246,6 +262,17 @@ class IntelligenceService:
     @staticmethod
     def _normalize_cohort_name(name: str) -> str:
         return "".join(ch.lower() for ch in (name or "").strip() if ch.isalnum())
+
+    def _normalize_cohort_followup_defaults(self, cohort: CandidateCohort) -> CandidateCohort:
+        updates: dict[str, Any] = {}
+        if not cohort.followup_start_date:
+            updates["followup_start_date"] = cohort.start_date
+        if not cohort.followup_target_days or cohort.followup_target_days <= 0:
+            updates["followup_target_days"] = 28
+        if self._normalize_cohort_name(cohort.name) == "milestoneemre":
+            updates["followup_enabled"] = True
+            updates["followup_target_days"] = 28
+        return cohort.model_copy(update=updates) if updates else cohort
 
     def _enrich_cohort_metadata(self, rows: list[CandidateCohort]) -> list[CandidateCohort]:
         candidates = self._read_cohort_candidates()
@@ -397,6 +424,44 @@ class IntelligenceService:
             message="action=activate",
         )
         return CohortStatusUpdateResponse(cohort_id=cohort_id, status=CandidateCohortStatus.ACTIVE)
+
+    def update_cohort_followup_settings(self, cohort_id: str, req: CohortFollowupSettingsRequest) -> CandidateCohort:
+        cohorts = self._read_cohorts()
+        updated_rows: list[CandidateCohort] = []
+        updated_cohort: CandidateCohort | None = None
+        for row in cohorts:
+            if row.id != cohort_id:
+                updated_rows.append(row)
+                continue
+            payload = row.model_dump()
+            if req.followup_enabled is not None:
+                payload["followup_enabled"] = req.followup_enabled
+            if req.followup_start_date is not None:
+                payload["followup_start_date"] = req.followup_start_date
+            if req.followup_target_days is not None:
+                payload["followup_target_days"] = req.followup_target_days
+            if req.followup_schedule is not None:
+                payload["followup_schedule"] = req.followup_schedule.strip() or None
+            if req.followup_completed is not None:
+                payload["followup_completed"] = req.followup_completed
+            if payload.get("followup_enabled") and payload.get("followup_completed"):
+                payload["followup_completed"] = False
+            updated_cohort = CandidateCohort.model_validate(payload)
+            updated_rows.append(updated_cohort)
+        if updated_cohort is None:
+            raise FileNotFoundError(f"Cohort not found: {cohort_id}")
+        self._save_cohorts(updated_rows)
+        self._append_pipeline_event(
+            step_name="cohort_followup_settings_updated",
+            status="success",
+            cohort_id=updated_cohort.id,
+            cohort_name=updated_cohort.name,
+            message=(
+                f"enabled={str(updated_cohort.followup_enabled).lower()} "
+                f"target_days={updated_cohort.followup_target_days} schedule={updated_cohort.followup_schedule or 'default'}"
+            ),
+        )
+        return updated_cohort
 
     def delete_cohort(self, cohort_id: str) -> CohortDeleteResponse:
         cohorts = self._read_cohorts()
@@ -674,7 +739,7 @@ class IntelligenceService:
             message=f"action=followup selected_cohort_id={detail.cohort.id} cohort_name={detail.cohort.name}",
         )
         snapshots = self._read_cohort_snapshots()
-        today = date.today()
+        target_date = req.report_date or date.today()
         new_snapshots: list[CohortDailySnapshot] = []
         for cand in detail.candidates:
             analysis = self.analysis_engine.analyze_combined(
@@ -683,7 +748,9 @@ class IntelligenceService:
                 window="1y",
                 strategy_mode="balanced",
             )
-            close = float(analysis.chart.current_price)
+            close = self._latest_close_for_symbol(cand.symbol, cand.market.value, target_date)
+            if close is None:
+                close = float(analysis.chart.current_price)
             selected_price = cand.selected_price
             perf = self._forward_returns_from_selection(
                 cand.symbol,
@@ -691,6 +758,7 @@ class IntelligenceService:
                 cand.selected_at.date(),
                 selected_price,
                 latest_price_for_since=close,
+                as_of_date=target_date,
             )
             data_quality_flags = self._build_data_quality_flags(analysis)
             data_quality_flags.extend([str(x) for x in perf.get("data_quality_flags", []) if x])
@@ -718,22 +786,40 @@ class IntelligenceService:
                 validity_state = "needs_data_check"
                 still_valid_candidate = None
                 invalidation_reason = hard_invalidation_reason if hard_invalidation else None
+                entry_readiness = "needs_data_check"
+                blocked_by = "data_quality"
+                readiness_explanation = "Metrics may be distorted by adjusted price / split / EMA inconsistency. Review data before interpreting."
             elif hard_invalidation:
                 validity_state = "invalid"
                 still_valid_candidate = False
                 invalidation_reason = hard_invalidation_reason
+                entry_readiness = "invalid"
+                blocked_by = str(hard_invalidation_reason or "deterministic_invalidation")
+                readiness_explanation = f"Deterministic invalidation: {hard_invalidation_reason or 'structure and gate failure'}."
             elif analysis.entry_gate.final_entry_decision and has_min_horizon:
                 validity_state = "valid"
                 still_valid_candidate = True
                 invalidation_reason = None
+                entry_readiness = classification["entry_readiness"]
+                blocked_by = self._blocked_by_from_risk_flags(
+                    risk_flags,
+                    fallback=(classification["blocked_by"] if classification["blocked_by"] != "none" else "none"),
+                )
+                readiness_explanation = classification["readiness_explanation"]
             else:
                 validity_state = "pending_validation"
                 still_valid_candidate = None
                 invalidation_reason = None
+                entry_readiness = "pending_validation"
+                blocked_by = self._blocked_by_from_risk_flags(
+                    risk_flags,
+                    fallback=(classification["blocked_by"] if classification["blocked_by"] != "none" else "none"),
+                )
+                readiness_explanation = "Awaiting full follow-up horizon with usable data."
             snap = CohortDailySnapshot(
                 cohort_id=req.cohort_id,
                 symbol=cand.symbol,
-                snapshot_date=today,
+                snapshot_date=target_date,
                 current_price=close,
                 current_score=float(analysis.quantedge.final_score),
                 current_categories=cand.selected_categories,
@@ -754,19 +840,12 @@ class IntelligenceService:
                 still_valid_candidate=still_valid_candidate,
                 validity_state=validity_state,
                 invalidation_reason=invalidation_reason,
-                entry_readiness=classification["entry_readiness"] if validity_state != "needs_data_check" else "needs_data_check",
-                blocked_by=(
-                    self._blocked_by_from_risk_flags(
-                        risk_flags,
-                        fallback=(classification["blocked_by"] if classification["blocked_by"] != "none" else "none"),
-                    )
-                    if validity_state != "needs_data_check"
-                    else "data_quality"
-                ),
-                readiness_explanation=classification["readiness_explanation"] if validity_state != "needs_data_check" else "Metrics may be distorted by adjusted price / split / EMA inconsistency. Review data before interpreting.",
+                entry_readiness=entry_readiness,
+                blocked_by=blocked_by,
+                readiness_explanation=readiness_explanation,
                 data_quality_flags=data_quality_flags,
             )
-            snapshots = [row for row in snapshots if not (row.cohort_id == req.cohort_id and row.symbol == cand.symbol and row.snapshot_date == today)]
+            snapshots = [row for row in snapshots if not (row.cohort_id == req.cohort_id and row.symbol == cand.symbol and row.snapshot_date == target_date)]
             snapshots.append(snap)
             new_snapshots.append(snap)
             self._logger.info(
@@ -793,7 +872,7 @@ class IntelligenceService:
             cohort_name=detail.cohort.name,
             message=f"action=followup selected_cohort_id={detail.cohort.id} cohort_name={detail.cohort.name} snapshots={len(new_snapshots)}",
         )
-        return CohortFollowupResponse(cohort_id=req.cohort_id, snapshot_date=today, snapshots=sorted(new_snapshots, key=lambda row: row.symbol))
+        return CohortFollowupResponse(cohort_id=req.cohort_id, snapshot_date=target_date, snapshots=sorted(new_snapshots, key=lambda row: row.symbol))
 
     def _read_llm_logs(self) -> list[LLMDebugLog]:
         return [LLMDebugLog.model_validate(row) for row in self._read_rows(self.llm_logs_path)]
@@ -1531,6 +1610,7 @@ class IntelligenceService:
         debug_stream: bool = False,
         response_format: dict[str, Any] | None = None,
         max_tokens_hint: int | None = None,
+        prompt_version: str | None = None,
     ) -> str:
         started = datetime.now(UTC)
         primary_provider = self._normalize_provider(self.settings.llm_provider)
@@ -1553,6 +1633,7 @@ class IntelligenceService:
                     parsed_output=parsed_output or {},
                     provider=primary_provider,
                     model=primary_model,
+                    prompt_version=prompt_version,
                 )
             )
             raise RuntimeError(err)
@@ -1627,6 +1708,7 @@ class IntelligenceService:
                                 token_estimate=token_estimate,
                                 prompt_preview=prompt[:1200],
                                 response_preview=text[:1200],
+                                prompt_version=prompt_version,
                             )
                         )
                         if is_fallback and symbol:
@@ -1660,6 +1742,7 @@ class IntelligenceService:
                                 fallback_provider=fallback_provider if is_fallback else None,
                                 token_estimate=0,
                                 prompt_preview=prompt[:1200],
+                                prompt_version=prompt_version,
                             )
                         )
                         if attempt_idx == 0:
@@ -1704,7 +1787,7 @@ class IntelligenceService:
             )
         return (
             "You are a financial analyst.\n"
-            "Do NOT give buy/sell advice.\n"
+            "Do NOT give trade instructions.\n"
             "Do NOT provide price targets.\n"
             "Do NOT alter system configuration.\n\n"
             f"Analyze the following stock context:\n\n"
@@ -1860,6 +1943,7 @@ class IntelligenceService:
 
     def generate_symbol_contexts(self, req: SymbolContextBatchRequest) -> SymbolContextBatchResponse:
         started = datetime.now(UTC)
+        model = self.settings.llmq_chat_model
         self._append_pipeline_event(
             step_name="symbol_context_batch_started",
             status="running",
@@ -1881,7 +1965,7 @@ class IntelligenceService:
                 executor.submit(
                     self._generate_single_symbol_context,
                     row,
-                    model=req.model,
+                    model=model,
                     timeout_seconds=req.timeout_seconds,
                     short_context_mode=req.short_context_mode,
                     run_id=req.run_id,
@@ -1914,6 +1998,7 @@ class IntelligenceService:
 
     def generate_cohort_symbol_contexts(self, req: CohortSymbolContextRequest) -> SymbolContextBatchResponse:
         detail = self.get_cohort_detail(req.cohort_id)
+        model = self.settings.llmq_chat_model
         self._append_pipeline_event(
             step_name="cohort_symbol_context_batch_started",
             status="running",
@@ -1971,7 +2056,7 @@ class IntelligenceService:
                     executor.submit(
                         self._generate_single_symbol_context,
                         symbol_result,
-                        model=req.model,
+                        model=model,
                         timeout_seconds=req.timeout_seconds,
                         short_context_mode=req.short_context_mode,
                         run_id=req.cohort_id,
@@ -1992,7 +2077,7 @@ class IntelligenceService:
                         bear_case="",
                         risks="",
                         summary="",
-                        model=req.model,
+                        model=model,
                         status="failed",
                         error=str(exc),
                     )
@@ -2021,6 +2106,7 @@ class IntelligenceService:
 
     def generate_cohort_briefing(self, req: CohortBriefingRequest) -> DailyBriefing:
         detail = self.get_cohort_detail(req.cohort_id)
+        model = self.settings.daily_report_llm_model
         self._append_pipeline_event(
             step_name="cohort_briefing_started",
             status="running",
@@ -2043,12 +2129,12 @@ class IntelligenceService:
                 date=date.today(),
                 cohort_id=req.cohort_id,
                 summary_text="Cohort briefing skipped: no generated cohort symbol contexts.",
-                model=req.model,
+                model=model,
                 status="failed",
                 error="no generated symbol contexts for cohort_id",
             )
         prompt_parts = [
-            "Use deterministic facts only. No buy/sell advice. Keep concise.",
+            "Use deterministic facts only. No trade instructions. Keep concise.",
             "Sections: Top opportunities, Key risks, Notable cohort changes.",
         ]
         for cand in detail.candidates:
@@ -2069,8 +2155,8 @@ class IntelligenceService:
                 f"validity={validity} | risks={','.join(cand.selected_risk_flags)} | "
                 f"llm_summary={ctx.summary}"
             )
-        text = self._ollama_generate(prompt="\n".join(prompt_parts), model=req.model, timeout_seconds=req.timeout_seconds, call_type="cohort_briefing")
-        briefing = DailyBriefing(date=date.today(), cohort_id=req.cohort_id, summary_text=text, model=req.model, status="generated")
+        text = self._ollama_generate(prompt="\n".join(prompt_parts), model=model, timeout_seconds=req.timeout_seconds, call_type="cohort_briefing", prompt_version=DAILY_REPORT_PROMPT_VERSION)
+        briefing = DailyBriefing(date=date.today(), cohort_id=req.cohort_id, summary_text=text, model=model, status="generated")
         rows = self._read_briefings()
         rows.append(briefing)
         self._save_briefings(rows)
@@ -2086,11 +2172,12 @@ class IntelligenceService:
 
     def generate_daily_briefing(self, req: DailyBriefingRequest) -> DailyBriefing:
         briefing_started = datetime.now(UTC)
+        model = self.settings.daily_report_llm_model
         self._append_pipeline_event(
             step_name="daily_briefing_started",
             status="running",
             run_id=req.run_id,
-            message=f"model={req.model} timeout={req.timeout_seconds}s",
+            message=f"model={model} timeout={req.timeout_seconds}s",
         )
         detail = self._get_run_detail(req.run_id)
         by_symbol = {row.symbol: row for row in self._read_contexts() if row.run_id == req.run_id and row.status == "generated"}
@@ -2107,7 +2194,7 @@ class IntelligenceService:
             briefing = DailyBriefing(
                 date=detail.run.date,
                 summary_text="Daily briefing skipped: no generated symbol contexts for this run.",
-                model=req.model,
+                model=model,
                 status="failed",
                 error="no generated symbol contexts for run_id",
             )
@@ -2117,7 +2204,7 @@ class IntelligenceService:
             return briefing
         prompt_parts = [
             "You are preparing a deterministic market briefing.",
-            "Do NOT give buy/sell advice.",
+            "Do NOT give trade instructions.",
             "Do NOT provide price targets.",
         ]
         if req.short_briefing_mode:
@@ -2148,11 +2235,12 @@ class IntelligenceService:
         try:
             text = self._ollama_generate(
                 prompt=prompt,
-                model=req.model,
+                model=model,
                 timeout_seconds=req.timeout_seconds,
                 call_type="daily_briefing",
+                prompt_version=DAILY_REPORT_PROMPT_VERSION,
             )
-            briefing = DailyBriefing(date=detail.run.date, summary_text=text, model=req.model, status="generated")
+            briefing = DailyBriefing(date=detail.run.date, summary_text=text, model=model, status="generated")
             self._append_pipeline_event(
                 step_name="daily_briefing_completed",
                 status="success",
@@ -2164,7 +2252,7 @@ class IntelligenceService:
             briefing = DailyBriefing(
                 date=detail.run.date,
                 summary_text="Daily briefing generation failed.",
-                model=req.model,
+                model=model,
                 status="failed",
                 error=str(exc),
             )
@@ -2181,6 +2269,7 @@ class IntelligenceService:
         return briefing
 
     def run_system_review(self, req: SystemReviewRequest) -> SystemReview:
+        model = self.settings.final_28d_review_llm_model
         min_date = date.today() - timedelta(days=req.days)
         result_rows: list[DailyRunDetail] = []
         for row in self._read_symbol_results():
@@ -2197,7 +2286,7 @@ class IntelligenceService:
                 mistakes="No data.",
                 missed_patterns="No data.",
                 recommendations="Run daily pipeline first.",
-                model=req.model,
+                model=model,
                 status="generated",
             )
             rows = self._read_reviews()
@@ -2220,7 +2309,7 @@ class IntelligenceService:
                     f"Deterministic stats so far: best_7d={deterministic_stats.best_category_by_7d}, "
                     f"worst_7d={deterministic_stats.worst_category_by_7d}."
                 ),
-                model=req.model,
+                model=model,
                 status="generated",
             )
             rows = self._read_reviews()
@@ -2256,7 +2345,13 @@ class IntelligenceService:
             f"Data: {json.dumps(perf_rows[:300])}\n"
         )
         try:
-            text = self._ollama_generate(prompt=prompt, model=req.model, timeout_seconds=req.timeout_seconds, call_type="system_review")
+            text = self._ollama_generate(
+                prompt=prompt,
+                model=model,
+                timeout_seconds=req.timeout_seconds,
+                call_type="system_review",
+                prompt_version=FINAL_28D_REVIEW_PROMPT_VERSION,
+            )
             parsed: dict[str, Any] = {}
             try:
                 parsed = json.loads(text)
@@ -2276,7 +2371,7 @@ class IntelligenceService:
                 mistakes=mistakes,
                 missed_patterns=missed,
                 recommendations=recommendations,
-                model=req.model,
+                model=model,
                 status="generated",
             )
         except (TimeoutError, URLError, RuntimeError, OSError, ValueError) as exc:
@@ -2287,7 +2382,7 @@ class IntelligenceService:
                 mistakes="",
                 missed_patterns="",
                 recommendations="",
-                model=req.model,
+                model=model,
                 status="failed",
                 error=str(exc),
             )
@@ -2295,6 +2390,17 @@ class IntelligenceService:
         rows.append(review)
         self._save_reviews(rows)
         return review
+
+    def _latest_close_for_symbol(self, symbol: str, market: str, as_of_date: date) -> float | None:
+        try:
+            bundle = self.analysis_engine.data_service.get_market_data(symbol, market=market, period="1y")
+            close = bundle.daily["close"].dropna().astype(float)
+            close = close[close.index.map(lambda ts: ts.date() <= as_of_date)]
+            if close.empty:
+                return None
+            return float(close.iloc[-1])
+        except Exception:
+            return None
 
     def _forward_returns(self, symbol: str, market: str) -> dict[str, float | None]:
         try:
@@ -2318,14 +2424,17 @@ class IntelligenceService:
         selection_date: date,
         selected_price: float | None,
         latest_price_for_since: float | None = None,
+        as_of_date: date | None = None,
     ) -> dict[str, float | None]:
         try:
             bundle = self.analysis_engine.data_service.get_market_data(symbol, market=market, period="1y")
             close = bundle.daily["close"].dropna().astype(float)
+            if as_of_date is not None:
+                close = close[close.index.map(lambda ts: ts.date() <= as_of_date)]
             if close.empty:
                 return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None, "since_selection": None, "data_quality_flags": ["missing_price_series"]}
             dq_flags: list[str] = []
-            requested_symbol = str(symbol or "").strip().upper()
+            requested_symbol = normalize_symbol(symbol, market).strip().upper()
             bundle_symbol = str(getattr(bundle, "normalized_ticker", "") or "").strip().upper()
             if requested_symbol and bundle_symbol and requested_symbol != bundle_symbol:
                 dq_flags.append("possible_symbol_price_mismatch")
@@ -2342,20 +2451,42 @@ class IntelligenceService:
             latest_price = float(series.iloc[-1])
             def ret_from_latest(days: int, label: str) -> float | None:
                 if len(series) <= days:
+                    self._logger.info(
+                        "[horizon_return] symbol=%s latest_price=%.6f price_%s_ago=pending return_%s=pending",
+                        symbol,
+                        latest_price,
+                        label,
+                        label,
+                    )
                     return None
                 ref = float(series.iloc[-(days + 1)])
                 if ref <= 0:
                     dq_flags.append("non_positive_reference_price")
+                    self._logger.info(
+                        "[horizon_return] symbol=%s latest_price=%.6f price_%s_ago=pending return_%s=pending",
+                        symbol,
+                        latest_price,
+                        label,
+                        label,
+                    )
                     return None
                 ret = float((latest_price - ref) / ref * 100.0)
                 if market == "us" and abs(ret) > 40.0:
                     dq_flags.append(f"return_outlier_{label}")
+                    self._logger.info(
+                        "[horizon_return] symbol=%s latest_price=%.6f price_%s_ago=%.6f return_%s=pending",
+                        symbol,
+                        latest_price,
+                        label,
+                        ref,
+                        label,
+                    )
                     return None
                 self._logger.info(
-                    "[horizon_return] symbol=%s price_now=%.6f price_%sd_ago=%.6f return_%s=%.12f",
+                    "[horizon_return] symbol=%s latest_price=%.6f price_%s_ago=%.6f return_%s=%.12f",
                     symbol,
                     latest_price,
-                    days,
+                    label,
                     ref,
                     label,
                     ret,
@@ -2393,6 +2524,7 @@ class IntelligenceService:
             return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None, "since_selection": None, "data_quality_flags": ["forward_return_calc_error"]}
 
     def run_cohort_review(self, req: CohortReviewRequest) -> CohortReviewResponse:
+        model = self.settings.final_28d_review_llm_model
         cohorts = self._read_cohorts()
         cohort_by_id = {row.id: row for row in cohorts}
         if req.cohort_id not in cohort_by_id:
@@ -2576,6 +2708,27 @@ class IntelligenceService:
             cohort_name=selected_name,
             message=f"action=review selected_cohort_id={req.cohort_id} cohort_name={selected_name} days={unique_days}/{req.days_required}",
         )
+        llm_summary = None
+        if sufficient_window:
+            prompt = (
+                "You are a context-only final cohort reviewer.\n"
+                "Do not change deterministic scores, categories, ranking, validity, or readiness.\n"
+                "Do not give trade instructions. Suggest deterministic metric review ideas only.\n"
+                "Summarize category performance, false positives, missed follow-through, and market-relative caveats in <=180 words.\n"
+                f"cohort_id={req.cohort_id}\n"
+                f"deterministic_stats={json.dumps(stats.model_dump(mode='json'), default=str)}\n"
+            )
+            try:
+                llm_summary = self._ollama_generate(
+                    prompt=prompt,
+                    model=model,
+                    timeout_seconds=req.timeout_seconds,
+                    call_type="cohort_28d_review",
+                    max_tokens_hint=320,
+                    prompt_version=FINAL_28D_REVIEW_PROMPT_VERSION,
+                )
+            except Exception as exc:
+                llm_summary = f"Final review LLM unavailable; deterministic stats remain authoritative. error={exc}"
         return CohortReviewResponse(
             cohort_id=req.cohort_id,
             readiness_message=readiness,
@@ -2583,7 +2736,7 @@ class IntelligenceService:
             days_required=req.days_required,
             days_remaining=days_remaining,
             deterministic_stats=stats,
-            llm_summary=None,
+            llm_summary=llm_summary,
         )
 
     def _compute_review_readiness(self) -> ReviewReadiness:
@@ -3038,6 +3191,795 @@ class IntelligenceService:
             markdown=markdown,
         )
 
+    @staticmethod
+    def _json_safe(value: Any) -> Any:
+        return json.loads(json.dumps(value, default=str))
+
+    @staticmethod
+    def _slug(text: str) -> str:
+        slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in (text or "").strip()).strip("-")
+        while "--" in slug:
+            slug = slug.replace("--", "-")
+        return slug or "cohort"
+
+    @staticmethod
+    def _fmt_pct(value: float | None) -> str:
+        return "pending" if value is None else f"{value:.2f}%"
+
+    @staticmethod
+    def _avg(values: list[float]) -> float | None:
+        return round(sum(values) / len(values), 3) if values else None
+
+    @staticmethod
+    def _is_us_trading_day(day: date) -> bool:
+        return day.weekday() < 5
+
+    def _previous_trading_day(self, day: date) -> date:
+        cursor = day
+        while not self._is_us_trading_day(cursor):
+            cursor -= timedelta(days=1)
+        return cursor
+
+    def _trading_days_between(self, start: date, end: date) -> list[date]:
+        if end < start:
+            return []
+        days: list[date] = []
+        cursor = start
+        while cursor <= end:
+            if self._is_us_trading_day(cursor):
+                days.append(cursor)
+            cursor += timedelta(days=1)
+        return days
+
+    @staticmethod
+    def _parse_schedule_time(schedule: str | None) -> tuple[int, int]:
+        raw = (schedule or "23:30").strip()
+        if " " in raw:
+            raw = raw.split()[-1]
+        parts = raw.split(":")
+        try:
+            hour = max(0, min(23, int(parts[0])))
+            minute = max(0, min(59, int(parts[1]) if len(parts) > 1 else 0))
+            return hour, minute
+        except (TypeError, ValueError):
+            return 23, 30
+
+    def _latest_due_report_date(self, *, now: datetime | None = None, schedule: str | None = None) -> date | None:
+        tz = ZoneInfo(self.settings.daily_cohort_followup_timezone)
+        local_now = (now or datetime.now(UTC)).astimezone(tz)
+        hour, minute = self._parse_schedule_time(schedule or self.settings.daily_cohort_followup_schedule)
+        scheduled_at = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        candidate = local_now.date()
+        if not self._is_us_trading_day(candidate) or local_now < scheduled_at:
+            candidate -= timedelta(days=1)
+        return self._previous_trading_day(candidate)
+
+    def should_run_daily_cohort_followup_job(self, *, now: datetime | None = None) -> bool:
+        if not self.settings.daily_cohort_followup_enabled:
+            return False
+        if not self.daily_report_store.configured:
+            if not self._daily_followup_db_warning_logged:
+                self._logger.warning("daily_cohort_followup_job skipped: DATABASE_URL is not configured")
+                self._daily_followup_db_warning_logged = True
+            return False
+        due_date = self._latest_due_report_date(now=now)
+        if due_date is None:
+            return False
+        for cohort in self._active_followup_cohorts():
+            missing = self._missing_report_dates_for_cohort(cohort, due_date=due_date, backfill=True)
+            if missing:
+                return True
+        return False
+
+    def run_due_daily_cohort_followup_job(self) -> CohortDailyReportRunResponse:
+        return self.run_daily_cohort_followup_job(backfill=True, include_llm=True, force=False)
+
+    def run_daily_cohort_followup_job(
+        self,
+        *,
+        cohort_id: str | None = None,
+        report_date: date | None = None,
+        backfill: bool = True,
+        include_llm: bool = True,
+        force: bool = False,
+    ) -> CohortDailyReportRunResponse:
+        run_at = datetime.now(UTC)
+        response = CohortDailyReportRunResponse(run_at=run_at, requested_cohort_id=cohort_id)
+        cohorts = self._read_cohorts()
+        if cohort_id:
+            selected = next((row for row in cohorts if row.id == cohort_id), None)
+            if selected is None:
+                raise FileNotFoundError(f"Cohort not found: {cohort_id}")
+            target_cohorts = [selected]
+        else:
+            target_cohorts = self._active_followup_cohorts()
+        if not target_cohorts:
+            response.skipped = 1
+            response.errors.append("No active cohorts are marked for automated follow-up.")
+            return response
+
+        for cohort in target_cohorts:
+            due_date = report_date or self._latest_due_report_date(schedule=cohort.followup_schedule)
+            if due_date is None:
+                response.skipped += 1
+                continue
+            if report_date:
+                target_dates = [report_date]
+            else:
+                target_dates = self._missing_report_dates_for_cohort(cohort, due_date=due_date, backfill=backfill)
+            if not target_dates and force:
+                target_dates = [due_date]
+            if not target_dates:
+                response.skipped += 1
+                continue
+            for target_date in target_dates:
+                try:
+                    self._append_pipeline_event(
+                        step_name="daily_cohort_followup_job_started",
+                        status="running",
+                        cohort_id=cohort.id,
+                        cohort_name=cohort.name,
+                        message=f"report_date={target_date.isoformat()} include_llm={str(include_llm).lower()}",
+                    )
+                    detail = self._generate_and_store_daily_report(
+                        cohort_id=cohort.id,
+                        report_date=target_date,
+                        include_llm=include_llm,
+                    )
+                    response.generated += 1
+                    response.report_dates.append(target_date)
+                    response.reports.append(CohortDailyReportSummary.model_validate(detail.model_dump()))
+                    self._append_pipeline_event(
+                        step_name="daily_cohort_followup_job_completed",
+                        status="success",
+                        cohort_id=cohort.id,
+                        cohort_name=cohort.name,
+                        message=f"report_date={target_date.isoformat()} export_path={detail.export_path}",
+                    )
+                except Exception as exc:
+                    response.failed += 1
+                    error = f"{cohort.name} {target_date.isoformat()}: {type(exc).__name__}: {exc}"
+                    response.errors.append(error)
+                    self._append_pipeline_event(
+                        step_name="daily_cohort_followup_job_completed",
+                        status="failed",
+                        cohort_id=cohort.id,
+                        cohort_name=cohort.name,
+                        message=f"report_date={target_date.isoformat()}",
+                        error_message=str(exc),
+                    )
+                    self._logger.exception("daily_cohort_followup_job failed cohort_id=%s report_date=%s", cohort.id, target_date)
+            self._mark_followup_completed_if_needed(cohort.id)
+        return response
+
+    def _active_followup_cohorts(self) -> list[CandidateCohort]:
+        return [
+            row
+            for row in self._read_cohorts()
+            if row.status == CandidateCohortStatus.ACTIVE
+            and row.followup_enabled
+            and not row.followup_completed
+        ]
+
+    def _existing_daily_report_dates(self, cohort_id: str) -> set[date]:
+        try:
+            return {row.report_date for row in self.daily_report_store.list_reports(cohort_id)}
+        except Exception as exc:
+            self._logger.warning("cohort_daily_reports lookup unavailable cohort_id=%s error=%s", cohort_id, exc)
+            return {row.snapshot_date for row in self._read_cohort_snapshots() if row.cohort_id == cohort_id}
+
+    def _missing_report_dates_for_cohort(self, cohort: CandidateCohort, *, due_date: date, backfill: bool) -> list[date]:
+        start = cohort.followup_start_date or cohort.start_date
+        target_days = max(1, int(cohort.followup_target_days or 28))
+        eligible = self._trading_days_between(start, due_date)[:target_days]
+        if not eligible:
+            return []
+        existing = self._existing_daily_report_dates(cohort.id)
+        missing = [day for day in eligible if day not in existing]
+        return missing if backfill else missing[-1:]
+
+    def _mark_followup_completed_if_needed(self, cohort_id: str) -> None:
+        cohorts = self._read_cohorts()
+        changed = False
+        next_rows: list[CandidateCohort] = []
+        existing_dates = self._existing_daily_report_dates(cohort_id)
+        for cohort in cohorts:
+            if cohort.id != cohort_id:
+                next_rows.append(cohort)
+                continue
+            target_days = max(1, int(cohort.followup_target_days or 28))
+            if len(existing_dates) >= target_days and not cohort.followup_completed:
+                cohort = cohort.model_copy(update={"followup_completed": True, "status": CandidateCohortStatus.COMPLETED})
+                changed = True
+            next_rows.append(cohort)
+        if changed:
+            self._save_cohorts(next_rows)
+
+    def _generate_and_store_daily_report(self, *, cohort_id: str, report_date: date, include_llm: bool) -> CohortDailyReportDetail:
+        followup = self.run_cohort_followup(CohortFollowupRequest(cohort_id=cohort_id, report_date=report_date))
+        detail = self.get_cohort_detail(cohort_id)
+        snapshots_for_date = [row for row in followup.snapshots if row.snapshot_date == report_date]
+        market_context = self._collect_market_context(report_date)
+        candidate_rows = self._build_candidate_followup_rows(detail.candidates, snapshots_for_date, report_date)
+        followup_day_number = self._followup_day_number(detail.cohort, report_date)
+        deterministic_stats = self._compute_daily_report_stats(
+            cohort=detail.cohort,
+            candidate_rows=candidate_rows,
+            followup_day_number=followup_day_number,
+        )
+        fallback_used = False
+        error_messages: list[str] = []
+        market_note = None
+        llm_summary = None
+        llm_provider = self._normalize_provider(self.settings.llm_provider)
+        llm_model = self.settings.daily_report_llm_model
+        if include_llm:
+            market_note, market_meta = self._generate_market_context_note(market_context)
+            if market_note:
+                market_context["llm_note"] = market_note
+            market_context["llm_metadata"] = market_meta
+            fallback_used = fallback_used or bool(market_meta.get("fallback_used"))
+            if market_meta.get("error_message"):
+                error_messages.append(str(market_meta["error_message"]))
+            llm_summary, daily_meta = self._generate_daily_report_summary(
+                detail.cohort,
+                report_date,
+                deterministic_stats,
+                candidate_rows,
+                market_context,
+            )
+            llm_provider = str(daily_meta.get("provider") or llm_provider)
+            llm_model = str(daily_meta.get("model") or llm_model)
+            fallback_used = fallback_used or bool(daily_meta.get("fallback_used"))
+            if daily_meta.get("error_message"):
+                error_messages.append(str(daily_meta["error_message"]))
+        else:
+            llm_summary = "LLM summary skipped by request; deterministic report is available."
+            fallback_used = True
+        if not llm_summary:
+            llm_summary = self._deterministic_daily_summary(deterministic_stats, market_context)
+            fallback_used = True
+        markdown = self._render_daily_report_markdown(
+            cohort=detail.cohort,
+            report_date=report_date,
+            followup_day_number=followup_day_number,
+            candidate_rows=candidate_rows,
+            deterministic_stats=deterministic_stats,
+            market_context=market_context,
+            llm_summary=llm_summary,
+            fallback_used=fallback_used,
+            error_message="; ".join(error_messages) if error_messages else None,
+        )
+        export_path = self._write_daily_report_markdown(detail.cohort, report_date, markdown)
+        record = {
+            "id": str(uuid4()),
+            "cohort_id": cohort_id,
+            "cohort_name": detail.cohort.name,
+            "report_date": report_date,
+            "report_mode": "followup",
+            "candidate_count": len(detail.candidates),
+            "followup_snapshot_count": len(snapshots_for_date),
+            "deterministic_stats_json": self._json_safe(deterministic_stats),
+            "candidate_followup_json": self._json_safe(candidate_rows),
+            "market_context_json": self._json_safe(market_context),
+            "llm_context_summary": llm_summary,
+            "report_markdown": markdown,
+            "export_path": str(export_path),
+            "engine_version": self._engine_version(),
+            "git_commit": self._git_commit(),
+            "llm_provider": llm_provider,
+            "llm_model": llm_model,
+            "prompt_version": DAILY_REPORT_PROMPT_VERSION,
+            "fallback_used": fallback_used,
+            "error_message": "; ".join(error_messages) if error_messages else None,
+        }
+        return self.daily_report_store.upsert_report(record)
+
+    def _followup_day_number(self, cohort: CandidateCohort, report_date: date) -> int:
+        start = cohort.followup_start_date or cohort.start_date
+        days = self._trading_days_between(start, report_date)
+        target = max(1, int(cohort.followup_target_days or 28))
+        return min(max(1, len(days)), target)
+
+    def _market_proxy_returns(self, symbol: str, report_date: date) -> dict[str, Any]:
+        try:
+            bundle = self.analysis_engine.data_service.get_market_data(symbol, market="us", period="2y")
+            close = bundle.daily["close"].dropna().astype(float)
+            close = close[close.index.map(lambda ts: ts.date() <= report_date)]
+            if close.empty:
+                raise RuntimeError("missing price series")
+            latest = float(close.iloc[-1])
+            latest_date = close.index[-1].date()
+            returns: dict[str, float | None] = {}
+            for days, label in [(1, "1d"), (3, "3d"), (7, "7d"), (14, "14d"), (28, "28d")]:
+                if len(close) <= days:
+                    returns[label] = None
+                    continue
+                ref = float(close.iloc[-(days + 1)])
+                returns[label] = round(float((latest - ref) / ref * 100.0), 4) if ref > 0 else None
+            return {
+                "symbol": symbol,
+                "as_of_date": latest_date.isoformat(),
+                "latest_price": latest,
+                "returns": returns,
+                "error": None,
+            }
+        except Exception as exc:
+            return {
+                "symbol": symbol,
+                "as_of_date": None,
+                "latest_price": None,
+                "returns": {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None},
+                "error": str(exc),
+            }
+
+    def _collect_market_context(self, report_date: date) -> dict[str, Any]:
+        broad = {symbol: self._market_proxy_returns(symbol, report_date) for symbol in ["SPY", "QQQ", "IWM"]}
+        sector_map = {
+            "semiconductors": "SMH",
+            "technology": "XLK",
+            "financials": "XLF",
+            "healthcare": "XLV",
+            "energy": "XLE",
+            "staples": "XLP",
+            "consumer_discretionary": "XLY",
+            "communication_services": "XLC",
+        }
+        sectors = {key: self._market_proxy_returns(symbol, report_date) for key, symbol in sector_map.items()}
+        macro = {
+            "VIX": self._market_proxy_returns("^VIX", report_date),
+            "US_10Y_YIELD": self._market_proxy_returns("^TNX", report_date),
+            "DXY": self._market_proxy_returns("DX-Y.NYB", report_date),
+        }
+        event_flags = self._derive_market_event_flags(broad, sectors, macro)
+        spy_1d = self._return_from_context(broad.get("SPY"), "1d")
+        qqq_1d = self._return_from_context(broad.get("QQQ"), "1d")
+        vix_1d = self._return_from_context(macro.get("VIX"), "1d")
+        if "broad_market_risk_off" in event_flags:
+            regime_note = "risk_off"
+        elif spy_1d is not None and qqq_1d is not None and spy_1d > 0 and qqq_1d > 0 and (vix_1d is None or vix_1d <= 0):
+            regime_note = "risk_on"
+        else:
+            regime_note = "mixed"
+        return {
+            "report_date": report_date.isoformat(),
+            "broad_market": broad,
+            "sector_theme_proxies": sectors,
+            "macro_proxies": macro,
+            "event_flags": event_flags,
+            "regime_note": regime_note,
+            "limitations": ["Event calendar and news integration are not connected in this deterministic snapshot."],
+        }
+
+    @staticmethod
+    def _return_from_context(row: dict[str, Any] | None, label: str) -> float | None:
+        if not isinstance(row, dict):
+            return None
+        returns = row.get("returns")
+        if not isinstance(returns, dict):
+            return None
+        value = returns.get(label)
+        return float(value) if isinstance(value, (int, float)) else None
+
+    def _derive_market_event_flags(
+        self,
+        broad: dict[str, dict[str, Any]],
+        sectors: dict[str, dict[str, Any]],
+        macro: dict[str, dict[str, Any]],
+    ) -> list[str]:
+        flags: list[str] = []
+        spy_1d = self._return_from_context(broad.get("SPY"), "1d")
+        qqq_1d = self._return_from_context(broad.get("QQQ"), "1d")
+        vix_1d = self._return_from_context(macro.get("VIX"), "1d")
+        smh_1d = self._return_from_context(sectors.get("semiconductors"), "1d")
+        smh_3d = self._return_from_context(sectors.get("semiconductors"), "3d")
+        if (smh_1d is not None and smh_1d <= -3.0) or (smh_3d is not None and smh_3d <= -5.0):
+            flags.append("major_semiconductor_selloff")
+        if (
+            spy_1d is not None
+            and qqq_1d is not None
+            and spy_1d <= -1.5
+            and qqq_1d <= -1.5
+        ) or (vix_1d is not None and vix_1d >= 8.0):
+            flags.append("broad_market_risk_off")
+        sector_1d = [self._return_from_context(row, "1d") for row in sectors.values()]
+        sector_1d = [float(x) for x in sector_1d if x is not None]
+        if sector_1d and (max(sector_1d) - min(sector_1d)) >= 3.0:
+            flags.append("sector_rotation")
+        return sorted(set(flags))
+
+    def _sector_proxy_for_candidate(self, cand: CohortCandidate) -> str | None:
+        text = f"{cand.selected_sector or ''} {cand.selected_industry or ''}".lower()
+        if "semiconductor" in text or "chip" in text:
+            return "SMH"
+        if "financial" in text or "bank" in text:
+            return "XLF"
+        if "health" in text or "pharma" in text or "drug" in text or "biotech" in text:
+            return "XLV"
+        if "energy" in text or "oil" in text or "gas" in text:
+            return "XLE"
+        if "consumer defensive" in text or "consumer staples" in text or "staples" in text:
+            return "XLP"
+        if "consumer cyclical" in text or "consumer discretionary" in text or "discretionary" in text:
+            return "XLY"
+        if "communication" in text or "telecom" in text or "media" in text:
+            return "XLC"
+        if "technology" in text or "software" in text or "hardware" in text:
+            return "XLK"
+        return None
+
+    def _return_between_dates(self, symbol: str, market: str, start_date: date, end_date: date) -> float | None:
+        try:
+            bundle = self.analysis_engine.data_service.get_market_data(symbol, market=market, period="2y")
+            close = bundle.daily["close"].dropna().astype(float)
+            start_series = close[close.index.map(lambda ts: ts.date() >= start_date)]
+            end_series = close[close.index.map(lambda ts: ts.date() <= end_date)]
+            if start_series.empty or end_series.empty:
+                return None
+            start_price = float(start_series.iloc[0])
+            end_price = float(end_series.iloc[-1])
+            if start_price <= 0:
+                return None
+            return round(float((end_price - start_price) / start_price * 100.0), 4)
+        except Exception:
+            return None
+
+    def _build_candidate_followup_rows(
+        self,
+        candidates: list[CohortCandidate],
+        snapshots: list[CohortDailySnapshot],
+        report_date: date,
+    ) -> list[dict[str, Any]]:
+        snapshot_by_symbol = {row.symbol: row for row in snapshots}
+        rows: list[dict[str, Any]] = []
+        for cand in sorted(candidates, key=lambda row: row.selected_rank):
+            snap = snapshot_by_symbol.get(cand.symbol)
+            absolute = snap.return_since_selection if snap else None
+            spy_return = self._return_between_dates("SPY", "us", cand.selected_at.date(), report_date)
+            qqq_return = self._return_between_dates("QQQ", "us", cand.selected_at.date(), report_date)
+            sector_proxy = self._sector_proxy_for_candidate(cand)
+            sector_return = self._return_between_dates(sector_proxy, "us", cand.selected_at.date(), report_date) if sector_proxy else None
+            relative_spy = round(float(absolute) - spy_return, 4) if absolute is not None and spy_return is not None else None
+            relative_qqq = round(float(absolute) - qqq_return, 4) if absolute is not None and qqq_return is not None else None
+            relative_sector = round(float(absolute) - sector_return, 4) if absolute is not None and sector_return is not None else None
+            data_quality_flags = list(snap.data_quality_flags if snap else [])
+            validity_state = str(snap.validity_state if snap else "pending_validation")
+            if data_quality_flags:
+                validity_state = "needs_data_check"
+            if validity_state not in {"pending_validation", "valid", "invalid", "needs_data_check"}:
+                validity_state = "pending_validation"
+            rows.append(
+                {
+                    "symbol": cand.symbol,
+                    "company_name": cand.selected_company_name,
+                    "sector": cand.selected_sector,
+                    "industry": cand.selected_industry,
+                    "selected_rank": cand.selected_rank,
+                    "selected_categories": [x.value if hasattr(x, "value") else str(x) for x in cand.selected_categories],
+                    "selected_setup_type": cand.selected_setup_type,
+                    "selected_price": cand.selected_price,
+                    "latest_price": snap.current_price if snap else None,
+                    "absolute_return_since_selection": absolute,
+                    "return_since_selection": absolute,
+                    "return_1d": snap.return_1d if snap else None,
+                    "return_3d": snap.return_3d if snap else None,
+                    "return_7d": snap.return_7d if snap else None,
+                    "return_14d": snap.return_14d if snap else None,
+                    "return_28d": snap.return_28d if snap else None,
+                    "relative_to_SPY": relative_spy,
+                    "relative_to_QQQ": relative_qqq,
+                    "relative_to_sector_proxy": relative_sector,
+                    "sector_proxy": sector_proxy,
+                    "sector_proxy_return_since_selection": sector_return,
+                    "spy_return_since_selection": spy_return,
+                    "qqq_return_since_selection": qqq_return,
+                    "validity_state": validity_state,
+                    "readiness": "needs_data_check" if data_quality_flags else (snap.entry_readiness if snap else "pending_validation"),
+                    "blocked_by": "data_quality" if data_quality_flags else (snap.blocked_by if snap else "none"),
+                    "invalidation_reason": snap.invalidation_reason if snap else None,
+                    "readiness_explanation": snap.readiness_explanation if snap else "Awaiting follow-up snapshot.",
+                    "data_quality_flags": data_quality_flags,
+                }
+            )
+        return rows
+
+    def _compute_daily_report_stats(
+        self,
+        *,
+        cohort: CandidateCohort,
+        candidate_rows: list[dict[str, Any]],
+        followup_day_number: int,
+    ) -> dict[str, Any]:
+        counts = {"pending_validation": 0, "valid": 0, "invalid": 0, "needs_data_check": 0}
+        by_category: dict[str, list[float]] = {}
+        rel_spy_by_category: dict[str, list[float]] = {}
+        rel_qqq_by_category: dict[str, list[float]] = {}
+        rel_sector_by_category: dict[str, list[float]] = {}
+        for row in candidate_rows:
+            state = str(row.get("validity_state") or "pending_validation")
+            if state not in counts:
+                state = "pending_validation"
+            counts[state] += 1
+            if state == "needs_data_check":
+                continue
+            categories = [str(x) for x in row.get("selected_categories", [])]
+            absolute = row.get("absolute_return_since_selection")
+            rel_spy = row.get("relative_to_SPY")
+            rel_qqq = row.get("relative_to_QQQ")
+            rel_sector = row.get("relative_to_sector_proxy")
+            for cat in categories:
+                if isinstance(absolute, (int, float)):
+                    by_category.setdefault(cat, []).append(float(absolute))
+                if isinstance(rel_spy, (int, float)):
+                    rel_spy_by_category.setdefault(cat, []).append(float(rel_spy))
+                if isinstance(rel_qqq, (int, float)):
+                    rel_qqq_by_category.setdefault(cat, []).append(float(rel_qqq))
+                if isinstance(rel_sector, (int, float)):
+                    rel_sector_by_category.setdefault(cat, []).append(float(rel_sector))
+        avg_by_category = {cat: self._avg(vals) for cat, vals in by_category.items()}
+        avg_by_category = {cat: val for cat, val in avg_by_category.items() if val is not None}
+        enough_history = followup_day_number >= max(1, int(cohort.followup_target_days or 28))
+        best_category = max(avg_by_category, key=avg_by_category.get) if enough_history and avg_by_category else None
+        worst_category = min(avg_by_category, key=avg_by_category.get) if enough_history and avg_by_category else None
+        return {
+            "followup_day_number": followup_day_number,
+            "followup_target_days": max(1, int(cohort.followup_target_days or 28)),
+            "candidate_count": len(candidate_rows),
+            "validity_counts": counts,
+            "average_return_by_category": avg_by_category,
+            "average_relative_to_SPY_by_category": {cat: self._avg(vals) for cat, vals in rel_spy_by_category.items()},
+            "average_relative_to_QQQ_by_category": {cat: self._avg(vals) for cat, vals in rel_qqq_by_category.items()},
+            "average_relative_to_sector_proxy_by_category": {cat: self._avg(vals) for cat, vals in rel_sector_by_category.items()},
+            "best_category": best_category,
+            "worst_category": worst_category,
+            "best_worst_deferred": not enough_history,
+            "data_quality_exclusion_count": counts["needs_data_check"],
+            "pending_horizon_count": sum(1 for row in candidate_rows if row.get("return_28d") is None),
+        }
+
+    def _generate_market_context_note(self, market_context: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+        model = self.settings.market_context_llm_model
+        provider = self._normalize_provider(self.settings.llm_provider)
+        prompt = (
+            "You are a context-only market regime summarizer. Do not give trade instructions.\n"
+            "Explain broad market, sector pressure/support, event flags, and caveats in <=140 words.\n"
+            f"market_context={json.dumps(self._json_safe(market_context))}\n"
+        )
+        started = datetime.now(UTC)
+        try:
+            text = self._ollama_generate(
+                prompt=prompt,
+                model=model,
+                timeout_seconds=45.0,
+                call_type="market_context_note",
+                max_tokens_hint=220,
+                prompt_version=MARKET_CONTEXT_PROMPT_VERSION,
+            )
+            log = self._latest_llm_log(call_type="market_context_note", since=started)
+            return text, {
+                "provider": log.provider if log else provider,
+                "model": log.model if log else model,
+                "prompt_version": MARKET_CONTEXT_PROMPT_VERSION,
+                "fallback_used": bool(log.fallback_used) if log else False,
+                "duration_ms": log.duration_ms if log else None,
+                "error_message": None,
+            }
+        except Exception as exc:
+            log = self._latest_llm_log(call_type="market_context_note", since=started)
+            return None, {
+                "provider": provider,
+                "model": model,
+                "prompt_version": MARKET_CONTEXT_PROMPT_VERSION,
+                "fallback_used": True,
+                "duration_ms": log.duration_ms if log else None,
+                "error_message": str(exc),
+            }
+
+    def _generate_daily_report_summary(
+        self,
+        cohort: CandidateCohort,
+        report_date: date,
+        deterministic_stats: dict[str, Any],
+        candidate_rows: list[dict[str, Any]],
+        market_context: dict[str, Any],
+    ) -> tuple[str | None, dict[str, Any]]:
+        model = self.settings.daily_report_llm_model
+        provider = self._normalize_provider(self.settings.llm_provider)
+        compact_candidates = [
+            {
+                "symbol": row["symbol"],
+                "absolute_return_since_selection": row["absolute_return_since_selection"],
+                "relative_to_SPY": row["relative_to_SPY"],
+                "relative_to_QQQ": row["relative_to_QQQ"],
+                "relative_to_sector_proxy": row["relative_to_sector_proxy"],
+                "validity_state": row["validity_state"],
+                "readiness": row["readiness"],
+                "data_quality_flags": row["data_quality_flags"],
+            }
+            for row in candidate_rows[:60]
+        ]
+        prompt = (
+            "You are TradeGhost's context-only daily cohort reviewer.\n"
+            "Do not change deterministic fields, ranking, validity, readiness, score, or category.\n"
+            "Do not give trade instructions. Summarize movement drivers and caveats only.\n"
+            "Use SPY, QQQ, and sector-relative data to distinguish broad, sector, and stock-specific movement.\n"
+            "Keep <=180 words.\n"
+            f"cohort={cohort.name} cohort_id={cohort.id} report_date={report_date.isoformat()}\n"
+            f"deterministic_stats={json.dumps(self._json_safe(deterministic_stats))}\n"
+            f"market_context={json.dumps(self._json_safe(market_context))}\n"
+            f"candidates={json.dumps(self._json_safe(compact_candidates))}\n"
+        )
+        started = datetime.now(UTC)
+        try:
+            text = self._ollama_generate(
+                prompt=prompt,
+                model=model,
+                timeout_seconds=60.0,
+                call_type="daily_cohort_report_summary",
+                max_tokens_hint=300,
+                prompt_version=DAILY_REPORT_PROMPT_VERSION,
+            )
+            log = self._latest_llm_log(call_type="daily_cohort_report_summary", since=started)
+            return text, {
+                "provider": log.provider if log else provider,
+                "model": log.model if log else model,
+                "prompt_version": DAILY_REPORT_PROMPT_VERSION,
+                "fallback_used": bool(log.fallback_used) if log else False,
+                "duration_ms": log.duration_ms if log else None,
+                "error_message": None,
+            }
+        except Exception as exc:
+            log = self._latest_llm_log(call_type="daily_cohort_report_summary", since=started)
+            return None, {
+                "provider": provider,
+                "model": model,
+                "prompt_version": DAILY_REPORT_PROMPT_VERSION,
+                "fallback_used": True,
+                "duration_ms": log.duration_ms if log else None,
+                "error_message": str(exc),
+            }
+
+    def _latest_llm_log(self, *, call_type: str, since: datetime) -> LLMDebugLog | None:
+        rows = [
+            row
+            for row in self._read_llm_logs()
+            if row.call_type == call_type and row.timestamp >= since
+        ]
+        return sorted(rows, key=lambda row: row.timestamp, reverse=True)[0] if rows else None
+
+    def _deterministic_daily_summary(self, deterministic_stats: dict[str, Any], market_context: dict[str, Any]) -> str:
+        counts = deterministic_stats.get("validity_counts", {})
+        regime = market_context.get("regime_note", "mixed")
+        return (
+            f"Deterministic fallback summary: regime={regime}; "
+            f"valid={counts.get('valid', 0)}, pending={counts.get('pending_validation', 0)}, "
+            f"invalid={counts.get('invalid', 0)}, needs_data_check={counts.get('needs_data_check', 0)}. "
+            "Interpretation is limited to stored metrics and deterministic proxy context."
+        )
+
+    def _render_daily_report_markdown(
+        self,
+        *,
+        cohort: CandidateCohort,
+        report_date: date,
+        followup_day_number: int,
+        candidate_rows: list[dict[str, Any]],
+        deterministic_stats: dict[str, Any],
+        market_context: dict[str, Any],
+        llm_summary: str,
+        fallback_used: bool,
+        error_message: str | None,
+    ) -> str:
+        target_days = deterministic_stats.get("followup_target_days", cohort.followup_target_days)
+        lines: list[str] = []
+        lines.append(f"# TradeGhost Cohort Daily Follow-up - {cohort.name}")
+        lines.append("")
+        lines.append("## Header")
+        lines.append(f"- cohort_id: `{cohort.id}`")
+        lines.append(f"- cohort_name: `{cohort.name}`")
+        lines.append(f"- report_date: `{report_date.isoformat()}`")
+        lines.append(f"- followup_day_number: `{followup_day_number}/{target_days}`")
+        lines.append(f"- candidate_count: `{len(candidate_rows)}`")
+        lines.append(f"- snapshot_count: `{len(candidate_rows)}`")
+        lines.append("")
+        lines.append("## Market Context")
+        broad = market_context.get("broad_market", {})
+        for symbol in ["SPY", "QQQ", "IWM"]:
+            row = broad.get(symbol, {}) if isinstance(broad, dict) else {}
+            returns = row.get("returns", {}) if isinstance(row, dict) else {}
+            lines.append(
+                f"- {symbol}: 1D={self._fmt_pct(returns.get('1d'))}, 3D={self._fmt_pct(returns.get('3d'))}, "
+                f"7D={self._fmt_pct(returns.get('7d'))}, 14D={self._fmt_pct(returns.get('14d'))}, 28D={self._fmt_pct(returns.get('28d'))}"
+            )
+        lines.append(f"- regime_note: `{market_context.get('regime_note', 'mixed')}`")
+        flags = market_context.get("event_flags", [])
+        lines.append(f"- event_flags: `{', '.join(flags) if flags else 'none'}`")
+        if market_context.get("llm_note"):
+            lines.append(f"- market_context_note: {market_context['llm_note']}")
+        lines.append("")
+        lines.append("## LLM Context Summary")
+        lines.append(llm_summary)
+        lines.append("")
+        lines.append("## Candidate Follow-up")
+        lines.append("| Symbol | Selected | Latest | Since Sel | 1D | 3D | 7D | 14D | 28D | vs SPY | vs QQQ | vs Sector | Validity | Readiness | Blocked By | Data Flags |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|")
+        for row in candidate_rows:
+            lines.append(
+                f"| {row['symbol']} | "
+                f"{row['selected_price'] if row['selected_price'] is not None else 'pending'} | "
+                f"{row['latest_price'] if row['latest_price'] is not None else 'pending'} | "
+                f"{self._fmt_pct(row['absolute_return_since_selection'])} | "
+                f"{self._fmt_pct(row['return_1d'])} | {self._fmt_pct(row['return_3d'])} | {self._fmt_pct(row['return_7d'])} | "
+                f"{self._fmt_pct(row['return_14d'])} | {self._fmt_pct(row['return_28d'])} | "
+                f"{self._fmt_pct(row['relative_to_SPY'])} | {self._fmt_pct(row['relative_to_QQQ'])} | {self._fmt_pct(row['relative_to_sector_proxy'])} | "
+                f"{row['validity_state']} | {row['readiness']} | {row['blocked_by']} | {','.join(row['data_quality_flags']) if row['data_quality_flags'] else '-'} |"
+            )
+        lines.append("")
+        lines.append("## Category Summary")
+        lines.append(f"- average_return_by_category: `{json.dumps(deterministic_stats.get('average_return_by_category', {}), default=str)}`")
+        lines.append(f"- average_relative_to_SPY_by_category: `{json.dumps(deterministic_stats.get('average_relative_to_SPY_by_category', {}), default=str)}`")
+        lines.append(f"- average_relative_to_QQQ_by_category: `{json.dumps(deterministic_stats.get('average_relative_to_QQQ_by_category', {}), default=str)}`")
+        lines.append(f"- average_relative_to_sector_proxy_by_category: `{json.dumps(deterministic_stats.get('average_relative_to_sector_proxy_by_category', {}), default=str)}`")
+        lines.append(f"- validity_counts: `{json.dumps(deterministic_stats.get('validity_counts', {}), default=str)}`")
+        if deterministic_stats.get("best_worst_deferred"):
+            lines.append("- best_worst_category: deferred until enough history is available.")
+        else:
+            lines.append(f"- best_category: `{deterministic_stats.get('best_category') or '-'}`")
+            lines.append(f"- worst_category: `{deterministic_stats.get('worst_category') or '-'}`")
+        lines.append("")
+        lines.append("## Caveats")
+        lines.append("- 28D interpretation remains incomplete until the full target window is collected.")
+        lines.append(f"- data_quality_exclusion_count: `{deterministic_stats.get('data_quality_exclusion_count', 0)}`")
+        lines.append("- Market context uses deterministic proxy symbols only; event/news calendars are not connected yet.")
+        lines.append(f"- llm_fallback_used: `{str(fallback_used).lower()}`")
+        if error_message:
+            lines.append(f"- llm_error_message: `{error_message}`")
+        return "\n".join(lines).strip() + "\n"
+
+    def _write_daily_report_markdown(self, cohort: CandidateCohort, report_date: date, markdown: str) -> Path:
+        export_dir = self.base_dir / "exports"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(ZoneInfo(self.settings.daily_cohort_followup_timezone))
+        filename = (
+            f"tradeghost-cohort-{self._slug(cohort.name)}-{cohort.id[:8].lower()}"
+            f"-followup-{report_date.isoformat()}-{now.strftime('%H%M')}.md"
+        )
+        path = export_dir / filename
+        path.write_text(markdown, encoding="utf-8")
+        return path
+
+    @staticmethod
+    def _engine_version() -> str:
+        try:
+            return version("tradeghost")
+        except PackageNotFoundError:
+            return "0.1.0"
+
+    @staticmethod
+    def _git_commit() -> str:
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+                check=False,
+            )
+            return result.stdout.strip() or "unknown"
+        except Exception:
+            return "unknown"
+
+    def list_cohort_daily_reports(self, cohort_id: str) -> list[CohortDailyReportSummary]:
+        _ = self.get_cohort_detail(cohort_id)
+        return self.daily_report_store.list_reports(cohort_id)
+
+    def get_cohort_daily_report(self, cohort_id: str, report_date: date) -> CohortDailyReportDetail:
+        _ = self.get_cohort_detail(cohort_id)
+        report = self.daily_report_store.get_report(cohort_id, report_date, report_mode="followup")
+        if report is None:
+            raise FileNotFoundError(f"Daily report not found for cohort_id={cohort_id} report_date={report_date}")
+        return report
+
     def get_llm_logs(self, limit: int = 200) -> list[LLMDebugLog]:
         rows = self._read_llm_logs()
         return sorted(rows, key=lambda row: row.timestamp, reverse=True)[: max(1, min(limit, 500))]
@@ -3089,10 +4031,11 @@ class IntelligenceService:
         primary_provider = self._normalize_provider(self.settings.llm_provider)
         endpoint = self.settings.openai_base_url.rstrip("/") if primary_provider == "openai" else self.settings.ollama_base_url.rstrip("/")
         started = datetime.now(UTC)
+        model = req.model or self.settings.llmq_chat_model
         try:
             text = self._ollama_generate(
                 prompt="Reply with exactly: OK",
-                model=req.model,
+                model=model,
                 timeout_seconds=req.timeout_seconds,
                 call_type="health_probe",
             )
@@ -3100,7 +4043,7 @@ class IntelligenceService:
             threshold_ms = int(req.threshold_seconds * 1000)
             return LLMResponseTestResult(
                 ok=True,
-                model=req.model,
+                model=model,
                 endpoint=endpoint,
                 response_time_ms=elapsed_ms,
                 threshold_ms=threshold_ms,
@@ -3114,7 +4057,7 @@ class IntelligenceService:
             threshold_ms = int(req.threshold_seconds * 1000)
             return LLMResponseTestResult(
                 ok=False,
-                model=req.model,
+                model=model,
                 endpoint=endpoint,
                 response_time_ms=elapsed_ms,
                 threshold_ms=threshold_ms,

@@ -183,6 +183,9 @@ Default threshold:
   - `POST /intelligence/cohorts/briefing`
   - `POST /intelligence/cohorts/review`
   - `GET /intelligence/cohorts/{cohort_id}/export`
+  - `GET /intelligence/cohorts/{cohort_id}/daily-reports`
+  - `GET /intelligence/cohorts/{cohort_id}/daily-reports/{report_date}`
+  - `POST /intelligence/cohorts/{cohort_id}/daily-reports/run`
   - `GET /intelligence/dashboard`
   - `GET /intelligence/llm/status`
   - `GET /intelligence/llm/logs`
@@ -263,10 +266,18 @@ Use `.env`:
 LLM_PROVIDER=openai
 LLM_FALLBACK_PROVIDER=ollama
 OPENAI_API_KEY=
-OPENAI_MODEL=gpt-4.1-mini
+OPENAI_MODEL=gpt-5-mini
 OPENAI_BASE_URL=https://api.openai.com/v1
+LLMQ_CHAT_MODEL=gpt-5-mini
+DAILY_REPORT_LLM_MODEL=gpt-5-mini
+MARKET_CONTEXT_LLM_MODEL=gpt-5-mini
+FINAL_28D_REVIEW_LLM_MODEL=gpt-5.4-mini
 OLLAMA_BASE_URL=http://localhost:11435
 OLLAMA_MODEL=llama3.2:3b
+DATABASE_URL=postgresql://tradeghost:tradeghost@localhost:5432/tradeghost
+DAILY_COHORT_FOLLOWUP_ENABLED=true
+DAILY_COHORT_FOLLOWUP_SCHEDULE=23:30
+DAILY_COHORT_FOLLOWUP_TIMEZONE=Europe/London
 ```
 
 Notes:

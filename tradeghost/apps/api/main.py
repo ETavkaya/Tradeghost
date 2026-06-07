@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import date
 from fastapi import FastAPI, HTTPException, Query
 
 from tradeghost.services.analysis_engine import AnalysisEngine
@@ -32,8 +33,12 @@ from tradeghost.shared.models.schemas import (
     DailyBriefing,
     CandidateCohort,
     CohortDetail,
+    CohortDailyReportDetail,
+    CohortDailyReportRunResponse,
+    CohortDailyReportSummary,
     CohortReportMode,
     CohortFollowupRequest,
+    CohortFollowupSettingsRequest,
     CohortFollowupResponse,
     CohortSymbolContextRequest,
     CohortBriefingRequest,
@@ -98,6 +103,8 @@ intelligence_service = IntelligenceService(
 )
 _monitor_stop_event = threading.Event()
 _monitor_thread: threading.Thread | None = None
+_cohort_followup_stop_event = threading.Event()
+_cohort_followup_thread: threading.Thread | None = None
 
 
 def _background_monitor_loop() -> None:
@@ -111,23 +118,50 @@ def _background_monitor_loop() -> None:
     logger.info("background monitor loop stopped")
 
 
+def _background_daily_cohort_followup_loop() -> None:
+    logger.info("daily cohort follow-up loop started")
+    poll_seconds = max(15, int(settings.daily_cohort_followup_poll_seconds))
+    while not _cohort_followup_stop_event.is_set():
+        try:
+            if intelligence_service.should_run_daily_cohort_followup_job():
+                intelligence_service.run_due_daily_cohort_followup_job()
+        except Exception as exc:  # pragma: no cover
+            logger.warning("daily cohort follow-up loop error: %s", exc)
+        _cohort_followup_stop_event.wait(float(poll_seconds))
+    logger.info("daily cohort follow-up loop stopped")
+
+
 @app.on_event("startup")
 def startup_background_monitor() -> None:
-    global _monitor_thread
+    global _monitor_thread, _cohort_followup_thread
     if _monitor_thread is not None and _monitor_thread.is_alive():
-        return
-    _monitor_stop_event.clear()
-    _monitor_thread = threading.Thread(target=_background_monitor_loop, name="tradeghost-monitor-loop", daemon=True)
-    _monitor_thread.start()
+        pass
+    else:
+        _monitor_stop_event.clear()
+        _monitor_thread = threading.Thread(target=_background_monitor_loop, name="tradeghost-monitor-loop", daemon=True)
+        _monitor_thread.start()
+    if settings.daily_cohort_followup_enabled:
+        if _cohort_followup_thread is None or not _cohort_followup_thread.is_alive():
+            _cohort_followup_stop_event.clear()
+            _cohort_followup_thread = threading.Thread(
+                target=_background_daily_cohort_followup_loop,
+                name="tradeghost-daily-cohort-followup-loop",
+                daemon=True,
+            )
+            _cohort_followup_thread.start()
 
 
 @app.on_event("shutdown")
 def shutdown_background_monitor() -> None:
     _monitor_stop_event.set()
-    global _monitor_thread
+    _cohort_followup_stop_event.set()
+    global _monitor_thread, _cohort_followup_thread
     if _monitor_thread is not None and _monitor_thread.is_alive():
         _monitor_thread.join(timeout=2.0)
     _monitor_thread = None
+    if _cohort_followup_thread is not None and _cohort_followup_thread.is_alive():
+        _cohort_followup_thread.join(timeout=2.0)
+    _cohort_followup_thread = None
 
 
 @app.get("/health")
@@ -603,6 +637,19 @@ def activate_intelligence_cohort(cohort_id: str) -> CohortStatusUpdateResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.put("/intelligence/cohorts/{cohort_id}/follow-up-settings", response_model=CandidateCohort)
+def update_intelligence_cohort_followup_settings(
+    cohort_id: str,
+    payload: CohortFollowupSettingsRequest,
+) -> CandidateCohort:
+    try:
+        return intelligence_service.update_cohort_followup_settings(cohort_id, payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.delete("/intelligence/cohorts/{cohort_id}", response_model=CohortDeleteResponse)
 def delete_intelligence_cohort(cohort_id: str) -> CohortDeleteResponse:
     try:
@@ -677,6 +724,50 @@ def export_intelligence_cohort_report(
 ) -> IntelligenceRunReportExport:
     try:
         return intelligence_service.export_cohort_report_markdown(cohort_id, report_mode=mode)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/cohorts/{cohort_id}/daily-reports", response_model=list[CohortDailyReportSummary])
+@app.get("/intelligence/cohorts/{cohort_id}/daily-reports", response_model=list[CohortDailyReportSummary])
+def list_cohort_daily_reports(cohort_id: str) -> list[CohortDailyReportSummary]:
+    try:
+        return intelligence_service.list_cohort_daily_reports(cohort_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/cohorts/{cohort_id}/daily-reports/{report_date}", response_model=CohortDailyReportDetail)
+@app.get("/intelligence/cohorts/{cohort_id}/daily-reports/{report_date}", response_model=CohortDailyReportDetail)
+def get_cohort_daily_report(cohort_id: str, report_date: date) -> CohortDailyReportDetail:
+    try:
+        return intelligence_service.get_cohort_daily_report(cohort_id, report_date)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/cohorts/{cohort_id}/daily-reports/run", response_model=CohortDailyReportRunResponse)
+@app.post("/intelligence/cohorts/{cohort_id}/daily-reports/run", response_model=CohortDailyReportRunResponse)
+def run_cohort_daily_report(
+    cohort_id: str,
+    report_date: date | None = Query(default=None),
+    include_llm: bool = Query(default=True),
+    backfill: bool = Query(default=False),
+) -> CohortDailyReportRunResponse:
+    try:
+        return intelligence_service.run_daily_cohort_followup_job(
+            cohort_id=cohort_id,
+            report_date=report_date,
+            backfill=backfill,
+            include_llm=include_llm,
+            force=True,
+        )
     except FileNotFoundError as exc:  # pragma: no cover
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover

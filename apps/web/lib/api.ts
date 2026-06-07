@@ -14,6 +14,9 @@ import {
   DailyBriefing,
   CandidateCohort,
   CohortDetail,
+  CohortDailyReportDetail,
+  CohortDailyReportRunResponse,
+  CohortDailyReportSummary,
   CohortFollowupResponse,
   CohortCleanupDuplicateResponse,
   CohortDeleteResponse,
@@ -270,6 +273,12 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({})
     }),
+  updateCohortFollowupSettings: (cohortId: string, payload: Record<string, unknown>) =>
+    fetchJson<CandidateCohort>(`/api/intelligence/cohorts/${encodeURIComponent(cohortId)}/follow-up-settings`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
   deleteCohort: (cohortId: string) =>
     fetchJson<CohortDeleteResponse>(`/api/intelligence/cohorts/${encodeURIComponent(cohortId)}`, { method: "DELETE" }),
   cleanupDuplicateCohorts: (payload: { dry_run?: boolean; apply_archive?: boolean }) =>
@@ -280,6 +289,24 @@ export const api = {
     }),
   getCohortDetail: (cohortId: string) =>
     fetchJson<CohortDetail>(`/api/intelligence/cohorts/${encodeURIComponent(cohortId)}`),
+  listCohortDailyReports: (cohortId: string) =>
+    fetchJson<CohortDailyReportSummary[]>(`/api/cohorts/${encodeURIComponent(cohortId)}/daily-reports`),
+  getCohortDailyReport: (cohortId: string, reportDate: string) =>
+    fetchJson<CohortDailyReportDetail>(`/api/cohorts/${encodeURIComponent(cohortId)}/daily-reports/${encodeURIComponent(reportDate)}`),
+  runCohortDailyReport: (cohortId: string, options?: { report_date?: string; include_llm?: boolean; backfill?: boolean }) => {
+    const params = new URLSearchParams();
+    if (options?.report_date) params.set("report_date", options.report_date);
+    if (options?.include_llm !== undefined) params.set("include_llm", String(options.include_llm));
+    if (options?.backfill !== undefined) params.set("backfill", String(options.backfill));
+    return fetchJson<CohortDailyReportRunResponse>(
+      `/api/cohorts/${encodeURIComponent(cohortId)}/daily-reports/run${params.toString() ? `?${params.toString()}` : ""}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({})
+      }
+    );
+  },
   runCohortFollowup: (payload: Record<string, unknown>) =>
     fetchJson<CohortFollowupResponse>("/api/intelligence/cohorts/follow-up", {
       method: "POST",

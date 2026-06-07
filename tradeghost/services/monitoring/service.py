@@ -723,7 +723,7 @@ class MonitoringService:
         return (
             AlertSignalType.INFO,
             "Monitoring condition triggered.",
-            "Open Analysis. This is not an automatic buy/sell signal.",
+            "Open Analysis. This is not an automatic trade signal.",
         )
 
     def _append_event_if_allowed(

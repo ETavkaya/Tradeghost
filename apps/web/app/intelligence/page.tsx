@@ -158,7 +158,7 @@ export default function IntelligencePage() {
     setCohortActionSuccess((prev) => ({ ...prev, [selectedCohortId]: prev[selectedCohortId] ?? {} }));
   }, [selectedCohortId]);
 
-  const activeModel = llmStatus?.model_used ?? "llama3.2:3b";
+  const activeModel = llmStatus?.model_used ?? "";
   const selectedCohortMeta = (dashboard?.cohorts ?? []).find((x) => x.id === selectedCohortId) ?? null;
   const filteredCohorts = (dashboard?.cohorts ?? []).filter((row) => cohortFilter === "all" ? true : row.status === cohortFilter);
   const cohortContexts = (dashboard?.latest_contexts ?? []).filter((row) => row.cohort_id === selectedCohortId);

@@ -1174,7 +1174,7 @@ class SymbolContext(BaseModel):
     bear_case: str
     risks: str
     summary: str
-    model: str = "llama3.2:3b"
+    model: str = ""
     status: str = "generated"
     error: str | None = None
 
@@ -1184,7 +1184,7 @@ class DailyBriefing(BaseModel):
     run_id: str | None = None
     cohort_id: str | None = None
     summary_text: str
-    model: str = "llama3.2:3b"
+    model: str = ""
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     status: str = "generated"
     error: str | None = None
@@ -1197,7 +1197,7 @@ class SystemReview(BaseModel):
     mistakes: str
     missed_patterns: str
     recommendations: str
-    model: str = "llama3.2:3b"
+    model: str = ""
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     status: str = "generated"
     error: str | None = None
@@ -1243,6 +1243,11 @@ class CandidateCohort(BaseModel):
     symbols_count: int = 0
     latest_followup_date: date | None = None
     short_id: str | None = None
+    followup_enabled: bool = False
+    followup_start_date: date | None = None
+    followup_target_days: int = 28
+    followup_schedule: str | None = None
+    followup_completed: bool = False
 
 
 class CohortCandidate(BaseModel):
@@ -1394,6 +1399,14 @@ class CohortStatusUpdateResponse(BaseModel):
     changed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class CohortFollowupSettingsRequest(BaseModel):
+    followup_enabled: bool | None = None
+    followup_start_date: date | None = None
+    followup_target_days: int | None = Field(default=None, ge=1, le=365)
+    followup_schedule: str | None = None
+    followup_completed: bool | None = None
+
+
 class CohortDeleteResponse(BaseModel):
     cohort_id: str
     deleted: bool = True
@@ -1426,8 +1439,9 @@ class CohortCleanupDuplicateResponse(BaseModel):
 
 class CohortFollowupRequest(BaseModel):
     cohort_id: str
+    report_date: date | None = None
     include_updated_context: bool = False
-    context_model: str = "llama3.2:3b"
+    context_model: str | None = None
     timeout_seconds: float = Field(default=120.0, ge=5.0, le=300.0)
 
 
@@ -1436,7 +1450,7 @@ class CohortSymbolContextRequest(BaseModel):
     context_symbol_limit: int = Field(default=10, ge=1, le=200)
     max_concurrency: int = Field(default=1, ge=1, le=8)
     timeout_seconds: float = Field(default=120.0, ge=5.0, le=300.0)
-    model: str = "llama3.2:3b"
+    model: str | None = None
     sequential_mode: bool = True
     short_context_mode: bool = True
     debug_stream: bool = False
@@ -1445,7 +1459,7 @@ class CohortSymbolContextRequest(BaseModel):
 
 class CohortBriefingRequest(BaseModel):
     cohort_id: str
-    model: str = "llama3.2:3b"
+    model: str | None = None
     timeout_seconds: float = Field(default=300.0, ge=5.0, le=300.0)
     short_briefing_mode: bool = True
 
@@ -1453,7 +1467,7 @@ class CohortBriefingRequest(BaseModel):
 class CohortReviewRequest(BaseModel):
     cohort_id: str
     days_required: int = Field(default=28, ge=7, le=365)
-    model: str = "llama3.2:3b"
+    model: str | None = None
     timeout_seconds: float = Field(default=45.0, ge=5.0, le=300.0)
 
 
@@ -1509,12 +1523,53 @@ class CohortReviewResponse(BaseModel):
     llm_summary: str | None = None
 
 
+class CohortDailyReportSummary(BaseModel):
+    id: str | None = None
+    cohort_id: str
+    cohort_name: str | None = None
+    report_date: date
+    report_mode: str
+    followup_day_number: int | None = None
+    candidate_count: int = 0
+    followup_snapshot_count: int = 0
+    deterministic_stats_json: dict[str, Any] = Field(default_factory=dict)
+    market_context_json: dict[str, Any] = Field(default_factory=dict)
+    llm_model: str | None = None
+    fallback_used: bool = False
+    export_path: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class CohortDailyReportDetail(CohortDailyReportSummary):
+    candidate_followup_json: list[dict[str, Any]] = Field(default_factory=list)
+    llm_context_summary: str | None = None
+    report_markdown: str | None = None
+    engine_version: str | None = None
+    git_commit: str | None = None
+    llm_provider: str | None = None
+    prompt_version: str | None = None
+    error_message: str | None = None
+
+
+class CohortDailyReportRunResponse(BaseModel):
+    job_name: str = "daily_cohort_followup_job"
+    run_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    requested_cohort_id: str | None = None
+    report_dates: list[date] = Field(default_factory=list)
+    generated: int = 0
+    skipped: int = 0
+    failed: int = 0
+    reports: list[CohortDailyReportSummary] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
 class SymbolContextBatchRequest(BaseModel):
     run_id: str
     context_symbol_limit: int = Field(default=3, ge=1, le=100)
     max_concurrency: int = Field(default=1, ge=1, le=8)
     timeout_seconds: float = Field(default=120.0, ge=5.0, le=300.0)
-    model: str = "llama3.2:3b"
+    model: str | None = None
     sequential_mode: bool = True
     short_context_mode: bool = True
     debug_stream: bool = False
@@ -1522,14 +1577,14 @@ class SymbolContextBatchRequest(BaseModel):
 
 class DailyBriefingRequest(BaseModel):
     run_id: str
-    model: str = "llama3.2:3b"
+    model: str | None = None
     timeout_seconds: float = Field(default=300.0, ge=5.0, le=300.0)
     short_briefing_mode: bool = True
 
 
 class SystemReviewRequest(BaseModel):
     days: int = Field(default=28, ge=7, le=365)
-    model: str = "llama3.2:3b"
+    model: str | None = None
     max_concurrency: int = Field(default=2, ge=1, le=8)
     timeout_seconds: float = Field(default=45.0, ge=5.0, le=300.0)
 
@@ -1637,6 +1692,7 @@ class LLMDebugLog(BaseModel):
     token_estimate: int = 0
     prompt_preview: str | None = None
     response_preview: str | None = None
+    prompt_version: str | None = None
 
 
 class LLMConnectionStatus(BaseModel):
@@ -1674,7 +1730,7 @@ class PipelineDebugEvent(BaseModel):
 
 
 class LLMResponseTestRequest(BaseModel):
-    model: str = "gpt-4.1-mini"
+    model: str | None = None
     timeout_seconds: float = Field(default=25.0, ge=5.0, le=180.0)
     threshold_seconds: float = Field(default=20.0, ge=1.0, le=180.0)
 

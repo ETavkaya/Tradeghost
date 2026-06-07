@@ -76,6 +76,8 @@ CATEGORY_RECOMMENDED_DURATION: dict[ScannerCategory, ScannerDuration] = {
     ScannerCategory.OVEREXTENDED: ScannerDuration.ONE_YEAR,
 }
 
+LLMQ_PROMPT_VERSION = "scanner_llmq_context_v1"
+
 
 @dataclass
 class _Eval:
@@ -901,7 +903,7 @@ class ScannerEngine:
         return (
             f"{row.symbol} is showing up as a {priority_label} {category_label} candidate, which means early radar more than confirmation.\n\n"
             f"The interesting part is proximity to EMA200 ({row.price_vs_ema200_pct:.2f}% vs EMA200), but the weak side is trend quality: {trend_label}, {ema_slope_label} EMA200 slope, and {dynamics_label} dynamics.\n\n"
-            f"This is not a buy/sell call; it is a context read."
+            f"This is not a trade call; it is a context read."
         )
 
     def _recent_news_summary(self, symbol: str) -> tuple[bool, str]:
@@ -938,7 +940,7 @@ class ScannerEngine:
         )
         prompt = (
             "You are an explanatory market-context assistant.\n"
-            "No financial advice. Do NOT output buy/sell recommendations.\n"
+            "No financial advice. Do NOT output trade recommendations.\n"
             "Do NOT change deterministic score/category/priority and do not imply trade execution.\n"
             "Do not just repeat values; interpret what they imply in context.\n"
             "If setup resembles build_up near EMA200, explain early-watch / not-confirmed nature.\n"
@@ -959,12 +961,13 @@ class ScannerEngine:
         fallback_used = False
         for provider_name in sequence:
             try:
-                model = self.settings.openai_model if provider_name == "openai" else self.settings.ollama_model
+                model = self.settings.llmq_chat_model if provider_name == "openai" else self.settings.ollama_model
                 timeout_seconds = 70.0 if provider_name == "openai" else 45.0
                 self._logger.info(
-                    "action=scanner_llmq provider=%s model=%s timeout=%s openai_key_present=%s fallback_used=%s",
+                    "action=scanner_llmq provider=%s model=%s prompt_version=%s timeout=%s openai_key_present=%s fallback_used=%s",
                     provider_name,
                     model,
+                    LLMQ_PROMPT_VERSION,
                     timeout_seconds,
                     str(bool(self.settings.openai_api_key)).lower(),
                     str(fallback_used).lower(),
@@ -976,15 +979,16 @@ class ScannerEngine:
                     options={"temperature": 0.1},
                 )
                 self._logger.info(
-                    "action=scanner_llmq provider=%s model=%s status=success fallback_used=%s",
+                    "action=scanner_llmq provider=%s model=%s prompt_version=%s status=success fallback_used=%s",
                     provider_name,
                     model,
+                    LLMQ_PROMPT_VERSION,
                     str(fallback_used).lower(),
                 )
                 disclaimer = (
                     "This is not financial advice.\n"
                     "LLM does not change deterministic score/category/priority.\n"
-                    "LLM does not issue buy/sell signals.\n"
+                    "LLM does not issue trade signals.\n"
                     "LLM explains context only.\n\n"
                 )
                 return ScannerLLMQResponse(
@@ -999,9 +1003,10 @@ class ScannerEngine:
             except Exception as exc:  # pragma: no cover
                 last_err = exc
                 self._logger.warning(
-                    "action=scanner_llmq provider=%s model=%s status=failed error=%s fallback_used=%s",
+                    "action=scanner_llmq provider=%s model=%s prompt_version=%s status=failed error=%s fallback_used=%s",
                     provider_name,
-                    (self.settings.openai_model if provider_name == "openai" else self.settings.ollama_model),
+                    (self.settings.llmq_chat_model if provider_name == "openai" else self.settings.ollama_model),
+                    LLMQ_PROMPT_VERSION,
                     str(exc),
                     str(fallback_used).lower(),
                 )
@@ -1026,7 +1031,7 @@ class ScannerEngine:
         disclaimer = (
             "This is not financial advice.\n"
             "LLM does not change deterministic score/category/priority.\n"
-            "LLM does not issue buy/sell signals.\n"
+            "LLM does not issue trade signals.\n"
             "LLM explains context only.\n\n"
         )
         return ScannerLLMQResponse(
@@ -1047,16 +1052,17 @@ class ScannerEngine:
     def chat_llmq(self, req: ScannerLLMQChatRequest) -> ScannerLLMQChatResponse:
         row = req.scanner_snapshot
         started = time.monotonic()
-        provider_config_loaded = bool(self.settings.openai_model and self.settings.llm_provider)
+        provider_config_loaded = bool(self.settings.llmq_chat_model and self.settings.llm_provider)
         self._logger.info(
             "[LLMQ] provider_config_loaded=%s openai_api_key_present=%s",
             str(provider_config_loaded).lower(),
             str(bool(self.settings.openai_api_key)).lower(),
         )
         self._logger.info(
-            "[LLMQ] provider config source=settings env_file=.env selected_llm_provider=%s fallback_provider=%s",
+            "[LLMQ] provider config source=settings env_file=.env selected_llm_provider=%s fallback_provider=%s prompt_version=%s",
             self.settings.llm_provider,
             self.settings.llm_fallback_provider,
+            LLMQ_PROMPT_VERSION,
         )
         self._logger.info(
             "[LLMQ] received_snapshot symbol=%s trend_state=%s price_vs_ema200=%.2f category=%s score=%.2f",
@@ -1103,7 +1109,7 @@ class ScannerEngine:
         prompt = (
             "You are TradeGhost LLMQ, a context-only analyst.\n"
             "You explain deterministic scanner outputs but never override them.\n"
-            "No buy/sell/hold recommendations. No trade advice.\n"
+            "No trade recommendations. No trade advice.\n"
             "Do not change score/category/priority/alerts. Scanner snapshot is ground truth.\n"
             "Interpret values; avoid raw repetition and avoid generic indicator tutorials.\n"
             "Never expose raw enum/code values such as ScannerPriority.LOW or snake_case tags; rewrite them in plain English.\n"
@@ -1128,18 +1134,19 @@ class ScannerEngine:
         last_err: Exception | None = None
         fallback_used = False
         for provider_name in sequence:
-            model = self.settings.openai_model if provider_name == "openai" else self.settings.ollama_model
+            model = self.settings.llmq_chat_model if provider_name == "openai" else self.settings.ollama_model
             timeout_seconds = 70.0 if provider_name == "openai" else 45.0
             try:
-                self._logger.info("[LLMQ] selected_provider=%s selected_model=%s request_started", provider_name.upper(), model)
+                self._logger.info("[LLMQ] selected_provider=%s selected_model=%s prompt_version=%s request_started", provider_name.upper(), model, LLMQ_PROMPT_VERSION)
                 if provider_name == "openai":
                     self._logger.info("[LLMQ] timeout_seconds=%.1f", timeout_seconds)
                     self._logger.info("[LLMQ] openai request starting")
                 self._logger.info(
-                    "[LLMQ] symbol=%s provider selected=%s model=%s timeout=%s openai_key_present=%s fallback_used=%s",
+                    "[LLMQ] symbol=%s provider selected=%s model=%s prompt_version=%s timeout=%s openai_key_present=%s fallback_used=%s",
                     row.symbol,
                     provider_name,
                     model,
+                    LLMQ_PROMPT_VERSION,
                     timeout_seconds,
                     str(bool(self.settings.openai_api_key)).lower(),
                     str(fallback_used).lower(),
@@ -1155,10 +1162,11 @@ class ScannerEngine:
                     raise RuntimeError("LLMQ provider returned empty text")
                 duration_ms = int((time.monotonic() - started) * 1000)
                 self._logger.info(
-                    "[LLMQ] symbol=%s provider=%s model=%s success=true fallback_used=%s duration_ms=%s",
+                    "[LLMQ] symbol=%s provider=%s model=%s prompt_version=%s success=true fallback_used=%s duration_ms=%s",
                     row.symbol,
                     provider_name,
                     model,
+                    LLMQ_PROMPT_VERSION,
                     str(fallback_used).lower(),
                     duration_ms,
                 )
@@ -1184,10 +1192,11 @@ class ScannerEngine:
                         str(exc),
                     )
                 self._logger.warning(
-                    "[LLMQ] symbol=%s provider=%s model=%s success=false fallback_used=%s error=%s",
+                    "[LLMQ] symbol=%s provider=%s model=%s prompt_version=%s success=false fallback_used=%s error=%s",
                     row.symbol,
                     provider_name,
                     model,
+                    LLMQ_PROMPT_VERSION,
                     str(fallback_used).lower(),
                     str(exc),
                 )

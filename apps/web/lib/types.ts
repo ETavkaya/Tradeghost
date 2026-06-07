@@ -1027,6 +1027,11 @@ export type CandidateCohort = {
   symbols_count: number;
   latest_followup_date: string | null;
   short_id: string | null;
+  followup_enabled: boolean;
+  followup_start_date: string | null;
+  followup_target_days: number;
+  followup_schedule: string | null;
+  followup_completed: boolean;
 };
 
 export type CohortCleanupDuplicateResponse = {
@@ -1214,6 +1219,47 @@ export type CohortReviewResponse = {
   llm_summary: string | null;
 };
 
+export type CohortDailyReportSummary = {
+  id: string | null;
+  cohort_id: string;
+  cohort_name: string | null;
+  report_date: string;
+  report_mode: string;
+  followup_day_number: number | null;
+  candidate_count: number;
+  followup_snapshot_count: number;
+  deterministic_stats_json: Record<string, unknown>;
+  market_context_json: Record<string, unknown>;
+  llm_model: string | null;
+  fallback_used: boolean;
+  export_path: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type CohortDailyReportDetail = CohortDailyReportSummary & {
+  candidate_followup_json: Array<Record<string, unknown>>;
+  llm_context_summary: string | null;
+  report_markdown: string | null;
+  engine_version: string | null;
+  git_commit: string | null;
+  llm_provider: string | null;
+  prompt_version: string | null;
+  error_message: string | null;
+};
+
+export type CohortDailyReportRunResponse = {
+  job_name: string;
+  run_at: string;
+  requested_cohort_id: string | null;
+  report_dates: string[];
+  generated: number;
+  skipped: number;
+  failed: number;
+  reports: CohortDailyReportSummary[];
+  errors: string[];
+};
+
 export type SymbolContextBatchResponse = {
   run_id: string;
   generated: number;
@@ -1287,6 +1333,7 @@ export type LLMDebugLog = {
   token_estimate: number;
   prompt_preview: string | null;
   response_preview: string | null;
+  prompt_version: string | null;
 };
 
 export type LLMResponseTestResult = {

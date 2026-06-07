@@ -1,4 +1,16 @@
 services:
+  tradeghost-postgres:
+    image: postgres:16-alpine
+    container_name: tradeghost-postgres
+    environment:
+      POSTGRES_DB: tradeghost
+      POSTGRES_USER: tradeghost
+      POSTGRES_PASSWORD: tradeghost
+    ports:
+      - "5432:5432"
+    volumes:
+      - tradeghost-postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
   tradeghost-api:
     build:
       context: .
@@ -6,6 +18,10 @@ services:
     container_name: tradeghost-api
     env_file:
       - .env
+    environment:
+      DATABASE_URL: postgresql://tradeghost:tradeghost@tradeghost-postgres:5432/tradeghost
+    depends_on:
+      - tradeghost-postgres
     ports:
       - "8000:8000"
     restart: unless-stopped
@@ -21,3 +37,6 @@ services:
     ports:
       - "3000:3000"
     restart: unless-stopped
+
+volumes:
+  tradeghost-postgres-data:

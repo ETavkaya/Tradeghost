@@ -790,7 +790,25 @@ class IntelligenceService:
         )
         snapshots = self._read_cohort_snapshots()
         target_date = req.report_date or date.today()
+        trading_day = self._is_us_trading_day(target_date)
         new_snapshots: list[CohortDailySnapshot] = []
+        if not trading_day:
+            self.log_daily_followup_scheduler_event(
+                "job_skipped_market_closed",
+                status="success",
+                cohort_id=detail.cohort.id,
+                cohort_name=detail.cohort.name,
+                report_date=target_date.isoformat(),
+                error_message="Market closed; follow-up snapshot generation skipped.",
+            )
+            self._append_pipeline_event(
+                step_name="cohort_followup_skipped_market_closed",
+                status="success",
+                cohort_id=detail.cohort.id,
+                cohort_name=detail.cohort.name,
+                message=f"report_date={target_date.isoformat()} trading_day=false",
+            )
+            return CohortFollowupResponse(cohort_id=req.cohort_id, snapshot_date=target_date, snapshots=[])
         for cand in detail.candidates:
             analysis = self.analysis_engine.analyze_combined(
                 ticker=cand.symbol,
@@ -799,8 +817,6 @@ class IntelligenceService:
                 strategy_mode="balanced",
             )
             close = self._latest_close_for_symbol(cand.symbol, cand.market.value, target_date)
-            if close is None:
-                close = float(analysis.chart.current_price)
             selected_price = cand.selected_price
             perf = self._forward_returns_from_selection(
                 cand.symbol,
@@ -812,6 +828,8 @@ class IntelligenceService:
             )
             data_quality_flags = self._build_data_quality_flags(analysis)
             data_quality_flags.extend([str(x) for x in perf.get("data_quality_flags", []) if x])
+            if close is None:
+                data_quality_flags.append("missing_exact_symbol_latest_price")
             data_quality_flags = sorted(set(data_quality_flags))
             normalized_setup = self._normalize_setup_type(
                 analysis,
@@ -2677,7 +2695,16 @@ class IntelligenceService:
 
     def _latest_close_for_symbol(self, symbol: str, market: str, as_of_date: date) -> float | None:
         try:
-            bundle = self.analysis_engine.data_service.get_market_data(symbol, market=market, period="1y")
+            requested_symbol = normalize_symbol(symbol, market).strip().upper()
+            bundle = self.analysis_engine.data_service.get_market_data(symbol, market=market, period="1y", use_cache=False)
+            bundle_symbol = str(getattr(bundle, "normalized_ticker", "") or "").strip().upper()
+            if requested_symbol and bundle_symbol and requested_symbol != bundle_symbol:
+                self._logger.warning(
+                    "[latest_price] symbol=%s source_symbol=%s status=mismatch",
+                    requested_symbol,
+                    bundle_symbol,
+                )
+                return None
             close = bundle.daily["close"].dropna().astype(float)
             close = close[close.index.map(lambda ts: ts.date() <= as_of_date)]
             if close.empty:
@@ -2711,17 +2738,32 @@ class IntelligenceService:
         as_of_date: date | None = None,
     ) -> dict[str, float | None]:
         try:
-            bundle = self.analysis_engine.data_service.get_market_data(symbol, market=market, period="1y")
+            bundle = self.analysis_engine.data_service.get_market_data(symbol, market=market, period="1y", use_cache=False)
             close = bundle.daily["close"].dropna().astype(float)
             if as_of_date is not None:
                 close = close[close.index.map(lambda ts: ts.date() <= as_of_date)]
-            if close.empty:
-                return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None, "since_selection": None, "data_quality_flags": ["missing_price_series"]}
             dq_flags: list[str] = []
             requested_symbol = normalize_symbol(symbol, market).strip().upper()
             bundle_symbol = str(getattr(bundle, "normalized_ticker", "") or "").strip().upper()
             if requested_symbol and bundle_symbol and requested_symbol != bundle_symbol:
-                dq_flags.append("possible_symbol_price_mismatch")
+                self._logger.warning(
+                    "[horizon_return] symbol=%s source_symbol=%s status=mismatch",
+                    requested_symbol,
+                    bundle_symbol,
+                )
+                return {
+                    "1d": None,
+                    "3d": None,
+                    "7d": None,
+                    "14d": None,
+                    "28d": None,
+                    "max_runup": None,
+                    "max_drawdown": None,
+                    "since_selection": None,
+                    "data_quality_flags": ["possible_symbol_price_mismatch"],
+                }
+            if close.empty:
+                return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None, "since_selection": None, "data_quality_flags": ["missing_price_series"]}
             if selected_price is None or selected_price <= 0:
                 selected_price = float(close.iloc[0])
             from_idx = 0
@@ -3495,8 +3537,69 @@ class IntelligenceService:
         return round(sum(values) / len(values), 3) if values else None
 
     @staticmethod
-    def _is_us_trading_day(day: date) -> bool:
-        return day.weekday() < 5
+    def _observed_fixed_holiday(year: int, month: int, day: int) -> date:
+        holiday = date(year, month, day)
+        if holiday.weekday() == 5:
+            return holiday - timedelta(days=1)
+        if holiday.weekday() == 6:
+            return holiday + timedelta(days=1)
+        return holiday
+
+    @staticmethod
+    def _nth_weekday(year: int, month: int, weekday: int, nth: int) -> date:
+        cursor = date(year, month, 1)
+        while cursor.weekday() != weekday:
+            cursor += timedelta(days=1)
+        return cursor + timedelta(days=7 * (nth - 1))
+
+    @staticmethod
+    def _last_weekday(year: int, month: int, weekday: int) -> date:
+        cursor = date(year, month + 1, 1) - timedelta(days=1) if month < 12 else date(year, 12, 31)
+        while cursor.weekday() != weekday:
+            cursor -= timedelta(days=1)
+        return cursor
+
+    @staticmethod
+    def _easter_date(year: int) -> date:
+        # Anonymous Gregorian algorithm, used here only to derive Good Friday.
+        a = year % 19
+        b = year // 100
+        c = year % 100
+        d = b // 4
+        e = b % 4
+        f = (b + 8) // 25
+        g = (b - f + 1) // 3
+        h = (19 * a + b - d - g + 15) % 30
+        i = c // 4
+        k = c % 4
+        l = (32 + 2 * e + 2 * i - h - k) % 7
+        m = (a + 11 * h + 22 * l) // 451
+        month = (h + l - 7 * m + 114) // 31
+        day = ((h + l - 7 * m + 114) % 31) + 1
+        return date(year, month, day)
+
+    @classmethod
+    def _us_market_holidays(cls, year: int) -> set[date]:
+        holidays = {
+            cls._observed_fixed_holiday(year, 1, 1),
+            cls._nth_weekday(year, 1, 0, 3),  # Martin Luther King Jr. Day
+            cls._nth_weekday(year, 2, 0, 3),  # Washington's Birthday
+            cls._easter_date(year) - timedelta(days=2),  # Good Friday
+            cls._last_weekday(year, 5, 0),  # Memorial Day
+            cls._observed_fixed_holiday(year, 6, 19),
+            cls._observed_fixed_holiday(year, 7, 4),
+            cls._nth_weekday(year, 9, 0, 1),  # Labor Day
+            cls._nth_weekday(year, 11, 3, 4),  # Thanksgiving
+            cls._observed_fixed_holiday(year, 12, 25),
+        }
+        next_new_year = cls._observed_fixed_holiday(year + 1, 1, 1)
+        if next_new_year.year == year:
+            holidays.add(next_new_year)
+        return holidays
+
+    @classmethod
+    def _is_us_trading_day(cls, day: date) -> bool:
+        return day.weekday() < 5 and day not in cls._us_market_holidays(day.year)
 
     def _previous_trading_day(self, day: date) -> date:
         cursor = day
@@ -3514,6 +3617,40 @@ class IntelligenceService:
                 days.append(cursor)
             cursor += timedelta(days=1)
         return days
+
+    def _valid_followup_report_dates(self, cohort_id: str, *, through_date: date | None = None) -> set[date]:
+        dates: set[date] = set()
+        try:
+            for row in self.daily_report_store.list_reports(cohort_id):
+                if row.report_date and self._is_us_trading_day(row.report_date):
+                    if through_date is None or row.report_date <= through_date:
+                        deterministic = row.deterministic_stats_json if isinstance(row.deterministic_stats_json, dict) else {}
+                        if deterministic.get("trading_day") is False:
+                            continue
+                        dates.add(row.report_date)
+        except Exception:
+            pass
+        for snap in self._read_cohort_snapshots():
+            if snap.cohort_id != cohort_id:
+                continue
+            if through_date is not None and snap.snapshot_date > through_date:
+                continue
+            if self._is_us_trading_day(snap.snapshot_date):
+                dates.add(snap.snapshot_date)
+        return dates
+
+    def _valid_followup_day_count(self, cohort: CandidateCohort, report_date: date) -> int:
+        start = cohort.followup_start_date or cohort.start_date
+        target = max(1, int(cohort.followup_target_days or 28))
+        eligible = set(self._trading_days_between(start, report_date)[:target])
+        valid_dates = self._valid_followup_report_dates(cohort.id, through_date=report_date)
+        return len(eligible.intersection(valid_dates))
+
+    @staticmethod
+    def _calendar_day_count(start: date, end: date) -> int:
+        if end < start:
+            return 0
+        return (end - start).days + 1
 
     @staticmethod
     def _parse_schedule_time(schedule: str | None) -> tuple[int, int]:
@@ -3733,13 +3870,13 @@ class IntelligenceService:
         cohorts = self._read_cohorts()
         changed = False
         next_rows: list[CandidateCohort] = []
-        existing_dates = self._existing_daily_report_dates(cohort_id)
         for cohort in cohorts:
             if cohort.id != cohort_id:
                 next_rows.append(cohort)
                 continue
             target_days = max(1, int(cohort.followup_target_days or 28))
-            if len(existing_dates) >= target_days and not cohort.followup_completed:
+            valid_dates = self._valid_followup_report_dates(cohort_id)
+            if len(valid_dates) >= target_days and not cohort.followup_completed:
                 cohort = cohort.model_copy(update={"followup_completed": True, "status": CandidateCohortStatus.COMPLETED})
                 changed = True
             next_rows.append(cohort)
@@ -3747,16 +3884,31 @@ class IntelligenceService:
             self._save_cohorts(next_rows)
 
     def _generate_and_store_daily_report(self, *, cohort_id: str, report_date: date, include_llm: bool) -> CohortDailyReportDetail:
+        trading_day = self._is_us_trading_day(report_date)
+        market_open = trading_day
         followup = self.run_cohort_followup(CohortFollowupRequest(cohort_id=cohort_id, report_date=report_date))
         detail = self.get_cohort_detail(cohort_id)
         snapshots_for_date = [row for row in followup.snapshots if row.snapshot_date == report_date]
         market_context = self._collect_market_context(report_date)
+        market_context["trading_day"] = trading_day
+        market_context["market_open"] = market_open
+        if not trading_day:
+            market_context.setdefault("event_flags", [])
+            market_context["limitations"] = list(market_context.get("limitations", [])) + [
+                "Report date is not a US trading day; follow-up snapshot count does not advance."
+            ]
         candidate_rows = self._build_candidate_followup_rows(detail.candidates, snapshots_for_date, report_date)
         followup_day_number = self._followup_day_number(detail.cohort, report_date)
+        valid_followup_day_count = followup_day_number
+        calendar_day_count = self._calendar_day_count(detail.cohort.followup_start_date or detail.cohort.start_date, report_date)
         deterministic_stats = self._compute_daily_report_stats(
             cohort=detail.cohort,
             candidate_rows=candidate_rows,
             followup_day_number=followup_day_number,
+            trading_day=trading_day,
+            market_open=market_open,
+            valid_followup_day_count=valid_followup_day_count,
+            calendar_day_count=calendar_day_count,
         )
         fallback_used = False
         error_messages: list[str] = []
@@ -3800,6 +3952,11 @@ class IntelligenceService:
             llm_summary=llm_summary,
             fallback_used=fallback_used,
             error_message="; ".join(error_messages) if error_messages else None,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            prompt_version=DAILY_REPORT_PROMPT_VERSION,
+            llm_context_summary_present=bool(llm_summary),
+            followup_snapshot_count=len(snapshots_for_date),
         )
         export_path = self._write_daily_report_markdown(detail.cohort, report_date, markdown)
         record = {
@@ -3827,14 +3984,16 @@ class IntelligenceService:
         return self.daily_report_store.upsert_report(record)
 
     def _followup_day_number(self, cohort: CandidateCohort, report_date: date) -> int:
-        start = cohort.followup_start_date or cohort.start_date
-        days = self._trading_days_between(start, report_date)
         target = max(1, int(cohort.followup_target_days or 28))
-        return min(max(1, len(days)), target)
+        return min(max(0, self._valid_followup_day_count(cohort, report_date)), target)
 
     def _market_proxy_returns(self, symbol: str, report_date: date) -> dict[str, Any]:
         try:
-            bundle = self.analysis_engine.data_service.get_market_data(symbol, market="us", period="2y")
+            requested_symbol = normalize_symbol(symbol, "us").strip().upper()
+            bundle = self.analysis_engine.data_service.get_market_data(symbol, market="us", period="2y", use_cache=False)
+            bundle_symbol = str(getattr(bundle, "normalized_ticker", "") or "").strip().upper()
+            if requested_symbol and bundle_symbol and requested_symbol != bundle_symbol:
+                raise RuntimeError(f"source symbol mismatch: requested={requested_symbol} source={bundle_symbol}")
             close = bundle.daily["close"].dropna().astype(float)
             close = close[close.index.map(lambda ts: ts.date() <= report_date)]
             if close.empty:
@@ -3961,7 +4120,16 @@ class IntelligenceService:
 
     def _return_between_dates(self, symbol: str, market: str, start_date: date, end_date: date) -> float | None:
         try:
-            bundle = self.analysis_engine.data_service.get_market_data(symbol, market=market, period="2y")
+            requested_symbol = normalize_symbol(symbol, market).strip().upper()
+            bundle = self.analysis_engine.data_service.get_market_data(symbol, market=market, period="2y", use_cache=False)
+            bundle_symbol = str(getattr(bundle, "normalized_ticker", "") or "").strip().upper()
+            if requested_symbol and bundle_symbol and requested_symbol != bundle_symbol:
+                self._logger.warning(
+                    "[relative_return] symbol=%s source_symbol=%s status=mismatch",
+                    requested_symbol,
+                    bundle_symbol,
+                )
+                return None
             close = bundle.daily["close"].dropna().astype(float)
             start_series = close[close.index.map(lambda ts: ts.date() >= start_date)]
             end_series = close[close.index.map(lambda ts: ts.date() <= end_date)]
@@ -4040,6 +4208,10 @@ class IntelligenceService:
         cohort: CandidateCohort,
         candidate_rows: list[dict[str, Any]],
         followup_day_number: int,
+        trading_day: bool,
+        market_open: bool,
+        valid_followup_day_count: int,
+        calendar_day_count: int,
     ) -> dict[str, Any]:
         counts = {"pending_validation": 0, "valid": 0, "invalid": 0, "needs_data_check": 0}
         by_category: dict[str, list[float]] = {}
@@ -4072,9 +4244,23 @@ class IntelligenceService:
         enough_history = followup_day_number >= max(1, int(cohort.followup_target_days or 28))
         best_category = max(avg_by_category, key=avg_by_category.get) if enough_history and avg_by_category else None
         worst_category = min(avg_by_category, key=avg_by_category.get) if enough_history and avg_by_category else None
+        pending_horizon_counts = {
+            "7d": sum(1 for row in candidate_rows if row.get("return_7d") is None),
+            "14d": sum(1 for row in candidate_rows if row.get("return_14d") is None),
+            "28d": sum(1 for row in candidate_rows if row.get("return_28d") is None),
+        }
+        pending_any_required_horizon_count = sum(
+            1
+            for row in candidate_rows
+            if row.get("return_7d") is None or row.get("return_14d") is None or row.get("return_28d") is None
+        )
         return {
             "followup_day_number": followup_day_number,
             "followup_target_days": max(1, int(cohort.followup_target_days or 28)),
+            "trading_day": trading_day,
+            "market_open": market_open,
+            "valid_followup_day_count": valid_followup_day_count,
+            "calendar_day_count": calendar_day_count,
             "candidate_count": len(candidate_rows),
             "validity_counts": counts,
             "average_return_by_category": avg_by_category,
@@ -4085,7 +4271,11 @@ class IntelligenceService:
             "worst_category": worst_category,
             "best_worst_deferred": not enough_history,
             "data_quality_exclusion_count": counts["needs_data_check"],
-            "pending_horizon_count": sum(1 for row in candidate_rows if row.get("return_28d") is None),
+            "pending_horizon_count": pending_any_required_horizon_count,
+            "pending_horizon_counts": pending_horizon_counts,
+            "pending_7d_count": pending_horizon_counts["7d"],
+            "pending_14d_count": pending_horizon_counts["14d"],
+            "pending_28d_count": pending_horizon_counts["28d"],
         }
 
     def _generate_market_context_note(self, market_context: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
@@ -4220,6 +4410,11 @@ class IntelligenceService:
         llm_summary: str,
         fallback_used: bool,
         error_message: str | None,
+        llm_provider: str | None,
+        llm_model: str | None,
+        prompt_version: str | None,
+        llm_context_summary_present: bool,
+        followup_snapshot_count: int,
     ) -> str:
         target_days = deterministic_stats.get("followup_target_days", cohort.followup_target_days)
         lines: list[str] = []
@@ -4230,8 +4425,18 @@ class IntelligenceService:
         lines.append(f"- cohort_name: `{cohort.name}`")
         lines.append(f"- report_date: `{report_date.isoformat()}`")
         lines.append(f"- followup_day_number: `{followup_day_number}/{target_days}`")
+        lines.append(f"- valid_followup_day_count: `{deterministic_stats.get('valid_followup_day_count', followup_day_number)}/{target_days}`")
+        lines.append(f"- calendar_day_count: `{deterministic_stats.get('calendar_day_count', '-')}`")
+        lines.append(f"- trading_day: `{str(deterministic_stats.get('trading_day', False)).lower()}`")
+        lines.append(f"- market_open: `{str(deterministic_stats.get('market_open', False)).lower()}`")
         lines.append(f"- candidate_count: `{len(candidate_rows)}`")
-        lines.append(f"- snapshot_count: `{len(candidate_rows)}`")
+        lines.append(f"- snapshot_count: `{followup_snapshot_count}`")
+        lines.append(f"- followup_snapshot_count: `{followup_snapshot_count}`")
+        lines.append(f"- llm_provider: `{llm_provider or '-'}`")
+        lines.append(f"- llm_model: `{llm_model or '-'}`")
+        lines.append(f"- prompt_version: `{prompt_version or '-'}`")
+        lines.append(f"- fallback_used: `{str(fallback_used).lower()}`")
+        lines.append(f"- llm_context_summary_present: `{str(llm_context_summary_present).lower()}`")
         lines.append("")
         lines.append("## Market Context")
         broad = market_context.get("broad_market", {})
@@ -4280,6 +4485,7 @@ class IntelligenceService:
         lines.append("")
         lines.append("## Caveats")
         lines.append("- 28D interpretation remains incomplete until the full target window is collected.")
+        lines.append(f"- pending_horizon_counts: `{json.dumps(deterministic_stats.get('pending_horizon_counts', {}), default=str)}`")
         lines.append(f"- data_quality_exclusion_count: `{deterministic_stats.get('data_quality_exclusion_count', 0)}`")
         lines.append("- Market context uses deterministic proxy symbols only; event/news calendars are not connected yet.")
         lines.append(f"- llm_fallback_used: `{str(fallback_used).lower()}`")

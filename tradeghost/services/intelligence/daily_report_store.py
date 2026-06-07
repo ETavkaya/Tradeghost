@@ -148,6 +148,44 @@ class CohortDailyReportStore:
             ).fetchall()
         return [self._summary_from_row(row) for row in rows]
 
+    def list_latest_reports(self, limit: int = 25) -> list[CohortDailyReportSummary]:
+        self.ensure_schema()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM cohort_daily_reports
+                ORDER BY report_date DESC, updated_at DESC
+                LIMIT %s
+                """,
+                (max(1, min(int(limit), 200)),),
+            ).fetchall()
+        return [self._summary_from_row(row) for row in rows]
+
+    def status_summary(self) -> dict[str, Any]:
+        self.ensure_schema()
+        with self._connect() as conn:
+            total = conn.execute("SELECT count(*) AS count FROM cohort_daily_reports").fetchone()
+            latest = conn.execute(
+                """
+                SELECT *
+                FROM cohort_daily_reports
+                ORDER BY report_date DESC, updated_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        latest_summary = self._summary_from_row(latest).model_dump(mode="json") if latest else None
+        return {
+            "configured": True,
+            "total_daily_reports": int((total or {}).get("count") or 0),
+            "latest_report_date": latest_summary.get("report_date") if latest_summary else None,
+            "latest_report_created_at": latest_summary.get("created_at") if latest_summary else None,
+            "latest_report_updated_at": latest_summary.get("updated_at") if latest_summary else None,
+            "latest_export_path": latest_summary.get("export_path") if latest_summary else None,
+            "fallback_used": latest_summary.get("fallback_used") if latest_summary else None,
+            "error_message": latest.get("error_message") if latest else None,
+        }
+
     def get_report(self, cohort_id: str, report_date: date, report_mode: str = "followup") -> CohortDailyReportDetail | None:
         self.ensure_schema()
         with self._connect() as conn:

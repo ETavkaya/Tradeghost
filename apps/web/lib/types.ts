@@ -1260,12 +1260,81 @@ export type CohortDailyReportRunResponse = {
   errors: string[];
 };
 
+export type LogsSchedulerStatus = {
+  scheduler_enabled: boolean;
+  scheduler_running: boolean;
+  timezone: string;
+  configured_run_time: string;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_success_at: string | null;
+  last_failure_at: string | null;
+  last_error_message: string | null;
+  active_followup_cohorts_count: number;
+};
+
+export type LogsActiveFollowupCohort = {
+  cohort_id: string;
+  cohort_name: string;
+  followup_enabled: boolean;
+  followup_start_date: string | null;
+  followup_target_days: number;
+  current_followup_day: number;
+  last_report_date: string | null;
+  completed: boolean;
+};
+
+export type LogsStatusResponse = {
+  scheduler: LogsSchedulerStatus;
+  daily_reports: {
+    postgres: {
+      configured: boolean;
+      total_daily_reports: number;
+      latest_report_date: string | null;
+      latest_report_created_at: string | null;
+      latest_report_updated_at: string | null;
+      latest_export_path: string | null;
+      fallback_used: boolean | null;
+      error_message: string | null;
+    };
+    latest_rows: CohortDailyReportSummary[];
+  };
+  active_followup_cohorts: LogsActiveFollowupCohort[];
+  latest_errors: Array<Record<string, unknown>>;
+};
+
+export type LogFileEntry = {
+  path: string;
+  name: string;
+  size_bytes: number;
+  updated_at: string;
+};
+
+export type LogFilesResponse = {
+  root: string;
+  groups: Record<string, LogFileEntry[]>;
+};
+
+export type LogFileReadResponse = {
+  path: string;
+  tail: number;
+  total_lines: number;
+  level: string;
+  text: string;
+};
+
 export type SymbolContextBatchResponse = {
   run_id: string;
   generated: number;
   failed: number;
   contexts: SymbolContext[];
   failed_symbols: string[];
+  request_id: string | null;
+  provider: string | null;
+  model: string | null;
+  endpoint: string | null;
+  fallback_used: boolean;
+  error_message: string | null;
 };
 
 export type IntelligenceDashboardResponse = {

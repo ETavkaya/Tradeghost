@@ -30,6 +30,9 @@ import {
   LLMConnectionStatus,
   LLMDebugLog,
   LLMResponseTestResult,
+  LogFileReadResponse,
+  LogFilesResponse,
+  LogsStatusResponse,
   PipelineDebugEvent,
   MonitoringSchedule,
   MonitoringRunSummary,
@@ -146,6 +149,13 @@ export const api = {
       body: JSON.stringify(payload)
     }),
   health: () => fetchJson<{ status: string; app: string }>("/api/health"),
+  getLogsStatus: () => fetchJson<LogsStatusResponse>("/api/logs/status"),
+  listLogFiles: () => fetchJson<LogFilesResponse>("/api/logs/files"),
+  readLogFile: (path: string, tail = 200, level = "") => {
+    const params = new URLSearchParams({ path, tail: String(tail) });
+    if (level) params.set("level", level);
+    return fetchJson<LogFileReadResponse>(`/api/logs/files/read?${params.toString()}`);
+  },
   listWatchlists: () => fetchJson<Watchlist[]>("/api/watchlists"),
   createWatchlist: (name: string) =>
     fetchJson<Watchlist>("/api/watchlists", {

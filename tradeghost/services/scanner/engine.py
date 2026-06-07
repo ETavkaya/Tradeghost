@@ -998,7 +998,7 @@ class ScannerEngine:
                     external_news_available=news_available,
                     fallback_only=False,
                     warning_message=(None if news_available else "Live news provider is not connected yet."),
-                    report_text=disclaimer + result.text.strip(),
+                    report_text=disclaimer + result.raw_response.strip(),
                 )
             except Exception as exc:  # pragma: no cover
                 last_err = exc

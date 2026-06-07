@@ -73,6 +73,16 @@ export default function IntelligencePage() {
         return `${stage} failed: ${msg} (field=${loc}).${status}${type}`;
       }
       if (detailObj && typeof detailObj === "object") {
+        if (stage === "Generate Cohort Symbol Contexts") {
+          const requestId = detailObj.request_id ? `\nRequest ID: ${String(detailObj.request_id)}` : "";
+          const provider = detailObj.llm_provider || detailObj.provider ? `\nProvider: ${String(detailObj.llm_provider ?? detailObj.provider).toUpperCase()}` : "";
+          const model = detailObj.model ? `\nModel: ${String(detailObj.model)}` : "";
+          const endpoint = detailObj.endpoint || detailObj.path ? `\nEndpoint: ${String(detailObj.endpoint ?? detailObj.path)}` : "";
+          const fallback = detailObj.fallback_used !== undefined ? `\nFallback used: ${String(detailObj.fallback_used)}` : "";
+          const backendError = detailObj.error_message || detailObj.error ? `\nError: ${String(detailObj.error_message ?? detailObj.error)}` : "";
+          const detail = detailObj.detail ? String(detailObj.detail) : "Symbol context generation failed.";
+          return `Symbol context generation failed.\n${detail}${requestId}${provider}${model}${endpoint}${fallback}${backendError}`;
+        }
         const detail =
           typeof detailObj.detail === "string"
             ? detailObj.detail
@@ -360,7 +370,9 @@ export default function IntelligencePage() {
         symbols: retryFailedOnly ? cohortContextFailedSymbols : [],
       });
       setCohortContextFailedSymbols(response.failed_symbols ?? []);
-      setNotice(`Cohort contexts completed: generated ${response.generated}, failed ${response.failed}.${response.failed > 0 ? ` failed symbols: ${response.failed_symbols.join(", ")}` : ""}`);
+      setNotice(
+        `Cohort contexts completed: generated ${response.generated}, failed ${response.failed}, request_id=${response.request_id ?? "-"}, provider=${response.provider ?? "-"}, model=${response.model ?? "-"}, fallback=${response.fallback_used ? "yes" : "no"}.${response.error_message ? ` error=${response.error_message}` : ""}${response.failed > 0 ? ` failed symbols: ${response.failed_symbols.join(", ")}` : ""}`
+      );
       if (response.generated > 0) {
         setCohortActionSuccess((prev) => ({ ...prev, [selectedCohortId]: { ...(prev[selectedCohortId] ?? {}), contexts: true } }));
       }
@@ -478,7 +490,7 @@ export default function IntelligencePage() {
         <div className="rounded-lg border border-green/40 bg-green/10 px-3 py-2 text-xs text-green">{notice}</div>
       ) : null}
       {error ? (
-        <div className="rounded-lg border border-red/40 bg-red/10 px-3 py-2 text-xs text-red">{error}</div>
+        <div className="whitespace-pre-wrap rounded-lg border border-red/40 bg-red/10 px-3 py-2 text-xs text-red">{error}</div>
       ) : null}
       <section id="intelligence-layer">
       <Panel>

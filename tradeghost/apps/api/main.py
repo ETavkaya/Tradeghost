@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import date
+from typing import Any
+from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Query
 
 from tradeghost.services.analysis_engine import AnalysisEngine
@@ -120,13 +122,24 @@ def _background_monitor_loop() -> None:
 
 def _background_daily_cohort_followup_loop() -> None:
     logger.info("daily cohort follow-up loop started")
+    intelligence_service.log_daily_followup_scheduler_event("scheduler_started", status="success")
     poll_seconds = max(15, int(settings.daily_cohort_followup_poll_seconds))
     while not _cohort_followup_stop_event.is_set():
         try:
+            intelligence_service.log_daily_followup_scheduler_event(
+                "scheduler_tick",
+                status="success",
+                scheduler_enabled=settings.daily_cohort_followup_enabled,
+            )
             if intelligence_service.should_run_daily_cohort_followup_job():
                 intelligence_service.run_due_daily_cohort_followup_job()
         except Exception as exc:  # pragma: no cover
             logger.warning("daily cohort follow-up loop error: %s", exc)
+            intelligence_service.log_daily_followup_scheduler_event(
+                "job_failed",
+                status="failed",
+                error_message=str(exc),
+            )
         _cohort_followup_stop_event.wait(float(poll_seconds))
     logger.info("daily cohort follow-up loop stopped")
 
@@ -161,12 +174,44 @@ def shutdown_background_monitor() -> None:
     _monitor_thread = None
     if _cohort_followup_thread is not None and _cohort_followup_thread.is_alive():
         _cohort_followup_thread.join(timeout=2.0)
+        intelligence_service.log_daily_followup_scheduler_event("scheduler_stopped", status="success")
     _cohort_followup_thread = None
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "app": settings.app_name}
+
+
+@app.get("/logs/status")
+def get_logs_status() -> dict[str, Any]:
+    try:
+        scheduler_running = _cohort_followup_thread is not None and _cohort_followup_thread.is_alive()
+        return intelligence_service.get_logs_status(scheduler_running=scheduler_running)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/logs/files")
+def list_log_files() -> dict[str, Any]:
+    try:
+        return intelligence_service.list_log_files()
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/logs/files/read")
+def read_log_file(
+    path: str = Query(..., min_length=1, max_length=500),
+    tail: int = Query(default=200, ge=1, le=2000),
+    level: str | None = Query(default=None, max_length=20),
+) -> dict[str, Any]:
+    try:
+        return intelligence_service.read_log_file(relative_path=path, tail=tail, level=level)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/analyze", response_model=AnalysisResponse)
@@ -680,6 +725,7 @@ def run_intelligence_cohort_followup(payload: CohortFollowupRequest) -> CohortFo
 
 @app.post("/intelligence/cohorts/symbol-contexts", response_model=SymbolContextBatchResponse)
 def generate_cohort_symbol_contexts(payload: CohortSymbolContextRequest) -> SymbolContextBatchResponse:
+    request_id = str(uuid4())
     try:
         return intelligence_service.generate_cohort_symbol_contexts(payload)
     except Exception as exc:  # pragma: no cover
@@ -687,12 +733,15 @@ def generate_cohort_symbol_contexts(payload: CohortSymbolContextRequest) -> Symb
             status_code=400,
             detail={
                 "detail": "Cohort symbol context generation completed with failures." if "failed" in str(exc).lower() else "Cohort symbol context generation failed",
+                "request_id": request_id,
                 "failed_stage": "cohort_symbol_context_batch",
                 "failed_symbol": None,
                 "llm_provider": settings.llm_provider,
                 "llm_fallback_provider": settings.llm_fallback_provider,
                 "primary_endpoint": settings.openai_base_url if settings.llm_provider.lower() == "openai" else settings.ollama_base_url,
-                "model": payload.model,
+                "model": settings.llmq_chat_model,
+                "endpoint": "/intelligence/cohorts/symbol-contexts",
+                "fallback_used": False,
                 "error_type": type(exc).__name__,
                 "error_message": str(exc),
             },

@@ -23,7 +23,7 @@ services:
     depends_on:
       - tradeghost-postgres
     ports:
-      - "8000:8000"
+      - "8001:8000"
     restart: unless-stopped
   tradeghost-web:
     build:
@@ -35,7 +35,7 @@ services:
     depends_on:
       - tradeghost-api
     ports:
-      - "3000:3000"
+      - "3001:3000"
     restart: unless-stopped
 
 volumes:

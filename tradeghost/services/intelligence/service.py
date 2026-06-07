@@ -79,6 +79,8 @@ from tradeghost.shared.models.schemas import (
 DAILY_REPORT_PROMPT_VERSION = "daily_cohort_followup_v1"
 MARKET_CONTEXT_PROMPT_VERSION = "market_context_note_v1"
 FINAL_28D_REVIEW_PROMPT_VERSION = "final_28d_cohort_review_v1"
+SYMBOL_CONTEXT_PROMPT_VERSION = "symbol_context_v1"
+DAILY_FOLLOWUP_JOB_NAME = "daily_cohort_followup_job"
 
 
 class IntelligenceService:
@@ -102,6 +104,8 @@ class IntelligenceService:
         self.cohort_snapshots_path = self.base_dir / "cohort_daily_snapshots.json"
         self.llm_logs_path = self.base_dir / "llm_calls.json"
         self.pipeline_logs_path = self.base_dir / "pipeline_events.json"
+        self.scheduler_logs_dir = self.settings.logs_dir / "scheduler"
+        self.scheduler_logs_path = self.scheduler_logs_dir / "daily_followup.log"
         self.daily_report_store = CohortDailyReportStore(self.settings.database_url)
         self.analysis_engine = analysis_engine or AnalysisEngine()
         self.scanner_engine = scanner_engine or ScannerEngine(analysis_engine=self.analysis_engine)
@@ -204,6 +208,52 @@ class IntelligenceService:
     def _write_rows(self, path: Path, rows: list[dict[str, Any]]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(rows, indent=2, default=str), encoding="utf-8")
+
+    @staticmethod
+    def _log_value(value: Any) -> str:
+        text = str(value)
+        return text.replace("\n", " ").replace("\r", " ")
+
+    def _log_llm_context_event(self, event: str, **fields: Any) -> None:
+        parts = [f"[LLM_CONTEXT] {event}"]
+        for key, value in fields.items():
+            if value is None:
+                continue
+            parts.append(f"{key}={self._log_value(value)}")
+        self._logger.info(" ".join(parts))
+
+    def log_daily_followup_scheduler_event(self, event: str, **fields: Any) -> None:
+        status = str(fields.pop("status", "info"))
+        entry = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "event": event,
+            "job_name": DAILY_FOLLOWUP_JOB_NAME,
+            "status": status,
+            **{key: value for key, value in fields.items() if value is not None},
+        }
+        try:
+            self.scheduler_logs_dir.mkdir(parents=True, exist_ok=True)
+            with self.scheduler_logs_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry, default=str) + "\n")
+        except Exception as exc:  # pragma: no cover - best effort logging path
+            self._logger.warning("Failed to write scheduler log: %s", exc)
+
+    def _read_scheduler_log_entries(self, limit: int = 500) -> list[dict[str, Any]]:
+        if not self.scheduler_logs_path.exists():
+            return []
+        try:
+            lines = self.scheduler_logs_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return []
+        entries: list[dict[str, Any]] = []
+        for line in lines[-max(1, limit):]:
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                entries.append(parsed)
+        return entries
 
     def _read_runs(self) -> list[DailyRun]:
         return [DailyRun.model_validate(row) for row in self._read_rows(self.runs_path)]
@@ -1597,6 +1647,91 @@ class IntelligenceService:
             f"Raw parser error: {exc.msg} at line {exc.lineno}, column {exc.colno}."
         )
 
+    @staticmethod
+    def _clip_context_words(text: str, max_words: int = 20) -> str:
+        words = str(text or "").replace("\n", " ").strip().split()
+        if not words:
+            return ""
+        if len(words) <= max_words:
+            return " ".join(words)
+        return " ".join(words[:max_words]).rstrip(".,;:") + "."
+
+    def _deterministic_symbol_context(
+        self,
+        row: SymbolResult,
+        *,
+        model: str,
+        run_id: str,
+        error_message: str,
+    ) -> SymbolContext:
+        categories = ", ".join([tag.value if hasattr(tag, "value") else str(tag) for tag in row.category_tags]) or "uncategorized"
+        risk_flags = [str(flag) for flag in (row.risk_flags or []) if str(flag)]
+        data_quality_flags = [str(flag) for flag in (row.data_quality_flags or []) if str(flag)]
+        blocked_by = str(row.blocked_by or "none")
+        readiness = str(row.entry_readiness or "unknown")
+
+        if row.main_opportunity_reason:
+            bull = row.main_opportunity_reason
+        else:
+            bull = f"{row.symbol} has {row.trend} structure, setup {row.setup_type}, category {categories}."
+
+        if data_quality_flags:
+            bear = f"Data quality needs review: {', '.join(data_quality_flags)}."
+        elif row.main_risk_reason:
+            bear = row.main_risk_reason
+        elif risk_flags:
+            bear = f"Risk flags present: {', '.join(risk_flags)}."
+        else:
+            bear = f"Readiness is {readiness}; blocked_by is {blocked_by}."
+
+        if data_quality_flags:
+            risks = f"Data quality flags: {', '.join(data_quality_flags)}."
+        elif risk_flags:
+            risks = f"Risk flags: {', '.join(risk_flags)}."
+        else:
+            risks = "No explicit deterministic risk flags in the cohort snapshot."
+
+        summary = (
+            "Deterministic fallback context only; LLM output was unavailable or invalid. "
+            "Scanner score, category, and readiness are unchanged."
+        )
+
+        self._append_llm_log(
+            LLMDebugLog(
+                id=str(uuid4()),
+                timestamp=datetime.now(UTC),
+                symbol=row.symbol,
+                endpoint="-",
+                call_type="symbol_context_deterministic_fallback",
+                prompt="(deterministic fallback)",
+                raw_response=summary,
+                parsed_output={
+                    "bull_case": self._clip_context_words(bull),
+                    "bear_case": self._clip_context_words(bear),
+                    "risks": self._clip_context_words(risks),
+                    "summary": self._clip_context_words(summary),
+                },
+                status="success",
+                duration_ms=0,
+                provider="deterministic",
+                model="deterministic-fallback",
+                fallback_used=True,
+                error_message=error_message,
+            )
+        )
+        return SymbolContext(
+            symbol=row.symbol,
+            run_id=run_id,
+            date=date.today(),
+            bull_case=self._clip_context_words(bull),
+            bear_case=self._clip_context_words(bear),
+            risks=self._clip_context_words(risks),
+            summary=self._clip_context_words(summary),
+            model=f"{model} (deterministic fallback)",
+            status="generated",
+            error=error_message,
+        )
+
     def _ollama_generate(
         self,
         *,
@@ -1611,6 +1746,7 @@ class IntelligenceService:
         response_format: dict[str, Any] | None = None,
         max_tokens_hint: int | None = None,
         prompt_version: str | None = None,
+        request_id: str | None = None,
     ) -> str:
         started = datetime.now(UTC)
         primary_provider = self._normalize_provider(self.settings.llm_provider)
@@ -1647,6 +1783,23 @@ class IntelligenceService:
                 for attempt_idx in range(2):
                     try:
                         if provider_name == "openai":
+                            if call_type == "symbol_context":
+                                self._log_llm_context_event(
+                                    "request_payload_built",
+                                    request_id=request_id,
+                                    provider=provider_name.upper(),
+                                    model=provider_model,
+                                    endpoint=call_type,
+                                    prompt_version=prompt_version,
+                                    request_payload_built=True,
+                                )
+                                self._log_llm_context_event(
+                                    "openai_call_started",
+                                    request_id=request_id,
+                                    provider=provider_name.upper(),
+                                    model=provider_model,
+                                    endpoint=call_type,
+                                )
                             result = self._providers["openai"].generate(
                                 prompt=prompt,
                                 model=provider_model,
@@ -1660,6 +1813,16 @@ class IntelligenceService:
                             text, endpoint = result.raw_response, result.endpoint
                             duration_ms = result.duration_ms
                             token_estimate = result.token_estimate or self._estimate_tokens(prompt, text)
+                            if call_type == "symbol_context":
+                                self._log_llm_context_event(
+                                    "openai_call_success",
+                                    request_id=request_id,
+                                    provider=provider_name.upper(),
+                                    model=provider_model,
+                                    endpoint=call_type,
+                                    duration_ms=duration_ms,
+                                    fallback_used=is_fallback,
+                                )
                         else:
                             if debug_stream:
                                 text, endpoint = self._ollama_generate_direct(
@@ -1723,7 +1886,23 @@ class IntelligenceService:
                     except Exception as exc:
                         last_exc = exc
                         duration_ms = int((datetime.now(UTC) - attempt_started).total_seconds() * 1000)
-                        endpoint = self.settings.openai_base_url if provider_name == "openai" else self.settings.ollama_base_url
+                        endpoint = (
+                            self.settings.openai_base_url.rstrip("/") + "/responses"
+                            if provider_name == "openai"
+                            else self.settings.ollama_base_url
+                        )
+                        if call_type == "symbol_context" and provider_name == "openai":
+                            self._log_llm_context_event(
+                                "openai_call_failed",
+                                request_id=request_id,
+                                provider=provider_name.upper(),
+                                model=provider_model,
+                                endpoint=call_type,
+                                duration_ms=duration_ms,
+                                error_type=type(exc).__name__,
+                                error_message=str(exc),
+                                fallback_used=is_fallback,
+                            )
                         self._append_llm_log(
                             LLMDebugLog(
                                 id=str(uuid4()),
@@ -1755,7 +1934,7 @@ class IntelligenceService:
     def _context_prompt(self, row: SymbolResult, short_context_mode: bool) -> str:
         if short_context_mode:
             return (
-                "Return ONLY valid JSON. No markdown. No investment advice. Keep each field <=20 words.\n"
+                "Return ONLY valid JSON. No markdown. Context only. Do not create trade instructions. Keep each field <=20 words.\n"
                 "Fields:\n"
                 "{\n"
                 '  "bull_case": "...",\n'
@@ -1824,7 +2003,17 @@ class IntelligenceService:
         end = min(candidates) if candidates else len(text)
         return text[start:end].strip()
 
-    def _generate_single_symbol_context(self, row: SymbolResult, *, model: str, timeout_seconds: float, short_context_mode: bool, run_id: str, debug_stream: bool) -> SymbolContext:
+    def _generate_single_symbol_context(
+        self,
+        row: SymbolResult,
+        *,
+        model: str,
+        timeout_seconds: float,
+        short_context_mode: bool,
+        run_id: str,
+        debug_stream: bool,
+        request_id: str | None = None,
+    ) -> SymbolContext:
         symbol_started = datetime.now(UTC)
         self._append_pipeline_event(
             step_name="symbol_context_started",
@@ -1844,6 +2033,8 @@ class IntelligenceService:
                 debug_stream=debug_stream,
                 response_format=self._symbol_context_response_format() if short_context_mode else None,
                 max_tokens_hint=220 if short_context_mode else None,
+                prompt_version=SYMBOL_CONTEXT_PROMPT_VERSION,
+                request_id=request_id,
             )
             bull = ""
             bear = ""
@@ -1873,6 +2064,15 @@ class IntelligenceService:
                 bear = self._extract_section(raw, "Bear case") or "No clear bear-case context returned."
                 risks = self._extract_section(raw, "Risks") or "No explicit risks returned."
                 summary = self._extract_section(raw, "Summary") or raw[:400]
+            self._log_llm_context_event(
+                "response_parse_success",
+                request_id=request_id,
+                symbol=row.symbol,
+                model=model,
+                endpoint="symbol-contexts",
+                response_parse_success=True,
+                fallback_used=False,
+            )
             self._append_llm_log(
                 LLMDebugLog(
                     id=str(uuid4()),
@@ -1911,27 +2111,39 @@ class IntelligenceService:
                 model=model,
                 status="generated",
             )
-        except (TimeoutError, URLError, RuntimeError, OSError, ValueError, json.JSONDecodeError) as exc:
+        except Exception as exc:
+            error_message = str(exc)
+            self._log_llm_context_event(
+                "response_parse_success",
+                request_id=request_id,
+                symbol=row.symbol,
+                model=model,
+                endpoint="symbol-contexts",
+                response_parse_success=False,
+                fallback_used=True,
+                error_type=type(exc).__name__,
+                error_message=error_message,
+            )
+            fallback = self._deterministic_symbol_context(row, model=model, run_id=run_id, error_message=error_message)
             self._append_pipeline_event(
-                step_name="symbol_context_completed",
-                status="failed",
+                step_name="symbol_context_fallback_used",
+                status="success",
                 run_id=run_id,
                 symbol=row.symbol,
                 duration_ms=int((datetime.now(UTC) - symbol_started).total_seconds() * 1000),
-                error_message=str(exc),
+                message="deterministic fallback used for symbol context",
+                error_message=error_message,
             )
-            return SymbolContext(
-                symbol=row.symbol,
+            self._append_pipeline_event(
+                step_name="symbol_context_completed",
+                status="success",
                 run_id=run_id,
-                date=date.today(),
-                bull_case="",
-                bear_case="",
-                risks="",
-                summary="",
-                model=model,
-                status="failed",
-                error=str(exc),
+                symbol=row.symbol,
+                duration_ms=int((datetime.now(UTC) - symbol_started).total_seconds() * 1000),
+                message="generated deterministic fallback context",
+                error_message=error_message,
             )
+            return fallback
 
     def _get_run_detail(self, run_id: str) -> DailyRunDetail:
         rows = self._read_symbol_results()
@@ -1944,14 +2156,36 @@ class IntelligenceService:
     def generate_symbol_contexts(self, req: SymbolContextBatchRequest) -> SymbolContextBatchResponse:
         started = datetime.now(UTC)
         model = self.settings.llmq_chat_model
+        request_id = str(uuid4())
+        provider = self._normalize_provider(self.settings.llm_provider)
+        self._log_llm_context_event(
+            "request_started",
+            request_id=request_id,
+            run_id=req.run_id,
+            provider=provider.upper(),
+            model=model,
+            endpoint="symbol-contexts",
+            prompt_version=SYMBOL_CONTEXT_PROMPT_VERSION,
+        )
         self._append_pipeline_event(
             step_name="symbol_context_batch_started",
             status="running",
             run_id=req.run_id,
-            message=f"limit={req.context_symbol_limit} concurrency={req.max_concurrency} timeout={req.timeout_seconds}s sequential={req.sequential_mode}",
+            provider=provider,
+            message=f"request_id={request_id} limit={req.context_symbol_limit} concurrency={req.max_concurrency} timeout={req.timeout_seconds}s sequential={req.sequential_mode}",
         )
         detail = self._get_run_detail(req.run_id)
         target_rows = detail.symbol_results[: req.context_symbol_limit]
+        self._log_llm_context_event(
+            "symbols_selected",
+            request_id=request_id,
+            run_id=req.run_id,
+            symbols_count=len(target_rows),
+            provider=provider.upper(),
+            model=model,
+            endpoint="symbol-contexts",
+            prompt_version=SYMBOL_CONTEXT_PROMPT_VERSION,
+        )
         self._append_pipeline_event(
             step_name="symbol_context_candidates_selected",
             status="success",
@@ -1970,6 +2204,7 @@ class IntelligenceService:
                     short_context_mode=req.short_context_mode,
                     run_id=req.run_id,
                     debug_stream=req.debug_stream,
+                    request_id=request_id,
                 )
                 for row in target_rows
             ]
@@ -1988,30 +2223,59 @@ class IntelligenceService:
             message=f"generated={len(contexts)-failed} failed={failed}",
             error_message=None if failed < len(contexts) else "all symbol contexts failed",
         )
+        fallback_used = any(bool(row.error) or "fallback" in (row.model or "").lower() for row in contexts)
+        error_message = "; ".join([str(row.error) for row in contexts if row.error]) or None
         return SymbolContextBatchResponse(
             run_id=req.run_id,
             generated=len(contexts) - failed,
             failed=failed,
             contexts=sorted(contexts, key=lambda row: row.symbol),
             failed_symbols=sorted([row.symbol for row in contexts if row.status != "generated"]),
+            request_id=request_id,
+            provider=provider.upper(),
+            model=model,
+            endpoint="/intelligence/symbol-contexts",
+            fallback_used=fallback_used,
+            error_message=error_message,
         )
 
     def generate_cohort_symbol_contexts(self, req: CohortSymbolContextRequest) -> SymbolContextBatchResponse:
         detail = self.get_cohort_detail(req.cohort_id)
         model = self.settings.llmq_chat_model
+        provider = self._normalize_provider(self.settings.llm_provider)
+        request_id = str(uuid4())
+        self._log_llm_context_event(
+            "request_started",
+            request_id=request_id,
+            cohort_id=detail.cohort.id,
+            provider=provider.upper(),
+            model=model,
+            endpoint="symbol-contexts",
+            prompt_version=SYMBOL_CONTEXT_PROMPT_VERSION,
+        )
         self._append_pipeline_event(
             step_name="cohort_symbol_context_batch_started",
             status="running",
             cohort_id=detail.cohort.id,
             cohort_name=detail.cohort.name,
-            provider=self._normalize_provider(self.settings.llm_provider),
-            message=f"action=contexts selected_cohort_id={detail.cohort.id} cohort_name={detail.cohort.name} symbols_limit={req.context_symbol_limit}",
+            provider=provider,
+            message=f"request_id={request_id} action=contexts selected_cohort_id={detail.cohort.id} cohort_name={detail.cohort.name} symbols_limit={req.context_symbol_limit}",
         )
         candidates = detail.candidates
         if req.symbols:
             selected = {s.upper() for s in req.symbols}
             candidates = [row for row in candidates if row.symbol.upper() in selected]
         candidates = candidates[: req.context_symbol_limit]
+        self._log_llm_context_event(
+            "symbols_selected",
+            request_id=request_id,
+            cohort_id=detail.cohort.id,
+            symbols_count=len(candidates),
+            provider=provider.upper(),
+            model=model,
+            endpoint="symbol-contexts",
+            prompt_version=SYMBOL_CONTEXT_PROMPT_VERSION,
+        )
         contexts: list[SymbolContext] = []
         workers = 1 if req.sequential_mode else req.max_concurrency
         with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -2061,6 +2325,7 @@ class IntelligenceService:
                         short_context_mode=req.short_context_mode,
                         run_id=req.cohort_id,
                         debug_stream=req.debug_stream,
+                        request_id=request_id,
                     )
                 )
             for future, cand in zip(futures, candidates):
@@ -2096,12 +2361,31 @@ class IntelligenceService:
             message=f"action=contexts selected_cohort_id={detail.cohort.id} cohort_name={detail.cohort.name} generated={len(contexts)-failed} failed={failed}",
             error_message=None if failed < len(contexts) else "all cohort symbol contexts failed",
         )
+        fallback_used = any(bool(row.error) or "fallback" in (row.model or "").lower() for row in contexts)
+        error_message = "; ".join([str(row.error) for row in contexts if row.error]) or None
+        self._log_llm_context_event(
+            "request_completed",
+            request_id=request_id,
+            cohort_id=detail.cohort.id,
+            symbols_count=len(candidates),
+            provider=provider.upper(),
+            model=model,
+            endpoint="symbol-contexts",
+            fallback_used=fallback_used,
+            response_parse_success=failed == 0,
+        )
         return SymbolContextBatchResponse(
             run_id=req.cohort_id,
             generated=len(contexts) - failed,
             failed=failed,
             contexts=sorted(contexts, key=lambda row: row.symbol),
             failed_symbols=sorted([row.symbol for row in contexts if row.status != "generated"]),
+            request_id=request_id,
+            provider=provider.upper(),
+            model=model,
+            endpoint="/intelligence/cohorts/symbol-contexts",
+            fallback_used=fallback_used,
+            error_message=error_message,
         )
 
     def generate_cohort_briefing(self, req: CohortBriefingRequest) -> DailyBriefing:
@@ -3260,6 +3544,11 @@ class IntelligenceService:
         if not self.daily_report_store.configured:
             if not self._daily_followup_db_warning_logged:
                 self._logger.warning("daily_cohort_followup_job skipped: DATABASE_URL is not configured")
+                self.log_daily_followup_scheduler_event(
+                    "job_failed",
+                    status="failed",
+                    error_message="DATABASE_URL is not configured",
+                )
                 self._daily_followup_db_warning_logged = True
             return False
         due_date = self._latest_due_report_date(now=now)
@@ -3284,6 +3573,16 @@ class IntelligenceService:
         force: bool = False,
     ) -> CohortDailyReportRunResponse:
         run_at = datetime.now(UTC)
+        job_started = datetime.now(UTC)
+        self.log_daily_followup_scheduler_event(
+            "job_started",
+            status="running",
+            cohort_id=cohort_id,
+            report_date=report_date.isoformat() if report_date else None,
+            include_llm=include_llm,
+            backfill=backfill,
+            force=force,
+        )
         response = CohortDailyReportRunResponse(run_at=run_at, requested_cohort_id=cohort_id)
         cohorts = self._read_cohorts()
         if cohort_id:
@@ -3293,15 +3592,31 @@ class IntelligenceService:
             target_cohorts = [selected]
         else:
             target_cohorts = self._active_followup_cohorts()
+        self.log_daily_followup_scheduler_event(
+            "job_discovered_active_cohorts",
+            status="success",
+            active_followup_cohorts_count=len(target_cohorts),
+        )
         if not target_cohorts:
             response.skipped = 1
             response.errors.append("No active cohorts are marked for automated follow-up.")
+            self.log_daily_followup_scheduler_event(
+                "job_skipped_no_active_cohorts",
+                status="success",
+                duration_ms=int((datetime.now(UTC) - job_started).total_seconds() * 1000),
+            )
             return response
 
         for cohort in target_cohorts:
             due_date = report_date or self._latest_due_report_date(schedule=cohort.followup_schedule)
             if due_date is None:
                 response.skipped += 1
+                self.log_daily_followup_scheduler_event(
+                    "job_skipped_market_closed",
+                    status="success",
+                    cohort_id=cohort.id,
+                    duration_ms=int((datetime.now(UTC) - job_started).total_seconds() * 1000),
+                )
                 continue
             if report_date:
                 target_dates = [report_date]
@@ -3326,6 +3641,24 @@ class IntelligenceService:
                         report_date=target_date,
                         include_llm=include_llm,
                     )
+                    self.log_daily_followup_scheduler_event(
+                        "job_report_upserted",
+                        status="success",
+                        cohort_id=cohort.id,
+                        cohort_name=cohort.name,
+                        report_date=target_date.isoformat(),
+                        export_path=detail.export_path,
+                        fallback_used=detail.fallback_used,
+                    )
+                    if detail.export_path:
+                        self.log_daily_followup_scheduler_event(
+                            "job_markdown_exported",
+                            status="success",
+                            cohort_id=cohort.id,
+                            cohort_name=cohort.name,
+                            report_date=target_date.isoformat(),
+                            export_path=detail.export_path,
+                        )
                     response.generated += 1
                     response.report_dates.append(target_date)
                     response.reports.append(CohortDailyReportSummary.model_validate(detail.model_dump()))
@@ -3340,6 +3673,15 @@ class IntelligenceService:
                     response.failed += 1
                     error = f"{cohort.name} {target_date.isoformat()}: {type(exc).__name__}: {exc}"
                     response.errors.append(error)
+                    self.log_daily_followup_scheduler_event(
+                        "job_failed",
+                        status="failed",
+                        cohort_id=cohort.id,
+                        cohort_name=cohort.name,
+                        report_date=target_date.isoformat(),
+                        duration_ms=int((datetime.now(UTC) - job_started).total_seconds() * 1000),
+                        error_message=str(exc),
+                    )
                     self._append_pipeline_event(
                         step_name="daily_cohort_followup_job_completed",
                         status="failed",
@@ -3350,6 +3692,15 @@ class IntelligenceService:
                     )
                     self._logger.exception("daily_cohort_followup_job failed cohort_id=%s report_date=%s", cohort.id, target_date)
             self._mark_followup_completed_if_needed(cohort.id)
+        self.log_daily_followup_scheduler_event(
+            "job_completed",
+            status="success" if response.failed == 0 else "failed",
+            duration_ms=int((datetime.now(UTC) - job_started).total_seconds() * 1000),
+            generated=response.generated,
+            skipped=response.skipped,
+            failed=response.failed,
+            error_message="; ".join(response.errors) if response.errors else None,
+        )
         return response
 
     def _active_followup_cohorts(self) -> list[CandidateCohort]:
@@ -3968,6 +4319,196 @@ class IntelligenceService:
             return result.stdout.strip() or "unknown"
         except Exception:
             return "unknown"
+
+    def _next_scheduled_run_at(self, *, now: datetime | None = None) -> datetime | None:
+        tz = ZoneInfo(self.settings.daily_cohort_followup_timezone)
+        local_now = (now or datetime.now(UTC)).astimezone(tz)
+        hour, minute = self._parse_schedule_time(self.settings.daily_cohort_followup_schedule)
+        for offset in range(14):
+            candidate = local_now.date() + timedelta(days=offset)
+            if not self._is_us_trading_day(candidate):
+                continue
+            scheduled = datetime.combine(candidate, datetime.min.time(), tzinfo=tz).replace(hour=hour, minute=minute)
+            if scheduled > local_now:
+                return scheduled
+        return None
+
+    @staticmethod
+    def _entry_timestamp(entry: dict[str, Any]) -> str:
+        return str(entry.get("timestamp") or entry.get("created_at") or entry.get("updated_at") or "")
+
+    def _latest_backend_errors(self, limit: int = 25) -> list[dict[str, Any]]:
+        errors: list[dict[str, Any]] = []
+        for row in self.get_llm_logs(limit=200):
+            if row.status == "fail" or row.error_message:
+                errors.append(
+                    {
+                        "timestamp": row.timestamp.isoformat(),
+                        "source": "llm_provider",
+                        "level": "ERROR",
+                        "message": row.error_message or row.status,
+                        "provider": row.provider,
+                        "model": row.model,
+                        "request_id": None,
+                    }
+                )
+        for row in self._read_pipeline_events():
+            if row.status == "failed" or row.error_message:
+                errors.append(
+                    {
+                        "timestamp": row.timestamp.isoformat(),
+                        "source": "intelligence" if "monitor" not in row.step_name else "monitoring",
+                        "level": "ERROR",
+                        "message": row.error_message or row.message or row.step_name,
+                        "step_name": row.step_name,
+                        "cohort_id": row.cohort_id,
+                        "symbol": row.symbol,
+                    }
+                )
+        for entry in self._read_scheduler_log_entries(limit=500):
+            if str(entry.get("status", "")).lower() in {"failed", "error"} or entry.get("error_message"):
+                errors.append(
+                    {
+                        "timestamp": str(entry.get("timestamp") or ""),
+                        "source": "scheduled_followup",
+                        "level": "ERROR",
+                        "message": entry.get("error_message") or entry.get("event"),
+                        "cohort_id": entry.get("cohort_id"),
+                        "report_date": entry.get("report_date"),
+                    }
+                )
+        return sorted(errors, key=self._entry_timestamp, reverse=True)[: max(1, min(limit, 100))]
+
+    def get_logs_status(self, *, scheduler_running: bool) -> dict[str, Any]:
+        now = datetime.now(UTC)
+        scheduler_entries = self._read_scheduler_log_entries(limit=1000)
+        last_run = next(
+            (row for row in reversed(scheduler_entries) if row.get("event") in {"job_started", "job_completed", "job_failed"}),
+            None,
+        )
+        last_success = next(
+            (
+                row
+                for row in reversed(scheduler_entries)
+                if row.get("event") in {"job_completed", "job_report_upserted"} and str(row.get("status")).lower() == "success"
+            ),
+            None,
+        )
+        last_failure = next(
+            (
+                row
+                for row in reversed(scheduler_entries)
+                if str(row.get("status")).lower() in {"failed", "error"} or row.get("event") == "job_failed"
+            ),
+            None,
+        )
+        active = self._active_followup_cohorts()
+        active_rows: list[dict[str, Any]] = []
+        due_date = self._latest_due_report_date(now=now)
+        for cohort in active:
+            report_dates: list[date] = []
+            try:
+                report_dates = [row.report_date for row in self.daily_report_store.list_reports(cohort.id)]
+            except Exception:
+                report_dates = [row.snapshot_date for row in self._read_cohort_snapshots() if row.cohort_id == cohort.id]
+            last_report_date = max(report_dates) if report_dates else None
+            current_day = self._followup_day_number(cohort, min(due_date, date.today()) if due_date else date.today())
+            active_rows.append(
+                {
+                    "cohort_id": cohort.id,
+                    "cohort_name": cohort.name,
+                    "followup_enabled": cohort.followup_enabled,
+                    "followup_start_date": cohort.followup_start_date.isoformat() if cohort.followup_start_date else None,
+                    "followup_target_days": cohort.followup_target_days,
+                    "current_followup_day": current_day,
+                    "last_report_date": last_report_date.isoformat() if last_report_date else None,
+                    "completed": cohort.followup_completed,
+                }
+            )
+        try:
+            daily_reports = {
+                "postgres": self.daily_report_store.status_summary(),
+                "latest_rows": [row.model_dump(mode="json") for row in self.daily_report_store.list_latest_reports(limit=25)],
+            }
+        except Exception as exc:
+            daily_reports = {
+                "postgres": {
+                    "configured": self.daily_report_store.configured,
+                    "total_daily_reports": 0,
+                    "latest_report_date": None,
+                    "latest_report_created_at": None,
+                    "latest_report_updated_at": None,
+                    "latest_export_path": None,
+                    "fallback_used": None,
+                    "error_message": str(exc),
+                },
+                "latest_rows": [],
+            }
+        next_run = self._next_scheduled_run_at(now=now)
+        return {
+            "scheduler": {
+                "scheduler_enabled": self.settings.daily_cohort_followup_enabled,
+                "scheduler_running": scheduler_running,
+                "timezone": self.settings.daily_cohort_followup_timezone,
+                "configured_run_time": self.settings.daily_cohort_followup_schedule,
+                "next_run_at": next_run.isoformat() if next_run else None,
+                "last_run_at": last_run.get("timestamp") if last_run else None,
+                "last_success_at": last_success.get("timestamp") if last_success else None,
+                "last_failure_at": last_failure.get("timestamp") if last_failure else None,
+                "last_error_message": last_failure.get("error_message") if last_failure else None,
+                "active_followup_cohorts_count": len(active),
+            },
+            "daily_reports": daily_reports,
+            "active_followup_cohorts": active_rows,
+            "latest_errors": self._latest_backend_errors(limit=30),
+        }
+
+    def list_log_files(self) -> dict[str, Any]:
+        root = self.settings.logs_dir.resolve()
+        groups: dict[str, list[dict[str, Any]]] = {}
+        if not root.exists():
+            return {"root": str(root), "groups": groups}
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(root)
+            if any(part.startswith(".") for part in relative.parts):
+                continue
+            group = relative.parts[0] if len(relative.parts) > 1 else "root"
+            groups.setdefault(group, []).append(
+                {
+                    "path": relative.as_posix(),
+                    "name": path.name,
+                    "size_bytes": path.stat().st_size,
+                    "updated_at": datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat(),
+                }
+            )
+        return {"root": str(root), "groups": groups}
+
+    def read_log_file(self, *, relative_path: str, tail: int = 200, level: str | None = None) -> dict[str, Any]:
+        root = self.settings.logs_dir.resolve()
+        requested = Path(relative_path)
+        if requested.is_absolute() or ".." in requested.parts:
+            raise ValueError("Invalid log path")
+        target = (root / requested).resolve()
+        if target != root and root not in target.parents:
+            raise ValueError("Invalid log path")
+        if not target.is_file():
+            raise FileNotFoundError(relative_path)
+        text = target.read_text(encoding="utf-8", errors="replace")
+        lines = text.splitlines()
+        if level:
+            needle = level.upper()
+            if needle in {"ERROR", "WARNING", "INFO"}:
+                lines = [line for line in lines if needle in line.upper()]
+        selected = lines[-max(1, min(int(tail), 2000)):]
+        return {
+            "path": target.relative_to(root).as_posix(),
+            "tail": len(selected),
+            "total_lines": len(lines),
+            "level": level or "",
+            "text": "\n".join(selected),
+        }
 
     def list_cohort_daily_reports(self, cohort_id: str) -> list[CohortDailyReportSummary]:
         _ = self.get_cohort_detail(cohort_id)

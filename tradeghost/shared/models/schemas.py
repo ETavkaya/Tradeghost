@@ -1639,6 +1639,12 @@ class SymbolContextBatchResponse(BaseModel):
     failed: int
     contexts: list[SymbolContext] = Field(default_factory=list)
     failed_symbols: list[str] = Field(default_factory=list)
+    request_id: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    endpoint: str | None = None
+    fallback_used: bool = False
+    error_message: str | None = None
 
 
 class ReviewReadiness(BaseModel):

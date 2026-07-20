@@ -39,6 +39,7 @@ from tradeghost.shared.models.schemas import (
     CohortDailyReportRunResponse,
     CohortDailyReportSummary,
     CohortReportMode,
+    CohortFollowupBackfillRequest,
     CohortFollowupRequest,
     CohortFollowupSettingsRequest,
     CohortFollowupResponse,
@@ -717,6 +718,24 @@ def cleanup_intelligence_duplicate_cohorts(payload: CohortCleanupDuplicateReques
 def run_intelligence_cohort_followup(payload: CohortFollowupRequest) -> CohortFollowupResponse:
     try:
         return intelligence_service.run_cohort_followup(payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/cohorts/{cohort_id}/follow-up/backfill", response_model=CohortDailyReportRunResponse)
+def backfill_intelligence_cohort_followup(
+    cohort_id: str,
+    payload: CohortFollowupBackfillRequest,
+) -> CohortDailyReportRunResponse:
+    try:
+        return intelligence_service.backfill_cohort_followup(
+            cohort_id=cohort_id,
+            from_date=payload.from_date,
+            to_date=payload.to_date,
+            include_llm=payload.include_llm,
+        )
     except FileNotFoundError as exc:  # pragma: no cover
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover

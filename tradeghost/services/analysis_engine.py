@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from datetime import date
 from typing import Any
 
 from tradeghost.services.charts.payloads import WINDOW_TO_PERIOD, build_analysis_chart
@@ -90,6 +91,7 @@ class AnalysisEngine:
         max_overextension_ema50_pct: float | None = None,
         max_overextension_ema100_pct: float | None = None,
         max_overextension_ema200_pct: float | None = None,
+        as_of_date: date | None = None,
     ) -> CombinedAnalysisResponse:
         analysis_config = build_analysis_config(
             ticker=ticker,
@@ -109,10 +111,17 @@ class AnalysisEngine:
         )
         period = WINDOW_TO_PERIOD[analysis_config.lookback_window]
         bundle = self.data_service.get_market_data(analysis_config.ticker, market=analysis_config.market, period=period)
+        daily = bundle.daily
+        weekly = bundle.weekly
+        if as_of_date is not None:
+            daily = daily[daily.index.map(lambda timestamp: timestamp.date() <= as_of_date)]
+            weekly = weekly[weekly.index.map(lambda timestamp: timestamp.date() <= as_of_date)]
+            if daily.empty:
+                raise ValueError(f"No daily data available for {analysis_config.ticker} as of {as_of_date.isoformat()}")
 
         pipeline = run_analysis_pipeline(
-            daily=bundle.daily,
-            weekly=bundle.weekly,
+            daily=daily,
+            weekly=weekly,
             market_cap=bundle.metadata.market_cap,
             config=analysis_config,
         )
@@ -220,14 +229,14 @@ class AnalysisEngine:
             f"Price {'is' if above_200 else 'is not'} above EMA200."
         )
 
-        chart = build_analysis_chart(bundle.daily, snapshot, trade_plan, analysis_config.lookback_window)
+        chart = build_analysis_chart(daily, snapshot, trade_plan, analysis_config.lookback_window)
 
         return CombinedAnalysisResponse(
             ticker=bundle.ticker,
             normalized_ticker=bundle.normalized_ticker,
             market=bundle.market,
             window=analysis_config.lookback_window,
-            as_of=bundle.daily.index[-1].date(),
+            as_of=daily.index[-1].date(),
             analysis_config=analysis_config,
             chart=chart,
             quantedge=QuantEdgeSection(

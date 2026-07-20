@@ -1471,6 +1471,12 @@ class CohortReviewRequest(BaseModel):
     timeout_seconds: float = Field(default=45.0, ge=5.0, le=300.0)
 
 
+class CohortFollowupBackfillRequest(BaseModel):
+    from_date: date | None = None
+    to_date: date | None = None
+    include_llm: bool = False
+
+
 class CohortDetail(BaseModel):
     cohort: CandidateCohort
     candidates: list[CohortCandidate] = Field(default_factory=list)
@@ -1486,10 +1492,23 @@ class CohortFollowupResponse(BaseModel):
 
 class CohortReviewStats(BaseModel):
     average_return_by_category: dict[str, float] = Field(default_factory=dict)
+    return_since_selection_by_category: dict[str, float] = Field(default_factory=dict)
+    return_7d_by_category: dict[str, float] = Field(default_factory=dict)
+    return_14d_by_category: dict[str, float] = Field(default_factory=dict)
+    return_28d_by_category: dict[str, float] = Field(default_factory=dict)
     best_candidate: str | None = None
     worst_candidate: str | None = None
     best_category: str | None = None
     worst_category: str | None = None
+    horizon_28d_available: bool = False
+    horizon_28d_candidate_count: int = 0
+    horizon_28d_missing_count: int = 0
+    horizon_28d_positive_count: int = 0
+    horizon_28d_negative_count: int = 0
+    best_candidate_by_28d: str | None = None
+    worst_candidate_by_28d: str | None = None
+    best_category_by_28d: str | None = None
+    worst_category_by_28d: str | None = None
     multi_category_avg_return_7d: float | None = None
     false_positives: int = 0
     missed_follow_through: int = 0
@@ -1519,6 +1538,19 @@ class CohortReviewResponse(BaseModel):
     days_collected: int
     days_required: int
     days_remaining: int
+    start_date: date | None = None
+    latest_followup_date: date | None = None
+    calendar_days_elapsed: int = 0
+    trading_days_elapsed: int = 0
+    valid_followup_snapshot_days: int = 0
+    expected_followup_days: int = 0
+    snapshot_coverage_pct: float = 0.0
+    missing_followup_days_count: int = 0
+    missing_followup_dates: list[date] = Field(default_factory=list)
+    horizon_28d_available: bool = False
+    horizon_outcome_review_available: bool = False
+    daily_path_review_complete: bool = False
+    snapshot_coverage_warning: str | None = None
     deterministic_stats: CohortReviewStats = Field(default_factory=CohortReviewStats)
     llm_summary: str | None = None
 
@@ -1623,7 +1655,15 @@ class IntelligenceRunReportExport(BaseModel):
     cohort_id: str | None = None
     selected_cohort_id_used: str | None = None
     exported_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    start_date: date | None = None
     latest_followup_date: date | None = None
+    calendar_days_elapsed: int = 0
+    trading_days_elapsed: int = 0
+    valid_followup_snapshot_days: int = 0
+    expected_followup_days: int = 0
+    snapshot_coverage_pct: float = 0.0
+    missing_followup_days_count: int = 0
+    missing_followup_dates: list[date] = Field(default_factory=list)
     followup_snapshot_count: int = 0
     markdown: str
 

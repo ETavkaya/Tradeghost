@@ -102,6 +102,27 @@ export default function LogsPage() {
     }
   };
 
+  const backfillMissingFollowupDays = async () => {
+    if (!selectedCohortId) {
+      setError("Select an active follow-up cohort first.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await api.backfillCohortFollowup(selectedCohortId, { include_llm: false });
+      setNotice(
+        `Backfill complete: generated=${res.generated}, skipped=${res.skipped}, failed=${res.failed}, dates=${res.report_dates.length}${res.errors.length ? `, error=${res.errors.join("; ")}` : ""}`
+      );
+      await load();
+    } catch (err) {
+      setError(errorText(err, "Backfill missing follow-up days failed."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const copyLogText = async () => {
     if (!logText?.text) return;
     await navigator.clipboard.writeText(logText.text);
@@ -141,6 +162,9 @@ export default function LogsPage() {
             </button>
             <button type="button" onClick={runDailyFollowup} disabled={loading || !selectedCohortId} className="rounded-lg border border-cyan/50 bg-cyan/10 px-3 py-2 text-xs text-cyan">
               Run Daily Follow-up Now
+            </button>
+            <button type="button" onClick={backfillMissingFollowupDays} disabled={loading || !selectedCohortId} className="rounded-lg border border-amber-300/50 bg-amber-300/10 px-3 py-2 text-xs text-amber-200">
+              Backfill Missing Follow-up Days
             </button>
           </div>
         </div>

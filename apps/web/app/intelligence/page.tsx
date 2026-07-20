@@ -53,7 +53,7 @@ export default function IntelligencePage() {
   const [selectedCohortDetail, setSelectedCohortDetail] = useState<CohortDetail | null>(null);
   const [cohortReview, setCohortReview] = useState<CohortReviewResponse | null>(null);
   const [cohortContextFailedSymbols, setCohortContextFailedSymbols] = useState<string[]>([]);
-  const [cohortActionSuccess, setCohortActionSuccess] = useState<Record<string, { followup?: boolean; contexts?: boolean; briefing?: boolean; review?: boolean; export?: boolean }>>({});
+  const [cohortActionSuccess, setCohortActionSuccess] = useState<Record<string, { followup?: boolean; backfill?: boolean; contexts?: boolean; briefing?: boolean; review?: boolean; export?: boolean }>>({});
   const [exportMode, setExportMode] = useState<"initial" | "followup" | "lifecycle" | "review_28d">("followup");
   const [cohortFilter, setCohortFilter] = useState<"active" | "archived" | "all">("active");
   const [duplicateStrategy, setDuplicateStrategy] = useState<"use_existing" | "archive_existing_create_new" | "create_duplicate_anyway">("use_existing");
@@ -181,9 +181,11 @@ export default function IntelligencePage() {
   const canRunFollowup = Boolean(selectedCohortId) && selectedIsActive && selectedCohortCandidateCount > 0;
   const canRunCohortContexts = Boolean(selectedCohortId) && selectedIsActive && selectedCohortCandidateCount > 0 && Boolean(llmStatus?.connected);
   const canRunCohortBriefing = Boolean(selectedCohortId) && generatedCohortContextCount > 0 && Boolean(llmStatus?.connected);
-  const canRunCohortReview = Boolean(selectedCohortId) && latestCohortSnapshotCount > 0;
+  const canRunCohortBackfill = Boolean(selectedCohortId) && !selectedIsArchived && selectedCohortCandidateCount > 0;
+  const canRunCohortReview = Boolean(selectedCohortId) && selectedCohortCandidateCount > 0;
   const canExportCohortReport = Boolean(selectedCohortId);
   const followupDone = Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.followup);
+  const backfillDone = Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.backfill);
   const contextsDone = Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.contexts);
   const briefingDone = Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.briefing);
   const reviewDone = Boolean(cohortActionSuccess[selectedCohortId ?? ""]?.review);
@@ -254,6 +256,23 @@ export default function IntelligencePage() {
       setCohortActionSuccess((prev) => ({ ...prev, [selectedCohortId]: { ...(prev[selectedCohortId] ?? {}), review: true } }));
     } catch (err) {
       setError(formatError(err, "Run Cohort Review"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const backfillCohortFollowup = async () => {
+    if (!selectedCohortId) return;
+    setError(null);
+    setNotice(null);
+    setLoading(true);
+    try {
+      const response = await api.backfillCohortFollowup(selectedCohortId, { include_llm: false });
+      setNotice(`Backfill complete: generated=${response.generated}, skipped=${response.skipped}, failed=${response.failed}${response.errors.length ? `, error=${response.errors.join("; ")}` : ""}.`);
+      setCohortActionSuccess((prev) => ({ ...prev, [selectedCohortId]: { ...(prev[selectedCohortId] ?? {}), backfill: true } }));
+      await load();
+    } catch (err) {
+      setError(formatError(err, "Backfill Cohort Follow-up"));
     } finally {
       setLoading(false);
     }
@@ -568,7 +587,7 @@ export default function IntelligencePage() {
           <div className="rounded-lg border border-stroke/70 p-3">
             <p className="font-semibold">Step 4: Review Cohort</p>
             <p className="mt-1 text-slate-400">Evaluates whether original selections worked.</p>
-            <p className="mt-2">Status: {canRunCohortReview ? "ready" : "blocked"} {canRunCohortReview ? "" : "(follow-up required)"}</p>
+            <p className="mt-2">Status: {canRunCohortReview ? "ready" : "blocked"} {canRunCohortReview ? "" : "(candidate data required)"}</p>
           </div>
         </div>
       </Panel>
@@ -690,9 +709,20 @@ export default function IntelligencePage() {
               <p>Candidate count: {selectedCohortCandidateCount}</p>
               <p>Follow-up snapshots: {latestCohortSnapshotCount}</p>
               <p>Latest follow-up date: {selectedCohortMeta.latest_followup_date ?? "-"}</p>
+              {cohortReview?.cohort_id === selectedCohortId ? (
+                <>
+                  <p>Calendar days elapsed: {cohortReview.calendar_days_elapsed}</p>
+                  <p>Trading days elapsed: {cohortReview.trading_days_elapsed}</p>
+                  <p>Daily snapshot coverage: {cohortReview.valid_followup_snapshot_days}/{cohortReview.expected_followup_days} days ({cohortReview.snapshot_coverage_pct}%)</p>
+                  <p>Missing follow-up days: {cohortReview.missing_followup_days_count}</p>
+                  <p>Missing dates: {cohortReview.missing_followup_dates.slice(0, 8).join(", ") || "-"}{cohortReview.missing_followup_dates.length > 8 ? " ..." : ""}</p>
+                  <p>28D price horizon: {cohortReview.horizon_28d_available ? "available" : "pending or partial"}</p>
+                  <p>Daily path review: {cohortReview.daily_path_review_complete ? "complete" : "incomplete until backfill"}</p>
+                </>
+              ) : null}
               <p>Contexts generated: {generatedCohortContextCount}</p>
               <p>Briefing status: {generatedCohortContextCount > 0 ? "ready/generated contexts available" : "waiting contexts"}</p>
-              <p>Review readiness: {canRunCohortReview ? "ready" : "follow-up required"}</p>
+              <p>Review readiness: {canRunCohortReview ? "ready" : "candidate data required"}</p>
               <p>Status: {selectedCohortMeta.status}</p>
             </div>
           ) : null}
@@ -700,6 +730,7 @@ export default function IntelligencePage() {
             <p className="mb-2 text-xs text-slate-400">Cohort Actions</p>
             <div className="flex flex-wrap gap-2">
               <button type="button" onClick={runCohortFollowup} disabled={loading || !canRunFollowup} className={actionButtonClass(followupDone)}>Run Follow-up for Selected Cohort</button>
+              <button type="button" onClick={backfillCohortFollowup} disabled={loading || !canRunCohortBackfill} className={actionButtonClass(backfillDone)}>Backfill Missing Follow-up Days</button>
               <button type="button" onClick={() => runCohortContexts(false)} disabled={loading || !canRunCohortContexts} className={actionButtonClass(contextsDone)}>Generate Cohort Symbol Contexts</button>
               <button type="button" onClick={runCohortBriefing} disabled={loading || !canRunCohortBriefing} className={actionButtonClass(briefingDone)}>Generate Cohort Briefing</button>
               <button type="button" onClick={runCohortReview} disabled={loading || !canRunCohortReview} className={actionButtonClass(reviewDone)}>Review Selected Cohort</button>
@@ -791,7 +822,10 @@ export default function IntelligencePage() {
             <button type="button" onClick={() => runCohortContexts(true)} disabled={loading || !canRunCohortContexts} className="rounded border border-stroke px-2 py-1 hover:text-cyan disabled:opacity-60">Retry Failed Symbols</button>
           </div>
         ) : null}
-        {cohortReview ? <p className="mt-2 text-xs text-slate-300">{cohortReview.readiness_message}</p> : null}
+        {cohortReview?.cohort_id === selectedCohortId ? <p className="mt-2 text-xs text-slate-300">{cohortReview.readiness_message}</p> : null}
+        {cohortReview?.cohort_id === selectedCohortId && cohortReview.snapshot_coverage_warning ? (
+          <p className="mt-1 text-xs text-amber-300">{cohortReview.snapshot_coverage_warning}</p>
+        ) : null}
         {cohortReview?.deterministic_stats?.sector_concentration_warning ? (
           <p className="mt-1 text-xs text-amber-300">{cohortReview.deterministic_stats.sector_concentration_warning}</p>
         ) : null}

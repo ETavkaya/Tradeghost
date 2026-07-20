@@ -815,13 +815,14 @@ class IntelligenceService:
                 market=cand.market.value,
                 window="1y",
                 strategy_mode="balanced",
+                as_of_date=target_date,
             )
             close = self._latest_close_for_symbol(cand.symbol, cand.market.value, target_date)
             selected_price = cand.selected_price
             perf = self._forward_returns_from_selection(
                 cand.symbol,
                 cand.market.value,
-                cand.selected_at.date(),
+                detail.cohort.start_date,
                 selected_price,
                 latest_price_for_since=close,
                 as_of_date=target_date,
@@ -2764,8 +2765,6 @@ class IntelligenceService:
                 }
             if close.empty:
                 return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None, "since_selection": None, "data_quality_flags": ["missing_price_series"]}
-            if selected_price is None or selected_price <= 0:
-                selected_price = float(close.iloc[0])
             from_idx = 0
             for idx, ts in enumerate(close.index):
                 if ts.date() >= selection_date:
@@ -2774,46 +2773,48 @@ class IntelligenceService:
             series = close.iloc[from_idx:]
             if series.empty:
                 return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None, "since_selection": None, "data_quality_flags": ["missing_selection_window"]}
+            if selected_price is None or selected_price <= 0:
+                selected_price = float(series.iloc[0])
             latest_price = float(series.iloc[-1])
-            def ret_from_latest(days: int, label: str) -> float | None:
+            def ret_from_selection_horizon(days: int, label: str) -> float | None:
                 if len(series) <= days:
                     self._logger.info(
-                        "[horizon_return] symbol=%s latest_price=%.6f price_%s_ago=pending return_%s=pending",
+                        "[horizon_return] symbol=%s selected_price=%.6f price_at_%s=pending return_%s=pending",
                         symbol,
-                        latest_price,
+                        float(selected_price or 0.0),
                         label,
                         label,
                     )
                     return None
-                ref = float(series.iloc[-(days + 1)])
-                if ref <= 0:
-                    dq_flags.append("non_positive_reference_price")
+                horizon_price = float(series.iloc[days])
+                if selected_price is None or selected_price <= 0 or horizon_price <= 0:
+                    dq_flags.append("non_positive_horizon_price")
                     self._logger.info(
-                        "[horizon_return] symbol=%s latest_price=%.6f price_%s_ago=pending return_%s=pending",
+                        "[horizon_return] symbol=%s selected_price=%.6f price_at_%s=pending return_%s=pending",
                         symbol,
-                        latest_price,
+                        float(selected_price or 0.0),
                         label,
                         label,
                     )
                     return None
-                ret = float((latest_price - ref) / ref * 100.0)
+                ret = float((horizon_price - float(selected_price)) / float(selected_price) * 100.0)
                 if market == "us" and abs(ret) > 40.0:
                     dq_flags.append(f"return_outlier_{label}")
                     self._logger.info(
-                        "[horizon_return] symbol=%s latest_price=%.6f price_%s_ago=%.6f return_%s=pending",
+                        "[horizon_return] symbol=%s selected_price=%.6f price_at_%s=%.6f return_%s=pending",
                         symbol,
-                        latest_price,
+                        float(selected_price or 0.0),
                         label,
-                        ref,
+                        horizon_price,
                         label,
                     )
                     return None
                 self._logger.info(
-                    "[horizon_return] symbol=%s latest_price=%.6f price_%s_ago=%.6f return_%s=%.12f",
+                    "[horizon_return] symbol=%s selected_price=%.6f price_at_%s=%.6f return_%s=%.12f",
                     symbol,
-                    latest_price,
+                    float(selected_price),
                     label,
-                    ref,
+                    horizon_price,
                     label,
                     ret,
                 )
@@ -2836,11 +2837,11 @@ class IntelligenceService:
             runup = float((series.max() / selected_price - 1.0) * 100.0) if selected_price and selected_price > 0 else None
             drawdown = float((series.min() / selected_price - 1.0) * 100.0) if selected_price and selected_price > 0 else None
             return {
-                "1d": ret_from_latest(1, "1d"),
-                "3d": ret_from_latest(3, "3d"),
-                "7d": ret_from_latest(7, "7d"),
-                "14d": ret_from_latest(14, "14d"),
-                "28d": ret_from_latest(28, "28d"),
+                "1d": ret_from_selection_horizon(1, "1d"),
+                "3d": ret_from_selection_horizon(3, "3d"),
+                "7d": ret_from_selection_horizon(7, "7d"),
+                "14d": ret_from_selection_horizon(14, "14d"),
+                "28d": ret_from_selection_horizon(28, "28d"),
                 "since_selection": since_selection,
                 "max_runup": runup,
                 "max_drawdown": drawdown,
@@ -2849,13 +2850,167 @@ class IntelligenceService:
         except Exception:
             return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None, "since_selection": None, "data_quality_flags": ["forward_return_calc_error"]}
 
+    @staticmethod
+    def _return_from_price_pair(selected_price: float | None, horizon_price: float | None) -> float | None:
+        if selected_price is None or horizon_price is None or selected_price <= 0:
+            return None
+        return round(float((horizon_price - selected_price) / selected_price * 100.0), 4)
+
+    def _selection_price_horizons(
+        self,
+        cand: CohortCandidate,
+        *,
+        selection_date: date,
+        as_of_date: date,
+    ) -> dict[str, Any]:
+        empty = {
+            "selected_price": cand.selected_price,
+            "price_7d": None,
+            "price_14d": None,
+            "price_28d": None,
+            "latest_price": None,
+            "latest_price_date": None,
+            "return_7d": None,
+            "return_14d": None,
+            "return_28d": None,
+            "return_since_selection": None,
+            "data_quality_flags": [],
+        }
+        try:
+            requested_symbol = normalize_symbol(cand.symbol, cand.market.value).strip().upper()
+            bundle = self.analysis_engine.data_service.get_market_data(
+                cand.symbol,
+                market=cand.market.value,
+                period="2y",
+                use_cache=False,
+            )
+            bundle_symbol = str(getattr(bundle, "normalized_ticker", "") or "").strip().upper()
+            if requested_symbol and bundle_symbol and requested_symbol != bundle_symbol:
+                return {**empty, "data_quality_flags": ["possible_symbol_price_mismatch"]}
+            close = bundle.daily["close"].dropna().astype(float)
+            close = close[close.index.map(lambda timestamp: timestamp.date() <= as_of_date)]
+            if close.empty:
+                return {**empty, "data_quality_flags": ["missing_price_series"]}
+            start_positions = [
+                position
+                for position, timestamp in enumerate(close.index)
+                if timestamp.date() >= selection_date
+            ]
+            if not start_positions:
+                return {**empty, "data_quality_flags": ["missing_selection_window"]}
+            start_position = start_positions[0]
+            selected_price = cand.selected_price
+            if selected_price is None or selected_price <= 0:
+                selected_price = float(close.iloc[start_position])
+            series = close.iloc[start_position:]
+            if series.empty:
+                return {**empty, "selected_price": selected_price, "data_quality_flags": ["missing_selection_window"]}
+
+            def price_after_trading_days(days_after_selection: int) -> float | None:
+                if len(series) <= days_after_selection:
+                    return None
+                return float(series.iloc[days_after_selection])
+
+            price_7d = price_after_trading_days(7)
+            price_14d = price_after_trading_days(14)
+            price_28d = price_after_trading_days(28)
+            latest_price = float(series.iloc[-1])
+            latest_price_date = series.index[-1].date()
+            return {
+                "selected_price": selected_price,
+                "price_7d": price_7d,
+                "price_14d": price_14d,
+                "price_28d": price_28d,
+                "latest_price": latest_price,
+                "latest_price_date": latest_price_date,
+                "return_7d": self._return_from_price_pair(selected_price, price_7d),
+                "return_14d": self._return_from_price_pair(selected_price, price_14d),
+                "return_28d": self._return_from_price_pair(selected_price, price_28d),
+                "return_since_selection": self._return_from_price_pair(selected_price, latest_price),
+                "data_quality_flags": [],
+            }
+        except Exception:
+            return {**empty, "data_quality_flags": ["selection_horizon_calc_error"]}
+
+    def _latest_followup_date_for_cohort(
+        self,
+        cohort_id: str,
+        snapshots: list[CohortDailySnapshot] | None = None,
+        *,
+        through_date: date | None = None,
+    ) -> date | None:
+        dates = {
+            row.snapshot_date
+            for row in (snapshots if snapshots is not None else self._read_cohort_snapshots())
+            if row.cohort_id == cohort_id and (through_date is None or row.snapshot_date <= through_date)
+        }
+        try:
+            dates.update(
+                row.report_date
+                for row in self.daily_report_store.list_reports(cohort_id)
+                if row.followup_snapshot_count > 0 and (through_date is None or row.report_date <= through_date)
+            )
+        except Exception:
+            pass
+        return max(dates) if dates else None
+
+    def _cohort_followup_coverage(
+        self,
+        cohort: CandidateCohort,
+        snapshots: list[CohortDailySnapshot],
+        *,
+        days_required: int,
+        through_date: date | None = None,
+    ) -> dict[str, Any]:
+        start_date = cohort.followup_start_date or cohort.start_date
+        latest_followup_date = through_date or self._latest_followup_date_for_cohort(cohort.id, snapshots)
+        as_of_date = latest_followup_date or date.today()
+        elapsed_trading_days = self._trading_days_between(start_date, as_of_date)
+        valid_dates = {
+            row.snapshot_date
+            for row in snapshots
+            if row.cohort_id == cohort.id
+            and row.snapshot_date >= start_date
+            and row.snapshot_date <= as_of_date
+            and self._is_us_trading_day(row.snapshot_date)
+        }
+        try:
+            valid_dates.update(
+                row.report_date
+                for row in self.daily_report_store.list_reports(cohort.id)
+                if row.followup_snapshot_count > 0
+                and row.report_date >= start_date
+                and row.report_date <= as_of_date
+                and self._is_us_trading_day(row.report_date)
+            )
+        except Exception:
+            pass
+        expected_days = min(max(1, int(days_required)), len(elapsed_trading_days))
+        valid_snapshot_days = min(len(valid_dates), expected_days)
+        missing_days_count = max(0, expected_days - valid_snapshot_days)
+        missing_dates = [day for day in elapsed_trading_days if day not in valid_dates][:missing_days_count]
+        coverage_pct = round((valid_snapshot_days / expected_days * 100.0), 1) if expected_days else 0.0
+        return {
+            "start_date": start_date,
+            "latest_followup_date": latest_followup_date,
+            "calendar_days_elapsed": max(0, (as_of_date - start_date).days),
+            "trading_days_elapsed": len(elapsed_trading_days),
+            "valid_followup_snapshot_days": valid_snapshot_days,
+            "expected_followup_days": expected_days,
+            "snapshot_coverage_pct": coverage_pct,
+            "missing_followup_days_count": missing_days_count,
+            "missing_followup_dates": missing_dates,
+            "daily_path_review_complete": expected_days > 0 and valid_snapshot_days >= expected_days,
+        }
+
     def run_cohort_review(self, req: CohortReviewRequest) -> CohortReviewResponse:
         model = self.settings.final_28d_review_llm_model
         cohorts = self._read_cohorts()
         cohort_by_id = {row.id: row for row in cohorts}
         if req.cohort_id not in cohort_by_id:
             raise FileNotFoundError(f"Cohort not found: {req.cohort_id}")
-        selected_name = cohort_by_id[req.cohort_id].name
+        cohort = cohort_by_id[req.cohort_id]
+        selected_name = cohort.name
         self._append_pipeline_event(
             step_name="cohort_review_started",
             status="running",
@@ -2866,18 +3021,27 @@ class IntelligenceService:
         target_ids = [req.cohort_id]
         candidate_rows = [row for row in self._read_cohort_candidates() if row.cohort_id in target_ids]
         snapshot_rows = [row for row in self._read_cohort_snapshots() if row.cohort_id in target_ids]
-        unique_days = len({row.snapshot_date for row in snapshot_rows})
-        days_remaining = max(0, req.days_required - unique_days)
-        sufficient_window = days_remaining == 0
-        readiness = (
-            f"Review ready. History: {unique_days}/{req.days_required} days."
-            if sufficient_window
-            else f"Review needs more history: {unique_days}/{req.days_required} days."
-        )
+        coverage = self._cohort_followup_coverage(cohort, snapshot_rows, days_required=req.days_required)
+        review_as_of = coverage["latest_followup_date"] or date.today()
+        unique_days = int(coverage["valid_followup_snapshot_days"])
+        expected_days = int(coverage["expected_followup_days"])
+        days_remaining = int(coverage["missing_followup_days_count"])
+        daily_path_review_complete = bool(coverage["daily_path_review_complete"])
+        sufficient_window = daily_path_review_complete
+        horizon_review_available = False
+        horizon_28d_available = False
+        horizon_28d_candidate_count = 0
+        horizon_28d_missing_count = len(candidate_rows)
+        horizon_28d_positive_count = 0
+        horizon_28d_negative_count = 0
+        warning = None
         by_symbol_snapshots: dict[str, list[CohortDailySnapshot]] = {}
-        for row in sorted(snapshot_rows, key=lambda x: (x.snapshot_date, x.symbol)):
+        for row in sorted(snapshot_rows, key=lambda snapshot: (snapshot.snapshot_date, snapshot.symbol)):
             by_symbol_snapshots.setdefault(f"{row.cohort_id}|{row.symbol}", []).append(row)
-        returns_by_cat: dict[str, list[float]] = {}
+        return_since_by_cat: dict[str, list[float]] = {}
+        return_7d_by_cat: dict[str, list[float]] = {}
+        return_14d_by_cat: dict[str, list[float]] = {}
+        return_28d_by_cat: dict[str, list[float]] = {}
         score_ret_pairs: list[tuple[float, float]] = []
         false_positives = 0
         missed_follow = 0
@@ -2895,12 +3059,28 @@ class IntelligenceService:
         worst_symbol = None
         best_ret = -9999.0
         worst_ret = 9999.0
+        best_symbol_28d = None
+        worst_symbol_28d = None
+        best_ret_28d = -9999.0
+        worst_ret_28d = 9999.0
         multi_cat_returns: list[float] = []
         for cand in candidate_rows:
             symbol_snaps = by_symbol_snapshots.get(f"{cand.cohort_id}|{cand.symbol}", [])
             latest = symbol_snaps[-1] if symbol_snaps else None
             sector_name = (cand.selected_sector or "unknown").strip() or "unknown"
             sector_counts[sector_name] = sector_counts.get(sector_name, 0) + 1
+            horizons = self._selection_price_horizons(
+                cand,
+                selection_date=cohort.start_date,
+                as_of_date=review_as_of,
+            )
+            latest_return = horizons.get("return_since_selection")
+            ret7 = horizons.get("return_7d")
+            ret14 = horizons.get("return_14d")
+            ret28 = horizons.get("return_28d")
+            horizon_is_data_quality = bool(horizons.get("data_quality_flags"))
+            if any(isinstance(value, (int, float)) for value in [latest_return, ret7, ret14, ret28]):
+                horizon_review_available = True
             latest_is_data_quality = bool(
                 latest
                 and (
@@ -2909,14 +3089,13 @@ class IntelligenceService:
                     or bool(getattr(latest, "data_quality_flags", []))
                 )
             )
-            ret7 = latest.return_7d if latest else None
             if latest and latest.return_1d is not None and not latest_is_data_quality:
                 ret1d_vals.append(float(latest.return_1d))
                 by_sector_1d.setdefault(sector_name, []).append(float(latest.return_1d))
             if latest and latest.return_3d is not None and not latest_is_data_quality:
                 by_sector_3d.setdefault(sector_name, []).append(float(latest.return_3d))
-            if latest and latest.return_7d is not None and not latest_is_data_quality:
-                by_sector_7d.setdefault(sector_name, []).append(float(latest.return_7d))
+            if isinstance(ret7, (int, float)) and not horizon_is_data_quality:
+                by_sector_7d.setdefault(sector_name, []).append(float(ret7))
             validity_state = "pending_validation"
             if latest:
                 if getattr(latest, "validity_state", None):
@@ -2927,13 +3106,21 @@ class IntelligenceService:
                     validity_state = "invalid"
             if latest_is_data_quality:
                 validity_state = "needs_data_check"
-            has_required_horizon = latest is not None and latest.return_7d is not None
+            has_required_horizon = ret7 is not None and ret14 is not None and ret28 is not None
             if not has_required_horizon:
                 pending_horizon_count += 1
-            if ret7 is not None and not latest_is_data_quality:
+            if not horizon_is_data_quality:
                 for cat in cand.selected_categories:
                     key = cat.value if hasattr(cat, "value") else str(cat)
-                    returns_by_cat.setdefault(key, []).append(float(ret7))
+                    if isinstance(latest_return, (int, float)):
+                        return_since_by_cat.setdefault(key, []).append(float(latest_return))
+                    if isinstance(ret7, (int, float)):
+                        return_7d_by_cat.setdefault(key, []).append(float(ret7))
+                    if isinstance(ret14, (int, float)):
+                        return_14d_by_cat.setdefault(key, []).append(float(ret14))
+                    if isinstance(ret28, (int, float)):
+                        return_28d_by_cat.setdefault(key, []).append(float(ret28))
+            if ret7 is not None and not horizon_is_data_quality:
                 score_ret_pairs.append((cand.selected_score, float(ret7)))
                 if len(cand.selected_categories) > 1:
                     multi_cat_returns.append(float(ret7))
@@ -2941,31 +3128,50 @@ class IntelligenceService:
                     best_ret, best_symbol = ret7, cand.symbol
                 if ret7 < worst_ret:
                     worst_ret, worst_symbol = ret7, cand.symbol
+            if ret28 is not None and not horizon_is_data_quality:
+                horizon_28d_candidate_count += 1
+                if ret28 > 0:
+                    horizon_28d_positive_count += 1
+                elif ret28 < 0:
+                    horizon_28d_negative_count += 1
+                if ret28 > best_ret_28d:
+                    best_ret_28d, best_symbol_28d = ret28, cand.symbol
+                if ret28 < worst_ret_28d:
+                    worst_ret_28d, worst_symbol_28d = ret28, cand.symbol
             if validity_state == "pending_validation":
                 pending_validation_count += 1
             elif validity_state == "needs_data_check":
                 needs_data_check_count += 1
-            if sufficient_window and validity_state == "invalid" and latest and latest.return_7d is not None and latest.return_7d < 0:
+            if sufficient_window and validity_state == "invalid" and ret7 is not None and ret7 < 0:
                 false_positives += 1
-            if validity_state == "valid":
+            if sufficient_window and validity_state == "valid":
                 stayed_valid += 1
             if sufficient_window and validity_state == "invalid" and symbol_snaps:
                 invalid_snap = next((snap for snap in symbol_snaps if (getattr(snap, "validity_state", None) == "invalid" or snap.still_valid_candidate is False)), None)
                 cohort_start = cohort_by_id.get(cand.cohort_id).start_date if cand.cohort_id in cohort_by_id else cand.selected_at.date()
                 if invalid_snap is not None and (invalid_snap.snapshot_date - cohort_start).days <= 3:
                     invalidated_quickly += 1
-            if latest and latest.return_7d is not None and latest.return_7d < -3:
+            if sufficient_window and ret7 is not None and ret7 < -3:
                 missed_follow += 1
-        avg_by_cat = {k: round(sum(v) / len(v), 3) for k, v in returns_by_cat.items() if v}
-        avg_by_sector_7d = {k: round(sum(v) / len(v), 3) for k, v in by_sector_7d.items() if v}
-        best_cat = max(avg_by_cat, key=avg_by_cat.get) if avg_by_cat else None
-        worst_cat = min(avg_by_cat, key=avg_by_cat.get) if avg_by_cat else None
-        best_sector_by_1d = max(by_sector_1d, key=lambda k: (sum(by_sector_1d[k]) / len(by_sector_1d[k]))) if by_sector_1d else None
-        worst_sector_by_1d = min(by_sector_1d, key=lambda k: (sum(by_sector_1d[k]) / len(by_sector_1d[k]))) if by_sector_1d else None
-        best_sector_by_3d = max(by_sector_3d, key=lambda k: (sum(by_sector_3d[k]) / len(by_sector_3d[k]))) if by_sector_3d else None
-        worst_sector_by_3d = min(by_sector_3d, key=lambda k: (sum(by_sector_3d[k]) / len(by_sector_3d[k]))) if by_sector_3d else None
-        best_sector_by_7d = max(by_sector_7d, key=lambda k: (sum(by_sector_7d[k]) / len(by_sector_7d[k]))) if by_sector_7d else None
-        worst_sector_by_7d = min(by_sector_7d, key=lambda k: (sum(by_sector_7d[k]) / len(by_sector_7d[k]))) if by_sector_7d else None
+        avg_since_by_cat = {key: round(sum(values) / len(values), 3) for key, values in return_since_by_cat.items() if values}
+        avg_7d_by_cat = {key: round(sum(values) / len(values), 3) for key, values in return_7d_by_cat.items() if values}
+        avg_14d_by_cat = {key: round(sum(values) / len(values), 3) for key, values in return_14d_by_cat.items() if values}
+        avg_28d_by_cat = {key: round(sum(values) / len(values), 3) for key, values in return_28d_by_cat.items() if values}
+        avg_by_sector_7d = {
+            sector: round(sum(values) / len(values), 3)
+            for sector, values in by_sector_7d.items()
+            if values
+        }
+        best_cat_28d = max(avg_28d_by_cat, key=avg_28d_by_cat.get) if avg_28d_by_cat else None
+        worst_cat_28d = min(avg_28d_by_cat, key=avg_28d_by_cat.get) if avg_28d_by_cat else None
+        best_cat = best_cat_28d
+        worst_cat = worst_cat_28d
+        best_sector_by_1d = max(by_sector_1d, key=lambda sector: (sum(by_sector_1d[sector]) / len(by_sector_1d[sector]))) if by_sector_1d else None
+        worst_sector_by_1d = min(by_sector_1d, key=lambda sector: (sum(by_sector_1d[sector]) / len(by_sector_1d[sector]))) if by_sector_1d else None
+        best_sector_by_3d = max(by_sector_3d, key=lambda sector: (sum(by_sector_3d[sector]) / len(by_sector_3d[sector]))) if by_sector_3d else None
+        worst_sector_by_3d = min(by_sector_3d, key=lambda sector: (sum(by_sector_3d[sector]) / len(by_sector_3d[sector]))) if by_sector_3d else None
+        best_sector_by_7d = max(by_sector_7d, key=lambda sector: (sum(by_sector_7d[sector]) / len(by_sector_7d[sector]))) if by_sector_7d else None
+        worst_sector_by_7d = min(by_sector_7d, key=lambda sector: (sum(by_sector_7d[sector]) / len(by_sector_7d[sector]))) if by_sector_7d else None
         sector_concentration_warning = None
         if sector_counts:
             top_sector = max(sector_counts, key=sector_counts.get)
@@ -2976,6 +3182,11 @@ class IntelligenceService:
                 sector_concentration_warning = (
                     f"{top_ratio:.0f}% of this cohort is {top_sector}. Review may be sector-biased."
                 )
+        horizon_28d_missing_count = max(0, len(candidate_rows) - horizon_28d_candidate_count)
+        horizon_28d_available = bool(
+            int(coverage["trading_days_elapsed"]) >= req.days_required
+            and horizon_28d_candidate_count > 0
+        )
         note = "insufficient data"
         if score_ret_pairs:
             up = sum(1 for score, ret in score_ret_pairs if score >= 75 and ret > 0)
@@ -2983,28 +3194,60 @@ class IntelligenceService:
             note = f"high-score positive-follow-through={up}, otherwise={down}"
         if not sufficient_window:
             note = (
-                f"insufficient data: {unique_days}/{req.days_required} days collected. "
-                "False-positive and quick-invalidation stats are deferred. 1D figures are early signal only."
+                f"daily snapshot coverage incomplete: {unique_days}/{expected_days} days "
+                f"({coverage['snapshot_coverage_pct']}%). "
+                "Invalidation/recovery path metrics are deferred until backfill. "
+                f"Horizon outcome review is {'available' if horizon_review_available else 'pending price data'}."
             )
             false_positives = 0
             invalidated_quickly = 0
             missed_follow = 0
-            best_cat = None
-            worst_cat = None
-            best_symbol = None
-            worst_symbol = None
             best_sector_by_1d = None
             worst_sector_by_1d = None
             best_sector_by_3d = None
             worst_sector_by_3d = None
             best_sector_by_7d = None
             worst_sector_by_7d = None
+        if horizon_28d_available and not daily_path_review_complete:
+            warning = "Historical price horizon is available, but daily follow-up snapshots are incomplete. Run backfill."
+        horizon_status = (
+            f"available for {horizon_28d_candidate_count}/{len(candidate_rows)} candidates"
+            if horizon_28d_available and horizon_28d_missing_count == 0
+            else f"partially available for {horizon_28d_candidate_count}/{len(candidate_rows)} candidates"
+            if horizon_28d_available
+            else "pending price data"
+            if int(coverage["trading_days_elapsed"]) >= req.days_required
+            else f"pending elapsed trading days ({coverage['trading_days_elapsed']}/{req.days_required})"
+        )
+        path_status = "complete" if daily_path_review_complete else "incomplete until backfill"
+        readiness_parts = [
+            f"28D price horizon: {horizon_status}.",
+            f"Daily snapshot coverage: {unique_days}/{expected_days} days ({coverage['snapshot_coverage_pct']}%).",
+            f"Daily path review: {path_status}.",
+            f"Horizon outcome review: {'available' if horizon_review_available else 'pending'}.",
+        ]
+        if warning:
+            readiness_parts.append(warning)
+        readiness = " ".join(readiness_parts)
         stats = CohortReviewStats(
-            average_return_by_category=avg_by_cat,
-            best_candidate=best_symbol,
-            worst_candidate=worst_symbol,
+            average_return_by_category=avg_7d_by_cat,
+            return_since_selection_by_category=avg_since_by_cat,
+            return_7d_by_category=avg_7d_by_cat,
+            return_14d_by_category=avg_14d_by_cat,
+            return_28d_by_category=avg_28d_by_cat,
+            best_candidate=best_symbol_28d if horizon_28d_available else best_symbol,
+            worst_candidate=worst_symbol_28d if horizon_28d_available else worst_symbol,
             best_category=best_cat,
             worst_category=worst_cat,
+            horizon_28d_available=horizon_28d_available,
+            horizon_28d_candidate_count=horizon_28d_candidate_count,
+            horizon_28d_missing_count=horizon_28d_missing_count,
+            horizon_28d_positive_count=horizon_28d_positive_count,
+            horizon_28d_negative_count=horizon_28d_negative_count,
+            best_candidate_by_28d=best_symbol_28d,
+            worst_candidate_by_28d=worst_symbol_28d,
+            best_category_by_28d=best_cat_28d,
+            worst_category_by_28d=worst_cat_28d,
             multi_category_avg_return_7d=(round(sum(multi_cat_returns) / len(multi_cat_returns), 3) if multi_cat_returns else None),
             false_positives=false_positives,
             missed_follow_through=missed_follow,
@@ -3032,10 +3275,13 @@ class IntelligenceService:
             status="success",
             cohort_id=req.cohort_id,
             cohort_name=selected_name,
-            message=f"action=review selected_cohort_id={req.cohort_id} cohort_name={selected_name} days={unique_days}/{req.days_required}",
+            message=(
+                f"action=review selected_cohort_id={req.cohort_id} cohort_name={selected_name} "
+                f"snapshot_coverage={unique_days}/{expected_days} horizon_28d_available={str(horizon_28d_available).lower()}"
+            ),
         )
         llm_summary = None
-        if sufficient_window:
+        if sufficient_window and horizon_28d_available:
             prompt = (
                 "You are a context-only final cohort reviewer.\n"
                 "Do not change deterministic scores, categories, ranking, validity, or readiness.\n"
@@ -3059,8 +3305,21 @@ class IntelligenceService:
             cohort_id=req.cohort_id,
             readiness_message=readiness,
             days_collected=unique_days,
-            days_required=req.days_required,
+            days_required=expected_days,
             days_remaining=days_remaining,
+            start_date=coverage["start_date"],
+            latest_followup_date=coverage["latest_followup_date"],
+            calendar_days_elapsed=coverage["calendar_days_elapsed"],
+            trading_days_elapsed=coverage["trading_days_elapsed"],
+            valid_followup_snapshot_days=coverage["valid_followup_snapshot_days"],
+            expected_followup_days=expected_days,
+            snapshot_coverage_pct=coverage["snapshot_coverage_pct"],
+            missing_followup_days_count=coverage["missing_followup_days_count"],
+            missing_followup_dates=coverage["missing_followup_dates"],
+            horizon_28d_available=horizon_28d_available,
+            horizon_outcome_review_available=horizon_review_available,
+            daily_path_review_complete=daily_path_review_complete,
+            snapshot_coverage_warning=warning,
             deterministic_stats=stats,
             llm_summary=llm_summary,
         )
@@ -3350,9 +3609,19 @@ class IntelligenceService:
         lines.append(f"- cohort_id: `{detail.cohort.id}`")
         lines.append(f"- cohort_name: `{detail.cohort.name}`")
         lines.append(f"- selected_cohort_id_used: `{selected_cohort_id_used}`")
+        lines.append(f"- start_date: `{review.start_date or detail.cohort.start_date}`")
         lines.append(f"- latest_followup_date: `{latest_followup_date}`")
+        lines.append(f"- calendar_days_elapsed: `{review.calendar_days_elapsed}`")
+        lines.append(f"- trading_days_elapsed: `{review.trading_days_elapsed}`")
+        lines.append(f"- valid_followup_snapshot_days: `{review.valid_followup_snapshot_days}`")
+        lines.append(f"- expected_followup_days: `{review.expected_followup_days}`")
+        lines.append(f"- snapshot_coverage_pct: `{review.snapshot_coverage_pct}%`")
+        lines.append(f"- missing_followup_days_count: `{review.missing_followup_days_count}`")
+        lines.append(f"- missing_followup_dates: `{json.dumps(review.missing_followup_dates, default=str)}`")
         lines.append(f"- candidate_count: `{len(detail.candidates)}`")
         lines.append(f"- followup_snapshot_count: `{followup_snapshot_count}`")
+        if review.snapshot_coverage_warning:
+            lines.append(f"- warning: {review.snapshot_coverage_warning}")
         lines.append("")
         lines.append("## Initial Selection Snapshot")
         lines.append(f"- Cohort ID: `{detail.cohort.id}`")
@@ -3482,13 +3751,64 @@ class IntelligenceService:
             lines.append("")
             lines.append("## 28-Day Review")
             lines.append(f"- Readiness: {review.readiness_message}")
-            lines.append(f"- Deterministic stats: `{json.dumps(review.deterministic_stats.model_dump(mode='json'), default=str)}`")
+            lines.append(f"- 28D price horizon available: `{str(review.horizon_28d_available).lower()}`")
+            lines.append(f"- Horizon outcome review: `{'available' if review.horizon_outcome_review_available else 'pending'}`")
+            lines.append(f"- Daily snapshot coverage: `{review.valid_followup_snapshot_days}/{review.expected_followup_days} days ({review.snapshot_coverage_pct}%)`")
+            lines.append(f"- Daily path review: `{'complete' if review.daily_path_review_complete else 'incomplete until backfill'}`")
+            if review.snapshot_coverage_warning:
+                lines.append(f"- Snapshot coverage caveat: {review.snapshot_coverage_warning}")
+            lines.append("")
+            lines.append("### Horizon Outcome Stats")
+            lines.append(f"- 28D candidates available: `{review.deterministic_stats.horizon_28d_candidate_count}/{len(detail.candidates)}`")
+            lines.append(f"- 28D positive/negative: `{review.deterministic_stats.horizon_28d_positive_count}/{review.deterministic_stats.horizon_28d_negative_count}`")
+            lines.append(f"- Best candidate by 28D: `{review.deterministic_stats.best_candidate_by_28d or '-'}`")
+            lines.append(f"- Worst candidate by 28D: `{review.deterministic_stats.worst_candidate_by_28d or '-'}`")
+            lines.append(f"- Best category by 28D: `{review.deterministic_stats.best_category_by_28d or '-'}`")
+            lines.append(f"- Worst category by 28D: `{review.deterministic_stats.worst_category_by_28d or '-'}`")
+            lines.append("")
+            lines.append("### Category Returns")
+            lines.append(f"- Return since selection by category: `{json.dumps(review.deterministic_stats.return_since_selection_by_category, default=str)}`")
+            lines.append(f"- 7D return by category: `{json.dumps(review.deterministic_stats.return_7d_by_category, default=str)}`")
+            lines.append(f"- 14D return by category: `{json.dumps(review.deterministic_stats.return_14d_by_category, default=str)}`")
+            lines.append(f"- 28D return by category: `{json.dumps(review.deterministic_stats.return_28d_by_category, default=str)}`")
+            lines.append("")
+            lines.append("### Daily Path Stats")
+            lines.append(f"- false_positives: `{review.deterministic_stats.false_positives}`")
+            lines.append(f"- missed_follow_through: `{review.deterministic_stats.missed_follow_through}`")
+            lines.append(f"- stayed_valid: `{review.deterministic_stats.stayed_valid}`")
+            lines.append(f"- invalidated_quickly: `{review.deterministic_stats.invalidated_quickly}`")
+            lines.append(f"- score_delta_vs_return_note: {review.deterministic_stats.score_delta_vs_return_note}")
             lines.append(f"- LLM summary: {review.llm_summary or 'not generated'}")
         else:
             lines.append("")
             lines.append("## Review Snapshot")
             lines.append(f"- Readiness: {review.readiness_message}")
-            lines.append(f"- Deterministic stats: `{json.dumps(review.deterministic_stats.model_dump(mode='json'), default=str)}`")
+            lines.append(f"- start_date: `{review.start_date}`")
+            lines.append(f"- latest_followup_date: `{review.latest_followup_date}`")
+            lines.append(f"- calendar_days_elapsed: `{review.calendar_days_elapsed}`")
+            lines.append(f"- trading_days_elapsed: `{review.trading_days_elapsed}`")
+            lines.append(f"- daily snapshot coverage: `{review.valid_followup_snapshot_days}/{review.expected_followup_days} days ({review.snapshot_coverage_pct}%)`")
+            lines.append(f"- missing_followup_days_count: `{review.missing_followup_days_count}`")
+            lines.append(f"- missing_followup_dates: `{json.dumps(review.missing_followup_dates, default=str)}`")
+            lines.append(f"- 28D price horizon: `{'available' if review.horizon_28d_available else 'pending or partial'}`")
+            lines.append(f"- horizon outcome review: `{'available' if review.horizon_outcome_review_available else 'pending'}`")
+            lines.append(f"- daily path review: `{'complete' if review.daily_path_review_complete else 'incomplete until backfill'}`")
+            if review.snapshot_coverage_warning:
+                lines.append(f"- snapshot coverage caveat: {review.snapshot_coverage_warning}")
+            lines.append("")
+            lines.append("### Category Returns")
+            lines.append(f"- Return since selection by category: `{json.dumps(review.deterministic_stats.return_since_selection_by_category, default=str)}`")
+            lines.append(f"- 7D return by category: `{json.dumps(review.deterministic_stats.return_7d_by_category, default=str)}`")
+            lines.append(f"- 14D return by category: `{json.dumps(review.deterministic_stats.return_14d_by_category, default=str)}`")
+            lines.append(f"- 28D return by category: `{json.dumps(review.deterministic_stats.return_28d_by_category, default=str)}`")
+            lines.append("")
+            lines.append("### 28D Outcome")
+            lines.append(f"- 28D candidates available: `{review.deterministic_stats.horizon_28d_candidate_count}/{len(detail.candidates)}`")
+            lines.append(f"- 28D positive/negative: `{review.deterministic_stats.horizon_28d_positive_count}/{review.deterministic_stats.horizon_28d_negative_count}`")
+            lines.append(f"- Best candidate by 28D: `{review.deterministic_stats.best_candidate_by_28d or '-'}`")
+            lines.append(f"- Worst candidate by 28D: `{review.deterministic_stats.worst_candidate_by_28d or '-'}`")
+            lines.append(f"- Best category by 28D: `{review.deterministic_stats.best_category_by_28d or '-'}`")
+            lines.append(f"- Worst category by 28D: `{review.deterministic_stats.worst_category_by_28d or '-'}`")
             if review.deterministic_stats.sector_candidate_distribution:
                 lines.append(f"- Sector distribution: `{json.dumps(review.deterministic_stats.sector_candidate_distribution, default=str)}`")
             if review.deterministic_stats.average_return_by_sector_7d:
@@ -3512,7 +3832,15 @@ class IntelligenceService:
             cohort_id=cohort_id,
             selected_cohort_id_used=selected_cohort_id_used,
             exported_at=exported_at,
+            start_date=review.start_date,
             latest_followup_date=latest_followup_date,
+            calendar_days_elapsed=review.calendar_days_elapsed,
+            trading_days_elapsed=review.trading_days_elapsed,
+            valid_followup_snapshot_days=review.valid_followup_snapshot_days,
+            expected_followup_days=review.expected_followup_days,
+            snapshot_coverage_pct=review.snapshot_coverage_pct,
+            missing_followup_days_count=review.missing_followup_days_count,
+            missing_followup_dates=review.missing_followup_dates,
             followup_snapshot_count=followup_snapshot_count,
             markdown=markdown,
         )
@@ -3623,6 +3951,8 @@ class IntelligenceService:
         try:
             for row in self.daily_report_store.list_reports(cohort_id):
                 if row.report_date and self._is_us_trading_day(row.report_date):
+                    if row.followup_snapshot_count <= 0:
+                        continue
                     if through_date is None or row.report_date <= through_date:
                         deterministic = row.deterministic_stats_json if isinstance(row.deterministic_stats_json, dict) else {}
                         if deterministic.get("trading_day") is False:
@@ -3840,6 +4170,102 @@ class IntelligenceService:
         )
         return response
 
+    def backfill_cohort_followup(
+        self,
+        cohort_id: str,
+        from_date: date | None = None,
+        to_date: date | None = None,
+        *,
+        include_llm: bool = False,
+    ) -> CohortDailyReportRunResponse:
+        detail = self.get_cohort_detail(cohort_id)
+        start_date = from_date or detail.cohort.followup_start_date or detail.cohort.start_date
+        latest_followup_date = self._latest_followup_date_for_cohort(cohort_id, detail.snapshots)
+        end_date = to_date or latest_followup_date or self._latest_due_report_date(schedule=detail.cohort.followup_schedule) or date.today()
+        response = CohortDailyReportRunResponse(run_at=datetime.now(UTC), requested_cohort_id=cohort_id)
+        if end_date < start_date:
+            response.skipped = 1
+            response.errors.append(f"Backfill end date {end_date.isoformat()} is before start date {start_date.isoformat()}.")
+            return response
+        target_dates = self._trading_days_between(start_date, end_date)
+        existing_dates = self._existing_daily_report_dates(cohort_id)
+        missing_dates = [target_date for target_date in target_dates if target_date not in existing_dates]
+        self.log_daily_followup_scheduler_event(
+            "backfill_started",
+            status="running",
+            cohort_id=detail.cohort.id,
+            cohort_name=detail.cohort.name,
+            report_date=end_date.isoformat(),
+            include_llm=include_llm,
+            from_date=start_date.isoformat(),
+            to_date=end_date.isoformat(),
+            missing_days=len(missing_dates),
+        )
+        self._append_pipeline_event(
+            step_name="cohort_followup_backfill_started",
+            status="running",
+            cohort_id=detail.cohort.id,
+            cohort_name=detail.cohort.name,
+            message=f"from_date={start_date.isoformat()} to_date={end_date.isoformat()} missing_days={len(missing_dates)} include_llm={str(include_llm).lower()}",
+        )
+        if not self.daily_report_store.configured:
+            response.failed = len(missing_dates) or 1
+            response.errors.append("DATABASE_URL is not configured; backfill requires Postgres daily report storage.")
+            self.log_daily_followup_scheduler_event(
+                "backfill_failed",
+                status="failed",
+                cohort_id=detail.cohort.id,
+                cohort_name=detail.cohort.name,
+                error_message=response.errors[-1],
+            )
+            return response
+        if not missing_dates:
+            response.skipped = 1
+            self.log_daily_followup_scheduler_event(
+                "backfill_skipped_no_missing_days",
+                status="success",
+                cohort_id=detail.cohort.id,
+                cohort_name=detail.cohort.name,
+                from_date=start_date.isoformat(),
+                to_date=end_date.isoformat(),
+            )
+            return response
+        for target_date in missing_dates:
+            try:
+                report = self._generate_and_store_daily_report(
+                    cohort_id=cohort_id,
+                    report_date=target_date,
+                    include_llm=include_llm,
+                )
+                response.generated += 1
+                response.report_dates.append(target_date)
+                response.reports.append(CohortDailyReportSummary.model_validate(report.model_dump()))
+            except Exception as exc:
+                response.failed += 1
+                response.errors.append(f"{detail.cohort.name} {target_date.isoformat()}: {type(exc).__name__}: {exc}")
+                self._logger.exception("cohort_followup_backfill failed cohort_id=%s report_date=%s", cohort_id, target_date)
+        self._mark_followup_completed_if_needed(cohort_id)
+        self.log_daily_followup_scheduler_event(
+            "backfill_completed",
+            status="success" if response.failed == 0 else "failed",
+            cohort_id=detail.cohort.id,
+            cohort_name=detail.cohort.name,
+            from_date=start_date.isoformat(),
+            to_date=end_date.isoformat(),
+            generated=response.generated,
+            failed=response.failed,
+            error_message="; ".join(response.errors) if response.errors else None,
+        )
+        self._append_pipeline_event(
+            step_name="cohort_followup_backfill_completed",
+            status="success" if response.failed == 0 else "failed",
+            cohort_id=detail.cohort.id,
+            cohort_name=detail.cohort.name,
+            message=f"generated={response.generated} failed={response.failed}",
+            error_message="; ".join(response.errors) if response.errors else None,
+        )
+        return response
+
     def _active_followup_cohorts(self) -> list[CandidateCohort]:
         return [
             row
@@ -3910,6 +4336,13 @@ class IntelligenceService:
             valid_followup_day_count=valid_followup_day_count,
             calendar_day_count=calendar_day_count,
         )
+        coverage = self._cohort_followup_coverage(
+            detail.cohort,
+            detail.snapshots,
+            days_required=max(1, int(detail.cohort.followup_target_days or 28)),
+            through_date=report_date,
+        )
+        deterministic_stats.update(coverage)
         fallback_used = False
         error_messages: list[str] = []
         market_note = None
@@ -4214,7 +4647,10 @@ class IntelligenceService:
         calendar_day_count: int,
     ) -> dict[str, Any]:
         counts = {"pending_validation": 0, "valid": 0, "invalid": 0, "needs_data_check": 0}
-        by_category: dict[str, list[float]] = {}
+        return_since_by_category: dict[str, list[float]] = {}
+        return_7d_by_category: dict[str, list[float]] = {}
+        return_14d_by_category: dict[str, list[float]] = {}
+        return_28d_by_category: dict[str, list[float]] = {}
         rel_spy_by_category: dict[str, list[float]] = {}
         rel_qqq_by_category: dict[str, list[float]] = {}
         rel_sector_by_category: dict[str, list[float]] = {}
@@ -4230,17 +4666,32 @@ class IntelligenceService:
             rel_spy = row.get("relative_to_SPY")
             rel_qqq = row.get("relative_to_QQQ")
             rel_sector = row.get("relative_to_sector_proxy")
+            ret7 = row.get("return_7d")
+            ret14 = row.get("return_14d")
+            ret28 = row.get("return_28d")
             for cat in categories:
                 if isinstance(absolute, (int, float)):
-                    by_category.setdefault(cat, []).append(float(absolute))
+                    return_since_by_category.setdefault(cat, []).append(float(absolute))
+                if isinstance(ret7, (int, float)):
+                    return_7d_by_category.setdefault(cat, []).append(float(ret7))
+                if isinstance(ret14, (int, float)):
+                    return_14d_by_category.setdefault(cat, []).append(float(ret14))
+                if isinstance(ret28, (int, float)):
+                    return_28d_by_category.setdefault(cat, []).append(float(ret28))
                 if isinstance(rel_spy, (int, float)):
                     rel_spy_by_category.setdefault(cat, []).append(float(rel_spy))
                 if isinstance(rel_qqq, (int, float)):
                     rel_qqq_by_category.setdefault(cat, []).append(float(rel_qqq))
                 if isinstance(rel_sector, (int, float)):
                     rel_sector_by_category.setdefault(cat, []).append(float(rel_sector))
-        avg_by_category = {cat: self._avg(vals) for cat, vals in by_category.items()}
+        avg_by_category = {cat: self._avg(vals) for cat, vals in return_since_by_category.items()}
         avg_by_category = {cat: val for cat, val in avg_by_category.items() if val is not None}
+        avg_7d_by_category = {cat: self._avg(vals) for cat, vals in return_7d_by_category.items()}
+        avg_7d_by_category = {cat: val for cat, val in avg_7d_by_category.items() if val is not None}
+        avg_14d_by_category = {cat: self._avg(vals) for cat, vals in return_14d_by_category.items()}
+        avg_14d_by_category = {cat: val for cat, val in avg_14d_by_category.items() if val is not None}
+        avg_28d_by_category = {cat: self._avg(vals) for cat, vals in return_28d_by_category.items()}
+        avg_28d_by_category = {cat: val for cat, val in avg_28d_by_category.items() if val is not None}
         enough_history = followup_day_number >= max(1, int(cohort.followup_target_days or 28))
         best_category = max(avg_by_category, key=avg_by_category.get) if enough_history and avg_by_category else None
         worst_category = min(avg_by_category, key=avg_by_category.get) if enough_history and avg_by_category else None
@@ -4264,6 +4715,10 @@ class IntelligenceService:
             "candidate_count": len(candidate_rows),
             "validity_counts": counts,
             "average_return_by_category": avg_by_category,
+            "return_since_selection_by_category": avg_by_category,
+            "return_7d_by_category": avg_7d_by_category,
+            "return_14d_by_category": avg_14d_by_category,
+            "return_28d_by_category": avg_28d_by_category,
             "average_relative_to_SPY_by_category": {cat: self._avg(vals) for cat, vals in rel_spy_by_category.items()},
             "average_relative_to_QQQ_by_category": {cat: self._avg(vals) for cat, vals in rel_qqq_by_category.items()},
             "average_relative_to_sector_proxy_by_category": {cat: self._avg(vals) for cat, vals in rel_sector_by_category.items()},
@@ -4424,9 +4879,20 @@ class IntelligenceService:
         lines.append(f"- cohort_id: `{cohort.id}`")
         lines.append(f"- cohort_name: `{cohort.name}`")
         lines.append(f"- report_date: `{report_date.isoformat()}`")
+        lines.append(f"- start_date: `{deterministic_stats.get('start_date', cohort.followup_start_date or cohort.start_date)}`")
+        lines.append(f"- latest_followup_date: `{deterministic_stats.get('latest_followup_date') or '-'}`")
+        lines.append(f"- calendar_days_elapsed: `{deterministic_stats.get('calendar_days_elapsed', deterministic_stats.get('calendar_day_count', '-'))}`")
+        lines.append(f"- trading_days_elapsed: `{deterministic_stats.get('trading_days_elapsed', '-')}`")
         lines.append(f"- followup_day_number: `{followup_day_number}/{target_days}`")
-        lines.append(f"- valid_followup_day_count: `{deterministic_stats.get('valid_followup_day_count', followup_day_number)}/{target_days}`")
-        lines.append(f"- calendar_day_count: `{deterministic_stats.get('calendar_day_count', '-')}`")
+        lines.append(
+            f"- valid_followup_snapshot_days: "
+            f"`{deterministic_stats.get('valid_followup_snapshot_days', deterministic_stats.get('valid_followup_day_count', followup_day_number))}/"
+            f"{deterministic_stats.get('expected_followup_days', target_days)}`"
+        )
+        lines.append(f"- expected_followup_days: `{deterministic_stats.get('expected_followup_days', target_days)}`")
+        lines.append(f"- snapshot_coverage_pct: `{deterministic_stats.get('snapshot_coverage_pct', 0.0)}%`")
+        lines.append(f"- missing_followup_days_count: `{deterministic_stats.get('missing_followup_days_count', 0)}`")
+        lines.append(f"- missing_followup_dates: `{json.dumps(deterministic_stats.get('missing_followup_dates', []), default=str)}`")
         lines.append(f"- trading_day: `{str(deterministic_stats.get('trading_day', False)).lower()}`")
         lines.append(f"- market_open: `{str(deterministic_stats.get('market_open', False)).lower()}`")
         lines.append(f"- candidate_count: `{len(candidate_rows)}`")
@@ -4472,7 +4938,10 @@ class IntelligenceService:
             )
         lines.append("")
         lines.append("## Category Summary")
-        lines.append(f"- average_return_by_category: `{json.dumps(deterministic_stats.get('average_return_by_category', {}), default=str)}`")
+        lines.append(f"- Return since selection by category: `{json.dumps(deterministic_stats.get('return_since_selection_by_category', {}), default=str)}`")
+        lines.append(f"- 7D return by category: `{json.dumps(deterministic_stats.get('return_7d_by_category', {}), default=str)}`")
+        lines.append(f"- 14D return by category: `{json.dumps(deterministic_stats.get('return_14d_by_category', {}), default=str)}`")
+        lines.append(f"- 28D return by category: `{json.dumps(deterministic_stats.get('return_28d_by_category', {}), default=str)}`")
         lines.append(f"- average_relative_to_SPY_by_category: `{json.dumps(deterministic_stats.get('average_relative_to_SPY_by_category', {}), default=str)}`")
         lines.append(f"- average_relative_to_QQQ_by_category: `{json.dumps(deterministic_stats.get('average_relative_to_QQQ_by_category', {}), default=str)}`")
         lines.append(f"- average_relative_to_sector_proxy_by_category: `{json.dumps(deterministic_stats.get('average_relative_to_sector_proxy_by_category', {}), default=str)}`")
@@ -4484,7 +4953,9 @@ class IntelligenceService:
             lines.append(f"- worst_category: `{deterministic_stats.get('worst_category') or '-'}`")
         lines.append("")
         lines.append("## Caveats")
-        lines.append("- 28D interpretation remains incomplete until the full target window is collected.")
+        if deterministic_stats.get("missing_followup_days_count", 0):
+            lines.append("- Snapshot coverage is daily-state coverage, not elapsed time.")
+        lines.append("- 28D interpretation uses deterministic price horizons when price data is available.")
         lines.append(f"- pending_horizon_counts: `{json.dumps(deterministic_stats.get('pending_horizon_counts', {}), default=str)}`")
         lines.append(f"- data_quality_exclusion_count: `{deterministic_stats.get('data_quality_exclusion_count', 0)}`")
         lines.append("- Market context uses deterministic proxy symbols only; event/news calendars are not connected yet.")

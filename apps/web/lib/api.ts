@@ -317,6 +317,16 @@ export const api = {
       }
     );
   },
+  backfillCohortFollowup: (cohortId: string, options?: { from_date?: string; to_date?: string; include_llm?: boolean }) =>
+    fetchJson<CohortDailyReportRunResponse>(`/api/intelligence/cohorts/${encodeURIComponent(cohortId)}/follow-up/backfill`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        from_date: options?.from_date ?? null,
+        to_date: options?.to_date ?? null,
+        include_llm: options?.include_llm ?? false,
+      })
+    }),
   runCohortFollowup: (payload: Record<string, unknown>) =>
     fetchJson<CohortFollowupResponse>("/api/intelligence/cohorts/follow-up", {
       method: "POST",

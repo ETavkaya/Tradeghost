@@ -253,6 +253,39 @@ TradeGhost Intelligence now runs as a **cohort lifecycle workflow**:
   - default minimized
   - expandable with `Expand LLM Console` or `Jump to Console`
   - includes pipeline events + LLM call inspector with expandable rows
+
+## Knowledge Graph V1
+
+TradeGhost's daily Intelligence reports are the evidence source for an auditable knowledge graph. Postgres remains authoritative for raw reports, predictions, outcomes, and price snapshots; Neo4j stores an idempotent graph projection for relationship traversal and historical-setup retrieval. The LLM is an extraction and retrieval client only, never the system of record.
+
+The V1 graph schema, prediction lifecycle, outcome rules, data flow, and anti-feedback safeguards are specified in `docs/knowledge_graph_v1.md`. The executable Neo4j constraints and indexes are in `tradeghost/knowledge_graph/knowledge_graph_v1.cypher`.
+
+When `KNOWLEDGE_GRAPH_ENABLED=true`, new persisted cohort daily reports are added to a Postgres transactional outbox and projected into Neo4j by an idempotent background worker. The operational endpoints are:
+- `GET /intelligence/knowledge-graph/status`
+- `POST /intelligence/knowledge-graph/process`
+- `POST /intelligence/knowledge-graph/backfill`
+
+The first projection stage writes only deterministic report, asset, category, setup, and validity facts. It intentionally does not create `Prediction` or `Outcome` nodes from incomplete report fields.
+
+### Current Graph Contents
+
+`CALL db.schema.visualization()` displays Neo4j's available labels and relationship types. It is a schema view, not a rendering of every persisted report relationship. The initial projection currently writes these relationships for each daily report:
+
+- `(:Report)-[:HAS_SEGMENT]->(:ReportSegment)`
+- `(:Report)-[:REPORT_MENTIONS]->(:Asset)`
+- `(:Report)-[:HAS_SIGNAL]->(:Signal)`
+- `(:Signal)-[:SIGNAL_FOR]->(:Asset)`
+- `(:Signal)-[:EXTRACTED_FROM]->(:ReportSegment)`
+
+Use this query in Neo4j Browser to see real connected report data:
+
+```cypher
+MATCH path = (:Report)-[:HAS_SIGNAL]->(:Signal)-[:SIGNAL_FOR]->(:Asset)
+RETURN path
+LIMIT 100
+```
+
+The Docker-host backfill currently contains 29 reports, 20 assets, and 1,827 deterministic signals. Labels such as `Prediction`, `Outcome`, `Condition`, and `Pattern` appear in the schema because their constraints are installed, but they will remain unpopulated until the next V1 slice adds strict prediction extraction and deterministic outcome evaluation.
 - Discovery Advanced Settings are intentionally reduced to:
   - `LLM Concurrency`
   - `LLM Timeout (sec)`
@@ -320,6 +353,9 @@ docker compose up --build
 - Web UI: `http://localhost:3000`
 - API docs: `http://localhost:8000/docs`
 - Health: `http://localhost:8000/health`
+- Neo4j Browser: `http://localhost:7474` (`tradeghost` / `admin`)
+
+The Compose bootstrap uses Neo4j's required initial `neo4j` account and then creates the requested application account, `tradeghost` / `admin`, before applying the graph schema. `admin` is deliberately supported for this local V1 only; replace both bootstrap and application credentials with Docker secrets before any non-local deployment.
 
 ## Deploy To Your Linux Docker Host
 
@@ -427,3 +463,25 @@ npm run dev
 - Designed for self-hosted Linux deployment with Docker.
 - Configuration is environment-driven (`.env`).
 - Business logic is modular for independent upgrades.
+
+## Phase 2 — Evidence-Based Learning & Reasoning
+
+TradeGhost Phase 2 turns cohort reports into a closed-loop research system.
+
+The staged implementation plan, guardrails, data-truth contract, and ticket checklist are in `docs/phase2_learning_reasoning_plan.md`. Phase 2A currently strengthens deterministic follow-up coverage and backfill; durable Prediction and Outcome records are deferred to Phase 2B.
+
+The system learns by:
+1. Recording deterministic predictions at selection time.
+2. Measuring deterministic outcomes at fixed horizons.
+3. Linking setup conditions, market regime, and outcomes in Neo4j.
+4. Retrieving similar historical cases for new setups.
+5. Generating human-reviewed rule improvement hypotheses.
+6. Testing proposed changes through versioned backtests before adoption.
+
+The LLM does not trade, score, rank, or mutate rules.
+The LLM can only:
+- explain
+- retrieve historical evidence
+- summarize outcomes
+- propose hypotheses
+- draft human-reviewable rule changes

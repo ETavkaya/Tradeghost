@@ -1290,6 +1290,8 @@ class CohortDailySnapshot(BaseModel):
     cohort_id: str
     symbol: str
     snapshot_date: date
+    state_source: str = "live_followup"
+    source_report_id: str | None = None
     current_price: float | None = None
     current_score: float | None = None
     current_rank_if_discovered_today: int | None = None
@@ -1547,6 +1549,11 @@ class CohortReviewResponse(BaseModel):
     snapshot_coverage_pct: float = 0.0
     missing_followup_days_count: int = 0
     missing_followup_dates: list[date] = Field(default_factory=list)
+    actual_followup_snapshot_count: int = 0
+    complete_followup_snapshot_count: int = 0
+    partial_followup_snapshot_count: int = 0
+    expected_followup_snapshot_count: int = 0
+    partial_followup_dates: list[date] = Field(default_factory=list)
     horizon_28d_available: bool = False
     horizon_outcome_review_available: bool = False
     daily_path_review_complete: bool = False
@@ -1559,6 +1566,7 @@ class CohortDailyReportSummary(BaseModel):
     id: str | None = None
     cohort_id: str
     cohort_name: str | None = None
+    market: str | None = None
     report_date: date
     report_mode: str
     followup_day_number: int | None = None
@@ -1592,6 +1600,8 @@ class CohortDailyReportRunResponse(BaseModel):
     generated: int = 0
     skipped: int = 0
     failed: int = 0
+    rehydrated_snapshot_days: int = 0
+    rehydrated_snapshot_states: int = 0
     reports: list[CohortDailyReportSummary] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
 

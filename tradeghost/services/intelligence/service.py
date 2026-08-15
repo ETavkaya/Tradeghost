@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, date, datetime, timedelta
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from threading import Lock
+from threading import Lock, RLock
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from tradeghost.services.analysis_engine import AnalysisEngine
 from tradeghost.services.backtest.engine import BacktestEngine
 from tradeghost.services.intelligence.daily_report_store import CohortDailyReportStore
+from tradeghost.services.knowledge_graph.service import KnowledgeGraphIngestionService
 from tradeghost.services.intelligence.providers import LLMProvider, OllamaProvider, OpenAIProvider
 from tradeghost.services.scanner.engine import ScannerEngine
 from tradeghost.shared.config.settings import get_settings
@@ -107,12 +108,14 @@ class IntelligenceService:
         self.scheduler_logs_dir = self.settings.logs_dir / "scheduler"
         self.scheduler_logs_path = self.scheduler_logs_dir / "daily_followup.log"
         self.daily_report_store = CohortDailyReportStore(self.settings.database_url)
+        self.knowledge_graph_service = KnowledgeGraphIngestionService(self.settings)
         self.analysis_engine = analysis_engine or AnalysisEngine()
         self.scanner_engine = scanner_engine or ScannerEngine(analysis_engine=self.analysis_engine)
         self.backtest_engine = backtest_engine or BacktestEngine(analysis_engine=self.analysis_engine)
         self._logger = logging.getLogger(__name__)
         self._llm_logs_lock = Lock()
         self._pipeline_logs_lock = Lock()
+        self._cohort_followup_lock = RLock()
         self._daily_followup_db_warning_logged = False
         self._providers: dict[str, LLMProvider] = {
             "openai": OpenAIProvider(self.settings),
@@ -780,6 +783,10 @@ class IntelligenceService:
         return self.get_cohort_detail(cohort.id)
 
     def run_cohort_followup(self, req: CohortFollowupRequest) -> CohortFollowupResponse:
+        with self._cohort_followup_lock:
+            return self._run_cohort_followup_locked(req)
+
+    def _run_cohort_followup_locked(self, req: CohortFollowupRequest) -> CohortFollowupResponse:
         detail = self.get_cohort_detail(req.cohort_id)
         self._append_pipeline_event(
             step_name="cohort_followup_started",
@@ -822,7 +829,7 @@ class IntelligenceService:
             perf = self._forward_returns_from_selection(
                 cand.symbol,
                 cand.market.value,
-                detail.cohort.start_date,
+                cand.selected_at.date(),
                 selected_price,
                 latest_price_for_since=close,
                 as_of_date=target_date,
@@ -2697,7 +2704,7 @@ class IntelligenceService:
     def _latest_close_for_symbol(self, symbol: str, market: str, as_of_date: date) -> float | None:
         try:
             requested_symbol = normalize_symbol(symbol, market).strip().upper()
-            bundle = self.analysis_engine.data_service.get_market_data(symbol, market=market, period="1y", use_cache=False)
+            bundle = self.analysis_engine.data_service.get_market_data(symbol, market=market, period="1y", use_cache=True)
             bundle_symbol = str(getattr(bundle, "normalized_ticker", "") or "").strip().upper()
             if requested_symbol and bundle_symbol and requested_symbol != bundle_symbol:
                 self._logger.warning(
@@ -2739,7 +2746,7 @@ class IntelligenceService:
         as_of_date: date | None = None,
     ) -> dict[str, float | None]:
         try:
-            bundle = self.analysis_engine.data_service.get_market_data(symbol, market=market, period="1y", use_cache=False)
+            bundle = self.analysis_engine.data_service.get_market_data(symbol, market=market, period="1y", use_cache=True)
             close = bundle.daily["close"].dropna().astype(float)
             if as_of_date is not None:
                 close = close[close.index.map(lambda ts: ts.date() <= as_of_date)]
@@ -2765,11 +2772,24 @@ class IntelligenceService:
                 }
             if close.empty:
                 return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None, "since_selection": None, "data_quality_flags": ["missing_price_series"]}
-            from_idx = 0
-            for idx, ts in enumerate(close.index):
-                if ts.date() >= selection_date:
-                    from_idx = idx
-                    break
+            start_positions = [
+                idx
+                for idx, ts in enumerate(close.index)
+                if ts.date() >= selection_date
+            ]
+            if not start_positions:
+                return {
+                    "1d": None,
+                    "3d": None,
+                    "7d": None,
+                    "14d": None,
+                    "28d": None,
+                    "max_runup": None,
+                    "max_drawdown": None,
+                    "since_selection": None,
+                    "data_quality_flags": ["missing_selection_window"],
+                }
+            from_idx = start_positions[0]
             series = close.iloc[from_idx:]
             if series.empty:
                 return {"1d": None, "3d": None, "7d": None, "14d": None, "28d": None, "max_runup": None, "max_drawdown": None, "since_selection": None, "data_quality_flags": ["missing_selection_window"]}
@@ -2882,7 +2902,7 @@ class IntelligenceService:
                 cand.symbol,
                 market=cand.market.value,
                 period="2y",
-                use_cache=False,
+                use_cache=True,
             )
             bundle_symbol = str(getattr(bundle, "normalized_ticker", "") or "").strip().upper()
             if requested_symbol and bundle_symbol and requested_symbol != bundle_symbol:
@@ -2906,14 +2926,14 @@ class IntelligenceService:
             if series.empty:
                 return {**empty, "selected_price": selected_price, "data_quality_flags": ["missing_selection_window"]}
 
-            def price_after_trading_days(days_after_selection: int) -> float | None:
-                if len(series) <= days_after_selection:
+            def price_at_trading_day(horizon_days: int) -> float | None:
+                if horizon_days < 1 or len(series) < horizon_days:
                     return None
-                return float(series.iloc[days_after_selection])
+                return float(series.iloc[horizon_days - 1])
 
-            price_7d = price_after_trading_days(7)
-            price_14d = price_after_trading_days(14)
-            price_28d = price_after_trading_days(28)
+            price_7d = price_at_trading_day(7)
+            price_14d = price_at_trading_day(14)
+            price_28d = price_at_trading_day(28)
             latest_price = float(series.iloc[-1])
             latest_price_date = series.index[-1].date()
             return {
@@ -2939,20 +2959,71 @@ class IntelligenceService:
         *,
         through_date: date | None = None,
     ) -> date | None:
-        dates = {
-            row.snapshot_date
-            for row in (snapshots if snapshots is not None else self._read_cohort_snapshots())
-            if row.cohort_id == cohort_id and (through_date is None or row.snapshot_date <= through_date)
+        cohort = next((row for row in self._read_cohorts() if row.id == cohort_id), None)
+        source_rows = snapshots if snapshots is not None else self._read_cohort_snapshots()
+        if cohort is None:
+            dates = {
+                row.snapshot_date
+                for row in source_rows
+                if row.cohort_id == cohort_id and (through_date is None or row.snapshot_date <= through_date)
+            }
+            return max(dates) if dates else None
+        state_coverage = self._followup_snapshot_state_coverage(
+            cohort,
+            source_rows,
+            through_date=through_date,
+        )
+        return state_coverage["latest_snapshot_date"]
+
+    def _followup_snapshot_state_coverage(
+        self,
+        cohort: CandidateCohort,
+        snapshots: list[CohortDailySnapshot],
+        *,
+        through_date: date | None = None,
+    ) -> dict[str, Any]:
+        """Return deduplicated, candidate-scoped follow-up state coverage.
+
+        A follow-up day is complete only when every selected candidate has one
+        persisted snapshot state for that trading day. Daily-report rows are not
+        evidence of coverage: they are derived views and can be regenerated.
+        """
+        start_date = cohort.followup_start_date or cohort.start_date
+        candidates = [row for row in self._read_cohort_candidates() if row.cohort_id == cohort.id]
+        expected_symbols = {
+            normalize_symbol(row.symbol, row.market.value).strip().upper()
+            for row in candidates
+            if row.symbol
         }
-        try:
-            dates.update(
-                row.report_date
-                for row in self.daily_report_store.list_reports(cohort_id)
-                if row.followup_snapshot_count > 0 and (through_date is None or row.report_date <= through_date)
-            )
-        except Exception:
-            pass
-        return max(dates) if dates else None
+        symbols_by_date: dict[date, set[str]] = {}
+        for row in snapshots:
+            if row.cohort_id != cohort.id:
+                continue
+            if row.snapshot_date < start_date or (through_date is not None and row.snapshot_date > through_date):
+                continue
+            if not self._is_us_trading_day(row.snapshot_date):
+                continue
+            symbol = normalize_symbol(row.symbol, cohort.market.value).strip().upper()
+            if symbol not in expected_symbols:
+                continue
+            symbols_by_date.setdefault(row.snapshot_date, set()).add(symbol)
+        complete_dates = {
+            snapshot_date
+            for snapshot_date, symbols in symbols_by_date.items()
+            if expected_symbols and symbols == expected_symbols
+        }
+        partial_dates = {
+            snapshot_date
+            for snapshot_date, symbols in symbols_by_date.items()
+            if symbols and snapshot_date not in complete_dates
+        }
+        return {
+            "expected_symbols": expected_symbols,
+            "symbols_by_date": symbols_by_date,
+            "complete_dates": complete_dates,
+            "partial_dates": partial_dates,
+            "latest_snapshot_date": max(symbols_by_date) if symbols_by_date else None,
+        }
 
     def _cohort_followup_coverage(
         self,
@@ -2963,36 +3034,31 @@ class IntelligenceService:
         through_date: date | None = None,
     ) -> dict[str, Any]:
         start_date = cohort.followup_start_date or cohort.start_date
-        latest_followup_date = through_date or self._latest_followup_date_for_cohort(cohort.id, snapshots)
-        as_of_date = latest_followup_date or date.today()
+        state_coverage = self._followup_snapshot_state_coverage(
+            cohort,
+            snapshots,
+            through_date=through_date,
+        )
+        latest_followup_date = state_coverage["latest_snapshot_date"]
+        as_of_date = through_date or latest_followup_date or date.today()
         elapsed_trading_days = self._trading_days_between(start_date, as_of_date)
-        valid_dates = {
-            row.snapshot_date
-            for row in snapshots
-            if row.cohort_id == cohort.id
-            and row.snapshot_date >= start_date
-            and row.snapshot_date <= as_of_date
-            and self._is_us_trading_day(row.snapshot_date)
-        }
-        try:
-            valid_dates.update(
-                row.report_date
-                for row in self.daily_report_store.list_reports(cohort.id)
-                if row.followup_snapshot_count > 0
-                and row.report_date >= start_date
-                and row.report_date <= as_of_date
-                and self._is_us_trading_day(row.report_date)
-            )
-        except Exception:
-            pass
         expected_days = min(max(1, int(days_required)), len(elapsed_trading_days))
-        valid_snapshot_days = min(len(valid_dates), expected_days)
+        coverage_days = elapsed_trading_days[:expected_days]
+        valid_dates = set(coverage_days).intersection(state_coverage["complete_dates"])
+        valid_snapshot_days = len(valid_dates)
         missing_days_count = max(0, expected_days - valid_snapshot_days)
-        missing_dates = [day for day in elapsed_trading_days if day not in valid_dates][:missing_days_count]
+        missing_dates = [day for day in coverage_days if day not in valid_dates]
         coverage_pct = round((valid_snapshot_days / expected_days * 100.0), 1) if expected_days else 0.0
+        state_counts_by_date = state_coverage["symbols_by_date"]
+        actual_snapshot_state_count = sum(len(state_counts_by_date.get(day, set())) for day in coverage_days)
+        expected_snapshot_state_count = len(state_coverage["expected_symbols"]) * expected_days
+        complete_snapshot_state_count = len(state_coverage["expected_symbols"]) * valid_snapshot_days
+        partial_snapshot_state_count = max(0, actual_snapshot_state_count - complete_snapshot_state_count)
+        partial_dates = sorted(set(coverage_days).intersection(state_coverage["partial_dates"]))
         return {
             "start_date": start_date,
             "latest_followup_date": latest_followup_date,
+            "evaluation_as_of_date": as_of_date,
             "calendar_days_elapsed": max(0, (as_of_date - start_date).days),
             "trading_days_elapsed": len(elapsed_trading_days),
             "valid_followup_snapshot_days": valid_snapshot_days,
@@ -3000,6 +3066,11 @@ class IntelligenceService:
             "snapshot_coverage_pct": coverage_pct,
             "missing_followup_days_count": missing_days_count,
             "missing_followup_dates": missing_dates,
+            "actual_followup_snapshot_count": actual_snapshot_state_count,
+            "complete_followup_snapshot_count": complete_snapshot_state_count,
+            "partial_followup_snapshot_count": partial_snapshot_state_count,
+            "expected_followup_snapshot_count": expected_snapshot_state_count,
+            "partial_followup_dates": partial_dates,
             "daily_path_review_complete": expected_days > 0 and valid_snapshot_days >= expected_days,
         }
 
@@ -3028,7 +3099,6 @@ class IntelligenceService:
         days_remaining = int(coverage["missing_followup_days_count"])
         daily_path_review_complete = bool(coverage["daily_path_review_complete"])
         sufficient_window = daily_path_review_complete
-        horizon_review_available = False
         horizon_28d_available = False
         horizon_28d_candidate_count = 0
         horizon_28d_missing_count = len(candidate_rows)
@@ -3071,7 +3141,7 @@ class IntelligenceService:
             sector_counts[sector_name] = sector_counts.get(sector_name, 0) + 1
             horizons = self._selection_price_horizons(
                 cand,
-                selection_date=cohort.start_date,
+                selection_date=cand.selected_at.date(),
                 as_of_date=review_as_of,
             )
             latest_return = horizons.get("return_since_selection")
@@ -3079,8 +3149,6 @@ class IntelligenceService:
             ret14 = horizons.get("return_14d")
             ret28 = horizons.get("return_28d")
             horizon_is_data_quality = bool(horizons.get("data_quality_flags"))
-            if any(isinstance(value, (int, float)) for value in [latest_return, ret7, ret14, ret28]):
-                horizon_review_available = True
             latest_is_data_quality = bool(
                 latest
                 and (
@@ -3187,6 +3255,7 @@ class IntelligenceService:
             int(coverage["trading_days_elapsed"]) >= req.days_required
             and horizon_28d_candidate_count > 0
         )
+        horizon_review_available = horizon_28d_available
         note = "insufficient data"
         if score_ret_pairs:
             up = sum(1 for score, ret in score_ret_pairs if score >= 75 and ret > 0)
@@ -3197,7 +3266,7 @@ class IntelligenceService:
                 f"daily snapshot coverage incomplete: {unique_days}/{expected_days} days "
                 f"({coverage['snapshot_coverage_pct']}%). "
                 "Invalidation/recovery path metrics are deferred until backfill. "
-                f"Horizon outcome review is {'available' if horizon_review_available else 'pending price data'}."
+                f"Horizon outcome review is {'available' if horizon_review_available else 'pending exact-symbol price data'}."
             )
             false_positives = 0
             invalidated_quickly = 0
@@ -3215,7 +3284,7 @@ class IntelligenceService:
             if horizon_28d_available and horizon_28d_missing_count == 0
             else f"partially available for {horizon_28d_candidate_count}/{len(candidate_rows)} candidates"
             if horizon_28d_available
-            else "pending price data"
+            else "unavailable: no exact-symbol 28D price"
             if int(coverage["trading_days_elapsed"]) >= req.days_required
             else f"pending elapsed trading days ({coverage['trading_days_elapsed']}/{req.days_required})"
         )
@@ -3226,6 +3295,10 @@ class IntelligenceService:
             f"Daily path review: {path_status}.",
             f"Horizon outcome review: {'available' if horizon_review_available else 'pending'}.",
         ]
+        if not daily_path_review_complete:
+            readiness_parts.append(
+                f"Backfill required: {coverage['missing_followup_days_count']} missing trading day(s)."
+            )
         if warning:
             readiness_parts.append(warning)
         readiness = " ".join(readiness_parts)
@@ -3316,6 +3389,11 @@ class IntelligenceService:
             snapshot_coverage_pct=coverage["snapshot_coverage_pct"],
             missing_followup_days_count=coverage["missing_followup_days_count"],
             missing_followup_dates=coverage["missing_followup_dates"],
+            actual_followup_snapshot_count=coverage["actual_followup_snapshot_count"],
+            complete_followup_snapshot_count=coverage["complete_followup_snapshot_count"],
+            partial_followup_snapshot_count=coverage["partial_followup_snapshot_count"],
+            expected_followup_snapshot_count=coverage["expected_followup_snapshot_count"],
+            partial_followup_dates=coverage["partial_followup_dates"],
             horizon_28d_available=horizon_28d_available,
             horizon_outcome_review_available=horizon_review_available,
             daily_path_review_complete=daily_path_review_complete,
@@ -3592,8 +3670,8 @@ class IntelligenceService:
             message=f"action=export selected_cohort_id={selected_cohort_id_used} cohort_name={detail.cohort.name} report_mode={mode_label}",
         )
         review = self.run_cohort_review(CohortReviewRequest(cohort_id=cohort_id))
-        latest_followup_date = max((x.snapshot_date for x in detail.snapshots), default=None)
-        followup_snapshot_count = len(detail.snapshots)
+        latest_followup_date = review.latest_followup_date
+        followup_snapshot_count = review.actual_followup_snapshot_count
         exported_at = datetime.now(UTC)
         filename = self._build_versioned_cohort_export_filename(
             cohort_name=detail.cohort.name,
@@ -3620,6 +3698,14 @@ class IntelligenceService:
         lines.append(f"- missing_followup_dates: `{json.dumps(review.missing_followup_dates, default=str)}`")
         lines.append(f"- candidate_count: `{len(detail.candidates)}`")
         lines.append(f"- followup_snapshot_count: `{followup_snapshot_count}`")
+        lines.append(f"- complete_followup_snapshot_count: `{review.complete_followup_snapshot_count}`")
+        lines.append(f"- partial_followup_snapshot_count: `{review.partial_followup_snapshot_count}`")
+        lines.append(f"- expected_followup_snapshot_count: `{review.expected_followup_snapshot_count}`")
+        lines.append(f"- partial_followup_dates: `{json.dumps(review.partial_followup_dates, default=str)}`")
+        lines.append(
+            "- snapshot_count_basis: `one deduplicated persisted state per selected candidate per trading day; "
+            "partial-day states are excluded from daily coverage`"
+        )
         if review.snapshot_coverage_warning:
             lines.append(f"- warning: {review.snapshot_coverage_warning}")
         lines.append("")
@@ -3946,34 +4032,19 @@ class IntelligenceService:
             cursor += timedelta(days=1)
         return days
 
-    def _valid_followup_report_dates(self, cohort_id: str, *, through_date: date | None = None) -> set[date]:
-        dates: set[date] = set()
-        try:
-            for row in self.daily_report_store.list_reports(cohort_id):
-                if row.report_date and self._is_us_trading_day(row.report_date):
-                    if row.followup_snapshot_count <= 0:
-                        continue
-                    if through_date is None or row.report_date <= through_date:
-                        deterministic = row.deterministic_stats_json if isinstance(row.deterministic_stats_json, dict) else {}
-                        if deterministic.get("trading_day") is False:
-                            continue
-                        dates.add(row.report_date)
-        except Exception:
-            pass
-        for snap in self._read_cohort_snapshots():
-            if snap.cohort_id != cohort_id:
-                continue
-            if through_date is not None and snap.snapshot_date > through_date:
-                continue
-            if self._is_us_trading_day(snap.snapshot_date):
-                dates.add(snap.snapshot_date)
-        return dates
+    def _valid_followup_report_dates(self, cohort: CandidateCohort, *, through_date: date | None = None) -> set[date]:
+        coverage = self._followup_snapshot_state_coverage(
+            cohort,
+            self._read_cohort_snapshots(),
+            through_date=through_date,
+        )
+        return set(coverage["complete_dates"])
 
     def _valid_followup_day_count(self, cohort: CandidateCohort, report_date: date) -> int:
         start = cohort.followup_start_date or cohort.start_date
         target = max(1, int(cohort.followup_target_days or 28))
         eligible = set(self._trading_days_between(start, report_date)[:target])
-        valid_dates = self._valid_followup_report_dates(cohort.id, through_date=report_date)
+        valid_dates = self._valid_followup_report_dates(cohort, through_date=report_date)
         return len(eligible.intersection(valid_dates))
 
     @staticmethod
@@ -4036,6 +4107,24 @@ class IntelligenceService:
         cohort_id: str | None = None,
         report_date: date | None = None,
         backfill: bool = True,
+        include_llm: bool = True,
+        force: bool = False,
+    ) -> CohortDailyReportRunResponse:
+        with self._cohort_followup_lock:
+            return self._run_daily_cohort_followup_job_locked(
+                cohort_id=cohort_id,
+                report_date=report_date,
+                backfill=backfill,
+                include_llm=include_llm,
+                force=force,
+            )
+
+    def _run_daily_cohort_followup_job_locked(
+        self,
+        *,
+        cohort_id: str | None = None,
+        report_date: date | None = None,
+        backfill: bool = False,
         include_llm: bool = True,
         force: bool = False,
     ) -> CohortDailyReportRunResponse:
@@ -4178,18 +4267,56 @@ class IntelligenceService:
         *,
         include_llm: bool = False,
     ) -> CohortDailyReportRunResponse:
+        with self._cohort_followup_lock:
+            return self._backfill_cohort_followup_locked(
+                cohort_id,
+                from_date=from_date,
+                to_date=to_date,
+                include_llm=include_llm,
+            )
+
+    def _backfill_cohort_followup_locked(
+        self,
+        cohort_id: str,
+        from_date: date | None = None,
+        to_date: date | None = None,
+        *,
+        include_llm: bool = False,
+    ) -> CohortDailyReportRunResponse:
         detail = self.get_cohort_detail(cohort_id)
         start_date = from_date or detail.cohort.followup_start_date or detail.cohort.start_date
         latest_followup_date = self._latest_followup_date_for_cohort(cohort_id, detail.snapshots)
-        end_date = to_date or latest_followup_date or self._latest_due_report_date(schedule=detail.cohort.followup_schedule) or date.today()
+        latest_report_date = self._latest_persisted_followup_report_date(cohort_id)
+        end_date = to_date or max(
+            (
+                candidate_date
+                for candidate_date in [
+                    latest_followup_date,
+                    latest_report_date,
+                    self._latest_due_report_date(schedule=detail.cohort.followup_schedule),
+                    date.today(),
+                ]
+                if candidate_date is not None
+            ),
+            default=start_date,
+        )
         response = CohortDailyReportRunResponse(run_at=datetime.now(UTC), requested_cohort_id=cohort_id)
         if end_date < start_date:
             response.skipped = 1
             response.errors.append(f"Backfill end date {end_date.isoformat()} is before start date {start_date.isoformat()}.")
             return response
-        target_dates = self._trading_days_between(start_date, end_date)
-        existing_dates = self._existing_daily_report_dates(cohort_id)
-        missing_dates = [target_date for target_date in target_dates if target_date not in existing_dates]
+        target_dates = [
+            target_date
+            for target_date in self._followup_target_dates(detail.cohort, through_date=end_date)
+            if target_date >= start_date
+        ]
+        rehydrated = self._rehydrate_followup_snapshots_from_daily_reports(
+            detail.cohort,
+            target_dates=target_dates,
+        )
+        response.rehydrated_snapshot_days = rehydrated["days"]
+        response.rehydrated_snapshot_states = rehydrated["states"]
+        missing_dates = self._incomplete_followup_snapshot_dates(detail.cohort, target_dates=target_dates)
         self.log_daily_followup_scheduler_event(
             "backfill_started",
             status="running",
@@ -4208,6 +4335,17 @@ class IntelligenceService:
             cohort_name=detail.cohort.name,
             message=f"from_date={start_date.isoformat()} to_date={end_date.isoformat()} missing_days={len(missing_dates)} include_llm={str(include_llm).lower()}",
         )
+        if rehydrated["days"]:
+            self._append_pipeline_event(
+                step_name="cohort_followup_backfill_rehydrated",
+                status="success",
+                cohort_id=detail.cohort.id,
+                cohort_name=detail.cohort.name,
+                message=(
+                    f"restored_days={rehydrated['days']} restored_states={rehydrated['states']} "
+                    "source=cohort_daily_reports"
+                ),
+            )
         if not self.daily_report_store.configured:
             response.failed = len(missing_dates) or 1
             response.errors.append("DATABASE_URL is not configured; backfill requires Postgres daily report storage.")
@@ -4220,6 +4358,7 @@ class IntelligenceService:
             )
             return response
         if not missing_dates:
+            self._mark_followup_completed_if_needed(cohort_id)
             response.skipped = 1
             self.log_daily_followup_scheduler_event(
                 "backfill_skipped_no_missing_days",
@@ -4275,21 +4414,145 @@ class IntelligenceService:
             and not row.followup_completed
         ]
 
-    def _existing_daily_report_dates(self, cohort_id: str) -> set[date]:
+    def _latest_persisted_followup_report_date(self, cohort_id: str) -> date | None:
         try:
-            return {row.report_date for row in self.daily_report_store.list_reports(cohort_id)}
+            dates = {
+                row.report_date
+                for row in self.daily_report_store.list_reports(cohort_id)
+                if row.report_date and self._is_us_trading_day(row.report_date)
+            }
+            return max(dates) if dates else None
         except Exception as exc:
             self._logger.warning("cohort_daily_reports lookup unavailable cohort_id=%s error=%s", cohort_id, exc)
-            return {row.snapshot_date for row in self._read_cohort_snapshots() if row.cohort_id == cohort_id}
+            return None
+
+    def _followup_target_dates(self, cohort: CandidateCohort, *, through_date: date) -> list[date]:
+        start_date = cohort.followup_start_date or cohort.start_date
+        target_days = max(1, int(cohort.followup_target_days or 28))
+        return self._trading_days_between(start_date, through_date)[:target_days]
+
+    def _incomplete_followup_snapshot_dates(
+        self,
+        cohort: CandidateCohort,
+        *,
+        target_dates: list[date],
+    ) -> list[date]:
+        coverage = self._followup_snapshot_state_coverage(
+            cohort,
+            self._read_cohort_snapshots(),
+            through_date=max(target_dates) if target_dates else None,
+        )
+        complete_dates = coverage["complete_dates"]
+        return [target_date for target_date in target_dates if target_date not in complete_dates]
+
+    def _rehydrate_followup_snapshots_from_daily_reports(
+        self,
+        cohort: CandidateCohort,
+        *,
+        target_dates: list[date],
+    ) -> dict[str, int]:
+        if not target_dates:
+            return {"days": 0, "states": 0}
+        candidates = [row for row in self._read_cohort_candidates() if row.cohort_id == cohort.id]
+        candidates_by_symbol = {
+            normalize_symbol(row.symbol, row.market.value).strip().upper(): row
+            for row in candidates
+            if row.symbol
+        }
+        if not candidates_by_symbol:
+            return {"days": 0, "states": 0}
+        incomplete_dates = set(self._incomplete_followup_snapshot_dates(cohort, target_dates=target_dates))
+        if not incomplete_dates:
+            return {"days": 0, "states": 0}
+        try:
+            report_summaries = self.daily_report_store.list_reports(cohort.id)
+        except Exception as exc:
+            self._logger.warning("daily report recovery lookup unavailable cohort_id=%s error=%s", cohort.id, exc)
+            return {"days": 0, "states": 0}
+
+        snapshots = self._read_cohort_snapshots()
+        restored_dates: set[date] = set()
+        restored_states = 0
+        for summary in report_summaries:
+            report_date = summary.report_date
+            if report_date not in incomplete_dates or summary.report_mode != "followup":
+                continue
+            expected_count = len(candidates_by_symbol)
+            if summary.candidate_count != expected_count or summary.followup_snapshot_count != expected_count:
+                continue
+            try:
+                report = self.daily_report_store.get_report(cohort.id, report_date, report_mode="followup")
+            except Exception as exc:
+                self._logger.warning(
+                    "daily report recovery detail unavailable cohort_id=%s report_date=%s error=%s",
+                    cohort.id,
+                    report_date,
+                    exc,
+                )
+                continue
+            if report is None or len(report.candidate_followup_json) != expected_count:
+                continue
+            source_rows_by_symbol: dict[str, dict[str, Any]] = {}
+            for source_row in report.candidate_followup_json:
+                if not isinstance(source_row, dict):
+                    source_rows_by_symbol = {}
+                    break
+                symbol = normalize_symbol(str(source_row.get("symbol") or ""), cohort.market.value).strip().upper()
+                if not symbol or symbol in source_rows_by_symbol:
+                    source_rows_by_symbol = {}
+                    break
+                source_rows_by_symbol[symbol] = source_row
+            if set(source_rows_by_symbol) != set(candidates_by_symbol):
+                continue
+
+            snapshots = [
+                snapshot
+                for snapshot in snapshots
+                if not (snapshot.cohort_id == cohort.id and snapshot.snapshot_date == report_date)
+            ]
+            for symbol, candidate in candidates_by_symbol.items():
+                source_row = source_rows_by_symbol[symbol]
+                validity_state = str(source_row.get("validity_state") or "pending_validation")
+                if validity_state not in {"pending_validation", "valid", "invalid", "needs_data_check"}:
+                    validity_state = "pending_validation"
+                source_flags = source_row.get("data_quality_flags")
+                data_quality_flags = [str(flag) for flag in source_flags] if isinstance(source_flags, list) else []
+                snapshots.append(
+                    CohortDailySnapshot(
+                        cohort_id=cohort.id,
+                        symbol=candidate.symbol,
+                        snapshot_date=report_date,
+                        state_source="rehydrated_daily_report",
+                        source_report_id=report.id,
+                        current_price=source_row.get("latest_price"),
+                        current_categories=candidate.selected_categories,
+                        current_setup_type=candidate.selected_setup_type,
+                        price_change_since_selection=source_row.get("return_since_selection"),
+                        return_since_selection=source_row.get("return_since_selection"),
+                        return_1d=source_row.get("return_1d"),
+                        return_3d=source_row.get("return_3d"),
+                        return_7d=source_row.get("return_7d"),
+                        return_14d=source_row.get("return_14d"),
+                        return_28d=source_row.get("return_28d"),
+                        validity_state=validity_state,
+                        invalidation_reason=source_row.get("invalidation_reason"),
+                        entry_readiness=str(source_row.get("readiness") or "pending_validation"),
+                        blocked_by=str(source_row.get("blocked_by") or "none"),
+                        readiness_explanation=str(source_row.get("readiness_explanation") or ""),
+                        data_quality_flags=data_quality_flags,
+                    )
+                )
+                restored_states += 1
+            restored_dates.add(report_date)
+        if restored_dates:
+            self._save_cohort_snapshots(snapshots)
+        return {"days": len(restored_dates), "states": restored_states}
 
     def _missing_report_dates_for_cohort(self, cohort: CandidateCohort, *, due_date: date, backfill: bool) -> list[date]:
-        start = cohort.followup_start_date or cohort.start_date
-        target_days = max(1, int(cohort.followup_target_days or 28))
-        eligible = self._trading_days_between(start, due_date)[:target_days]
+        eligible = self._followup_target_dates(cohort, through_date=due_date)
         if not eligible:
             return []
-        existing = self._existing_daily_report_dates(cohort.id)
-        missing = [day for day in eligible if day not in existing]
+        missing = self._incomplete_followup_snapshot_dates(cohort, target_dates=eligible)
         return missing if backfill else missing[-1:]
 
     def _mark_followup_completed_if_needed(self, cohort_id: str) -> None:
@@ -4301,7 +4564,7 @@ class IntelligenceService:
                 next_rows.append(cohort)
                 continue
             target_days = max(1, int(cohort.followup_target_days or 28))
-            valid_dates = self._valid_followup_report_dates(cohort_id)
+            valid_dates = self._valid_followup_report_dates(cohort)
             if len(valid_dates) >= target_days and not cohort.followup_completed:
                 cohort = cohort.model_copy(update={"followup_completed": True, "status": CandidateCohortStatus.COMPLETED})
                 changed = True
@@ -4396,6 +4659,7 @@ class IntelligenceService:
             "id": str(uuid4()),
             "cohort_id": cohort_id,
             "cohort_name": detail.cohort.name,
+            "market": detail.cohort.market.value,
             "report_date": report_date,
             "report_mode": "followup",
             "candidate_count": len(detail.candidates),
@@ -4423,7 +4687,7 @@ class IntelligenceService:
     def _market_proxy_returns(self, symbol: str, report_date: date) -> dict[str, Any]:
         try:
             requested_symbol = normalize_symbol(symbol, "us").strip().upper()
-            bundle = self.analysis_engine.data_service.get_market_data(symbol, market="us", period="2y", use_cache=False)
+            bundle = self.analysis_engine.data_service.get_market_data(symbol, market="us", period="2y", use_cache=True)
             bundle_symbol = str(getattr(bundle, "normalized_ticker", "") or "").strip().upper()
             if requested_symbol and bundle_symbol and requested_symbol != bundle_symbol:
                 raise RuntimeError(f"source symbol mismatch: requested={requested_symbol} source={bundle_symbol}")
@@ -5197,6 +5461,17 @@ class IntelligenceService:
         if report is None:
             raise FileNotFoundError(f"Daily report not found for cohort_id={cohort_id} report_date={report_date}")
         return report
+
+    def process_pending_graph_events(self, limit: int | None = None) -> dict[str, Any]:
+        return self.knowledge_graph_service.process_pending_events(limit=limit)
+
+    def get_knowledge_graph_status(self) -> dict[str, Any]:
+        return self.knowledge_graph_service.status()
+
+    def backfill_knowledge_graph_reports(self, limit: int = 100) -> dict[str, Any]:
+        queued = self.daily_report_store.enqueue_existing_reports_for_graph(limit=limit)
+        processed = self.process_pending_graph_events(limit=limit)
+        return {"queued": queued, **processed}
 
     def get_llm_logs(self, limit: int = 200) -> list[LLMDebugLog]:
         rows = self._read_llm_logs()

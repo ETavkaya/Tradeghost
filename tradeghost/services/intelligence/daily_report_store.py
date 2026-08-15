@@ -4,12 +4,14 @@ import json
 from datetime import date
 from typing import Any
 
+from tradeghost.services.knowledge_graph.outbox import KnowledgeGraphOutboxStore
 from tradeghost.shared.models.schemas import CohortDailyReportDetail, CohortDailyReportSummary
 
 
 class CohortDailyReportStore:
     def __init__(self, database_url: str) -> None:
         self.database_url = (database_url or "").strip()
+        self.knowledge_graph_outbox = KnowledgeGraphOutboxStore(self.database_url)
 
     @property
     def configured(self) -> bool:
@@ -33,6 +35,7 @@ class CohortDailyReportStore:
                     id UUID PRIMARY KEY,
                     cohort_id UUID NOT NULL,
                     cohort_name text,
+                    market text,
                     report_date date NOT NULL,
                     report_mode text NOT NULL,
                     candidate_count int,
@@ -56,7 +59,9 @@ class CohortDailyReportStore:
                 )
                 """
             )
+            conn.execute("ALTER TABLE cohort_daily_reports ADD COLUMN IF NOT EXISTS market text")
             conn.commit()
+        self.knowledge_graph_outbox.ensure_schema()
 
     def upsert_report(self, record: dict[str, Any]) -> CohortDailyReportDetail:
         self.ensure_schema()
@@ -68,6 +73,7 @@ class CohortDailyReportStore:
                     id,
                     cohort_id,
                     cohort_name,
+                    market,
                     report_date,
                     report_mode,
                     candidate_count,
@@ -90,6 +96,7 @@ class CohortDailyReportStore:
                     %(id)s::uuid,
                     %(cohort_id)s::uuid,
                     %(cohort_name)s,
+                    %(market)s,
                     %(report_date)s,
                     %(report_mode)s,
                     %(candidate_count)s,
@@ -111,6 +118,7 @@ class CohortDailyReportStore:
                 ON CONFLICT (cohort_id, report_date, report_mode)
                 DO UPDATE SET
                     cohort_name = EXCLUDED.cohort_name,
+                    market = EXCLUDED.market,
                     candidate_count = EXCLUDED.candidate_count,
                     followup_snapshot_count = EXCLUDED.followup_snapshot_count,
                     deterministic_stats_json = EXCLUDED.deterministic_stats_json,
@@ -131,8 +139,36 @@ class CohortDailyReportStore:
                 """,
                 self._encode_payload(payload),
             ).fetchone()
+            detail = self._detail_from_row(row)
+            self.knowledge_graph_outbox.enqueue_with_connection(
+                conn,
+                aggregate_id=str(row["id"]),
+                payload=detail.model_dump(mode="json"),
+            )
             conn.commit()
-        return self._detail_from_row(row)
+        return detail
+
+    def enqueue_existing_reports_for_graph(self, limit: int = 100) -> int:
+        self.ensure_schema()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM cohort_daily_reports
+                ORDER BY report_date ASC, created_at ASC
+                LIMIT %s
+                """,
+                (max(1, min(int(limit), 1000)),),
+            ).fetchall()
+            for row in rows:
+                detail = self._detail_from_row(row)
+                self.knowledge_graph_outbox.enqueue_with_connection(
+                    conn,
+                    aggregate_id=str(row["id"]),
+                    payload=detail.model_dump(mode="json"),
+                )
+            conn.commit()
+        return len(rows)
 
     def list_reports(self, cohort_id: str) -> list[CohortDailyReportSummary]:
         self.ensure_schema()
@@ -204,6 +240,7 @@ class CohortDailyReportStore:
     @staticmethod
     def _encode_payload(payload: dict[str, Any]) -> dict[str, Any]:
         encoded = dict(payload)
+        encoded.setdefault("market", None)
         for key in ("deterministic_stats_json", "candidate_followup_json", "market_context_json"):
             encoded[key] = json.dumps(encoded.get(key) if encoded.get(key) is not None else {})
         return encoded
@@ -227,6 +264,7 @@ class CohortDailyReportStore:
             id=str(row.get("id")) if row.get("id") is not None else None,
             cohort_id=str(row.get("cohort_id")),
             cohort_name=row.get("cohort_name"),
+            market=row.get("market"),
             report_date=row.get("report_date"),
             report_mode=str(row.get("report_mode")),
             followup_day_number=deterministic.get("followup_day_number") if isinstance(deterministic, dict) else None,

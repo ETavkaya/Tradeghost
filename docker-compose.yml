@@ -11,6 +11,42 @@ services:
     volumes:
       - tradeghost-postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
+  tradeghost-neo4j:
+    image: neo4j:5.26.0-community
+    container_name: tradeghost-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/admin
+      NEO4J_dbms_security_auth__minimum__password__length: "5"
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - tradeghost-neo4j-data:/data
+      - tradeghost-neo4j-logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -a bolt://localhost:7687 -u neo4j -p admin 'RETURN 1;' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+  tradeghost-neo4j-init:
+    image: neo4j:5.26.0-community
+    container_name: tradeghost-neo4j-init
+    depends_on:
+      tradeghost-neo4j:
+        condition: service_healthy
+    volumes:
+      - ./tradeghost/knowledge_graph:/schema:ro
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        cypher-shell -a bolt://tradeghost-neo4j:7687 -u neo4j -p admin
+        "CREATE USER tradeghost IF NOT EXISTS SET PASSWORD 'admin' CHANGE NOT REQUIRED;"
+        && cypher-shell -a bolt://tradeghost-neo4j:7687 -u tradeghost -p admin
+        -d neo4j -f /schema/knowledge_graph_v1.cypher
+    restart: "no"
   tradeghost-api:
     build:
       context: .
@@ -24,6 +60,8 @@ services:
       - tradeghost-postgres
     ports:
       - "8001:8000"
+    volumes:
+      - ./logs:/app/logs
     restart: unless-stopped
   tradeghost-web:
     build:
@@ -40,3 +78,5 @@ services:
 
 volumes:
   tradeghost-postgres-data:
+  tradeghost-neo4j-data:
+  tradeghost-neo4j-logs:

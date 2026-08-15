@@ -108,6 +108,8 @@ _monitor_stop_event = threading.Event()
 _monitor_thread: threading.Thread | None = None
 _cohort_followup_stop_event = threading.Event()
 _cohort_followup_thread: threading.Thread | None = None
+_knowledge_graph_stop_event = threading.Event()
+_knowledge_graph_thread: threading.Thread | None = None
 
 
 def _background_monitor_loop() -> None:
@@ -145,9 +147,21 @@ def _background_daily_cohort_followup_loop() -> None:
     logger.info("daily cohort follow-up loop stopped")
 
 
+def _background_knowledge_graph_loop() -> None:
+    logger.info("knowledge graph loop started")
+    poll_seconds = max(10, int(settings.knowledge_graph_poll_seconds))
+    while not _knowledge_graph_stop_event.is_set():
+        try:
+            intelligence_service.process_pending_graph_events()
+        except Exception as exc:  # pragma: no cover
+            logger.warning("knowledge graph loop error: %s", exc)
+        _knowledge_graph_stop_event.wait(float(poll_seconds))
+    logger.info("knowledge graph loop stopped")
+
+
 @app.on_event("startup")
 def startup_background_monitor() -> None:
-    global _monitor_thread, _cohort_followup_thread
+    global _monitor_thread, _cohort_followup_thread, _knowledge_graph_thread
     if _monitor_thread is not None and _monitor_thread.is_alive():
         pass
     else:
@@ -163,13 +177,23 @@ def startup_background_monitor() -> None:
                 daemon=True,
             )
             _cohort_followup_thread.start()
+    if settings.knowledge_graph_enabled:
+        if _knowledge_graph_thread is None or not _knowledge_graph_thread.is_alive():
+            _knowledge_graph_stop_event.clear()
+            _knowledge_graph_thread = threading.Thread(
+                target=_background_knowledge_graph_loop,
+                name="tradeghost-knowledge-graph-loop",
+                daemon=True,
+            )
+            _knowledge_graph_thread.start()
 
 
 @app.on_event("shutdown")
 def shutdown_background_monitor() -> None:
     _monitor_stop_event.set()
     _cohort_followup_stop_event.set()
-    global _monitor_thread, _cohort_followup_thread
+    _knowledge_graph_stop_event.set()
+    global _monitor_thread, _cohort_followup_thread, _knowledge_graph_thread
     if _monitor_thread is not None and _monitor_thread.is_alive():
         _monitor_thread.join(timeout=2.0)
     _monitor_thread = None
@@ -177,6 +201,9 @@ def shutdown_background_monitor() -> None:
         _cohort_followup_thread.join(timeout=2.0)
         intelligence_service.log_daily_followup_scheduler_event("scheduler_stopped", status="success")
     _cohort_followup_thread = None
+    if _knowledge_graph_thread is not None and _knowledge_graph_thread.is_alive():
+        _knowledge_graph_thread.join(timeout=2.0)
+    _knowledge_graph_thread = None
 
 
 @app.get("/health")
@@ -913,6 +940,34 @@ def approve_intelligence_run_report(payload: IntelligenceReviewApprovalRequest) 
 def get_intelligence_dashboard() -> IntelligenceDashboardResponse:
     try:
         return intelligence_service.get_dashboard()
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/knowledge-graph/status")
+def get_intelligence_knowledge_graph_status() -> dict[str, Any]:
+    try:
+        return intelligence_service.get_knowledge_graph_status()
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/knowledge-graph/process")
+def process_intelligence_knowledge_graph_events(
+    limit: int = Query(default=25, ge=1, le=200),
+) -> dict[str, Any]:
+    try:
+        return intelligence_service.process_pending_graph_events(limit=limit)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/knowledge-graph/backfill")
+def backfill_intelligence_knowledge_graph_reports(
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> dict[str, Any]:
+    try:
+        return intelligence_service.backfill_knowledge_graph_reports(limit=limit)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

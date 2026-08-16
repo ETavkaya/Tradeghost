@@ -51,6 +51,7 @@ from tradeghost.shared.models.schemas import (
     CohortStatusUpdateResponse,
     CohortReviewRequest,
     CohortReviewResponse,
+    CohortCoverageMonitorResponse,
     DiscoveryCreateCohortRequest,
     DailyBriefingRequest,
     DailyPipelineRequest,
@@ -806,6 +807,24 @@ def generate_cohort_briefing(payload: CohortBriefingRequest) -> DailyBriefing:
 def run_intelligence_cohort_review(payload: CohortReviewRequest) -> CohortReviewResponse:
     try:
         return intelligence_service.run_cohort_review(payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/cohorts/{cohort_id}/coverage", response_model=CohortCoverageMonitorResponse)
+def get_intelligence_cohort_coverage(
+    cohort_id: str,
+    days_required: int = Query(default=28, ge=1, le=365),
+    as_of_date: date | None = Query(default=None),
+) -> CohortCoverageMonitorResponse:
+    try:
+        return intelligence_service.get_cohort_coverage(
+            cohort_id,
+            days_required=days_required,
+            as_of_date=as_of_date,
+        )
     except FileNotFoundError as exc:  # pragma: no cover
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover

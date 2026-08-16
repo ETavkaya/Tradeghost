@@ -91,7 +91,7 @@ Phase 2H adds a Research/Intelligence view with:
 
 ## 13. API Plan
 
-Phase 2A retains current cohort APIs and makes their readiness data explicit. Later endpoints should be read-first and versioned:
+Phase 2A retains current cohort APIs and makes their readiness data explicit. The coverage monitor is available at `GET /intelligence/cohorts/{cohort_id}/coverage`; it returns read-only diagnostics and emits a structured pipeline alert. Later endpoints should also be read-first and versioned:
 
 - `GET /intelligence/cohorts/{cohort_id}/coverage`
 - `POST /intelligence/cohorts/{cohort_id}/followup/backfill`
@@ -177,7 +177,7 @@ Deploy each phase behind explicit configuration flags. Add schema migrations bef
 - [x] **P2A-004:** Use candidate selection dates and exact-symbol validation for horizon calculations.
 - [x] **P2A-005:** Regenerate and inspect the target milestone cohort export on the Docker host after deployment.
 - [x] **P2A-006:** Persist API logs outside the container and serialize scheduled/manual follow-up writers.
-- [ ] **P2A-007:** Add an operational coverage monitor for partial/duplicate state anomalies.
+- [x] **P2A-007:** Add an operational coverage monitor for partial/duplicate state anomalies.
 - [ ] **P2B-001:** Add Postgres migrations for canonical OHLC, prediction records, outcome records, and data-quality events.
 - [ ] **P2B-002:** Create selection-time prediction records through deterministic cohort creation only.
 - [ ] **P2B-003:** Implement idempotent 7D/14D/28D outcome evaluation and category/setup/blocker summaries.

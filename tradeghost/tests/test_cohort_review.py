@@ -205,6 +205,84 @@ def test_cohort_coverage_requires_every_candidate_state(tmp_path) -> None:
     assert "Backfill required: 1 missing trading day" in review.readiness_message
 
 
+def test_coverage_monitor_reports_partial_missing_and_duplicate_snapshot_states(tmp_path) -> None:
+    cohort_id = "25252525-2525-4252-8252-252525252525"
+    start_date = date(2026, 5, 13)
+    symbols = ["AAA", "BBB", "CCC"]
+    service = IntelligenceService(
+        analysis_engine=FakeAnalysisEngine({}),
+        scanner_engine=object(),
+        backtest_engine=object(),
+    )
+    _wire_temp_storage(service, tmp_path)
+    followup_dates = service._trading_days_between(start_date, date(2026, 5, 15))
+    cohort = CandidateCohort(
+        id=cohort_id,
+        name="Coverage monitor",
+        start_date=start_date,
+        market=MarketCode.US,
+        analysis_window=ScannerDuration.ONE_YEAR,
+        followup_enabled=True,
+        followup_start_date=start_date,
+        followup_target_days=28,
+    )
+    candidates = [
+        CohortCandidate(
+            cohort_id=cohort_id,
+            symbol=symbol,
+            market=MarketCode.US,
+            selected_at=datetime(2026, 5, 13, tzinfo=UTC),
+            selected_price=100.0,
+            selected_rank=index + 1,
+            selected_score=80.0,
+        )
+        for index, symbol in enumerate(symbols)
+    ]
+    snapshots = [
+        CohortDailySnapshot(cohort_id=cohort_id, symbol=symbol, snapshot_date=followup_dates[0])
+        for symbol in symbols
+    ]
+    snapshots.append(CohortDailySnapshot(cohort_id=cohort_id, symbol="AAA", snapshot_date=followup_dates[0]))
+    snapshots.extend(
+        CohortDailySnapshot(cohort_id=cohort_id, symbol=symbol, snapshot_date=followup_dates[1])
+        for symbol in symbols[:2]
+    )
+    service._save_cohorts([cohort])
+    service._save_cohort_candidates(candidates)
+    service._save_cohort_snapshots(snapshots)
+
+    monitor = service.get_cohort_coverage(
+        cohort_id,
+        days_required=3,
+        as_of_date=followup_dates[2],
+    )
+
+    assert monitor.status == "anomalies_detected"
+    assert monitor.expected_followup_days == 3
+    assert monitor.complete_followup_days == 1
+    assert monitor.partial_followup_days == 1
+    assert monitor.missing_followup_days == 1
+    assert monitor.snapshot_coverage_pct == 33.3
+    assert monitor.partial_followup_dates == [followup_dates[1]]
+    assert monitor.missing_followup_dates == [followup_dates[2]]
+    assert monitor.backfill_required is True
+    assert monitor.backfill_dates == [followup_dates[1], followup_dates[2]]
+    assert monitor.duplicate_snapshot_state_count == 1
+    assert monitor.duplicate_snapshot_dates == [followup_dates[0]]
+    assert monitor.duplicate_repair_required is True
+    assert monitor.duplicate_repair_dates == [followup_dates[0]]
+    assert {anomaly.code for anomaly in monitor.anomalies} == {
+        "duplicate_followup_snapshot_state",
+        "partial_followup_snapshot_day",
+        "missing_followup_snapshot_day",
+    }
+    assert len(service._read_cohort_snapshots()) == 6
+    pipeline_event = service._read_pipeline_events()[-1]
+    assert pipeline_event.step_name == "cohort_followup_coverage_monitor"
+    assert pipeline_event.status == "warning"
+    assert "anomalies=3" in (pipeline_event.message or "")
+
+
 def test_backfill_repairs_partial_days_without_duplicate_states(tmp_path) -> None:
     cohort_id = "33333333-3333-4333-8333-333333333333"
     start_date = date(2026, 5, 13)

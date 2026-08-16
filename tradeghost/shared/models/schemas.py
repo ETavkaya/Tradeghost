@@ -1562,6 +1562,41 @@ class CohortReviewResponse(BaseModel):
     llm_summary: str | None = None
 
 
+class CohortCoverageAnomaly(BaseModel):
+    code: str
+    severity: str
+    snapshot_date: date | None = None
+    expected_candidate_count: int = 0
+    observed_snapshot_state_count: int = 0
+    distinct_candidate_state_count: int = 0
+    affected_symbols: list[str] = Field(default_factory=list)
+    message: str
+
+
+class CohortCoverageMonitorResponse(BaseModel):
+    cohort_id: str
+    start_date: date
+    evaluated_through: date
+    expected_candidate_count: int = 0
+    expected_followup_days: int = 0
+    complete_followup_days: int = 0
+    partial_followup_days: int = 0
+    missing_followup_days: int = 0
+    snapshot_coverage_pct: float = 0.0
+    missing_followup_dates: list[date] = Field(default_factory=list)
+    partial_followup_dates: list[date] = Field(default_factory=list)
+    duplicate_snapshot_state_count: int = 0
+    duplicate_snapshot_dates: list[date] = Field(default_factory=list)
+    anomaly_count: int = 0
+    anomalies: list[CohortCoverageAnomaly] = Field(default_factory=list)
+    backfill_required: bool = False
+    backfill_dates: list[date] = Field(default_factory=list)
+    duplicate_repair_required: bool = False
+    duplicate_repair_dates: list[date] = Field(default_factory=list)
+    status: str
+    readiness_message: str
+
+
 class CohortDailyReportSummary(BaseModel):
     id: str | None = None
     cohort_id: str

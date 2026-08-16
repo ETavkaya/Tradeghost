@@ -45,6 +45,8 @@ from tradeghost.shared.models.schemas import (
     CohortReviewRequest,
     CohortReviewResponse,
     CohortReviewStats,
+    CohortCoverageAnomaly,
+    CohortCoverageMonitorResponse,
     CohortStatusUpdateResponse,
     DailyBriefing,
     DailyBriefingRequest,
@@ -3073,6 +3075,169 @@ class IntelligenceService:
             "partial_followup_dates": partial_dates,
             "daily_path_review_complete": expected_days > 0 and valid_snapshot_days >= expected_days,
         }
+
+    def get_cohort_coverage(
+        self,
+        cohort_id: str,
+        *,
+        days_required: int = 28,
+        as_of_date: date | None = None,
+    ) -> CohortCoverageMonitorResponse:
+        """Inspect persisted candidate-day states without changing cohort data.
+
+        Coverage is based on deduplicated candidate symbols, while this monitor
+        also reports duplicate raw state rows so operators can distinguish a
+        complete daily path from one that needs state repair.
+        """
+        detail = self.get_cohort_detail(cohort_id)
+        coverage = self._cohort_followup_coverage(
+            detail.cohort,
+            detail.snapshots,
+            days_required=days_required,
+            through_date=as_of_date,
+        )
+        expected_symbols = {
+            normalize_symbol(candidate.symbol, candidate.market.value).strip().upper()
+            for candidate in detail.candidates
+            if candidate.symbol
+        }
+        expected_dates = self._trading_days_between(
+            coverage["start_date"],
+            coverage["evaluation_as_of_date"],
+        )[: coverage["expected_followup_days"]]
+        expected_date_set = set(expected_dates)
+        snapshots_by_date_symbol: dict[date, dict[str, list[CohortDailySnapshot]]] = {}
+        for snapshot in detail.snapshots:
+            if snapshot.snapshot_date not in expected_date_set:
+                continue
+            symbol = normalize_symbol(snapshot.symbol, detail.cohort.market.value).strip().upper()
+            if symbol not in expected_symbols:
+                continue
+            snapshots_by_date_symbol.setdefault(snapshot.snapshot_date, {}).setdefault(symbol, []).append(snapshot)
+
+        anomalies: list[CohortCoverageAnomaly] = []
+        duplicate_dates: list[date] = []
+        duplicate_state_count = 0
+        missing_dates: list[date] = []
+        partial_dates: list[date] = []
+        for snapshot_date in expected_dates:
+            states_by_symbol = snapshots_by_date_symbol.get(snapshot_date, {})
+            observed_state_count = sum(len(states) for states in states_by_symbol.values())
+            distinct_state_count = len(states_by_symbol)
+            missing_symbols = sorted(expected_symbols.difference(states_by_symbol))
+            if missing_symbols:
+                if distinct_state_count:
+                    partial_dates.append(snapshot_date)
+                    anomaly_code = "partial_followup_snapshot_day"
+                    message = f"Missing candidate states: {', '.join(missing_symbols)}."
+                else:
+                    missing_dates.append(snapshot_date)
+                    anomaly_code = "missing_followup_snapshot_day"
+                    message = "No candidate snapshot states were persisted."
+                anomalies.append(
+                    CohortCoverageAnomaly(
+                        code=anomaly_code,
+                        severity="warning",
+                        snapshot_date=snapshot_date,
+                        expected_candidate_count=len(expected_symbols),
+                        observed_snapshot_state_count=observed_state_count,
+                        distinct_candidate_state_count=distinct_state_count,
+                        affected_symbols=missing_symbols,
+                        message=message,
+                    )
+                )
+            duplicate_symbols = sorted(
+                symbol
+                for symbol, rows in states_by_symbol.items()
+                if len(rows) > 1
+            )
+            if duplicate_symbols:
+                duplicate_dates.append(snapshot_date)
+                duplicate_state_count += sum(len(states_by_symbol[symbol]) - 1 for symbol in duplicate_symbols)
+                anomalies.append(
+                    CohortCoverageAnomaly(
+                        code="duplicate_followup_snapshot_state",
+                        severity="warning",
+                        snapshot_date=snapshot_date,
+                        expected_candidate_count=len(expected_symbols),
+                        observed_snapshot_state_count=observed_state_count,
+                        distinct_candidate_state_count=distinct_state_count,
+                        affected_symbols=duplicate_symbols,
+                        message=f"Duplicate candidate snapshot states: {', '.join(duplicate_symbols)}.",
+                    )
+                )
+
+        if not expected_symbols:
+            anomalies.append(
+                CohortCoverageAnomaly(
+                    code="missing_cohort_candidates",
+                    severity="error",
+                    expected_candidate_count=0,
+                    message="No selected candidates are available to evaluate follow-up coverage.",
+                )
+            )
+
+        backfill_dates = sorted(set(missing_dates).union(partial_dates))
+        duplicate_dates = sorted(set(duplicate_dates))
+        if not expected_symbols:
+            status = "configuration_error"
+            readiness_message = "Coverage monitor cannot evaluate this cohort until selected candidates are available."
+        elif not expected_dates:
+            status = "awaiting_followup"
+            readiness_message = "No follow-up trading days are due yet."
+        elif duplicate_dates:
+            status = "anomalies_detected"
+            readiness_message = (
+                f"Duplicate snapshot states detected on {len(duplicate_dates)} trading day(s). "
+                f"Snapshot coverage is {coverage['valid_followup_snapshot_days']}/{coverage['expected_followup_days']} days."
+            )
+        elif backfill_dates:
+            status = "backfill_required"
+            readiness_message = (
+                f"Backfill required for {len(backfill_dates)} trading day(s); "
+                f"snapshot coverage is {coverage['valid_followup_snapshot_days']}/{coverage['expected_followup_days']} days."
+            )
+        else:
+            status = "healthy"
+            readiness_message = (
+                f"Daily snapshot coverage is complete: "
+                f"{coverage['valid_followup_snapshot_days']}/{coverage['expected_followup_days']} trading days."
+            )
+
+        monitor = CohortCoverageMonitorResponse(
+            cohort_id=detail.cohort.id,
+            start_date=coverage["start_date"],
+            evaluated_through=coverage["evaluation_as_of_date"],
+            expected_candidate_count=len(expected_symbols),
+            expected_followup_days=coverage["expected_followup_days"],
+            complete_followup_days=coverage["valid_followup_snapshot_days"],
+            partial_followup_days=len(partial_dates),
+            missing_followup_days=len(missing_dates),
+            snapshot_coverage_pct=coverage["snapshot_coverage_pct"],
+            missing_followup_dates=missing_dates,
+            partial_followup_dates=partial_dates,
+            duplicate_snapshot_state_count=duplicate_state_count,
+            duplicate_snapshot_dates=duplicate_dates,
+            anomaly_count=len(anomalies),
+            anomalies=anomalies,
+            backfill_required=bool(backfill_dates),
+            backfill_dates=backfill_dates,
+            duplicate_repair_required=bool(duplicate_dates),
+            duplicate_repair_dates=duplicate_dates,
+            status=status,
+            readiness_message=readiness_message,
+        )
+        self._append_pipeline_event(
+            step_name="cohort_followup_coverage_monitor",
+            status="warning" if anomalies else "success",
+            cohort_id=detail.cohort.id,
+            cohort_name=detail.cohort.name,
+            message=(
+                f"status={status} expected_days={monitor.expected_followup_days} "
+                f"complete_days={monitor.complete_followup_days} anomalies={monitor.anomaly_count}"
+            ),
+        )
+        return monitor
 
     def run_cohort_review(self, req: CohortReviewRequest) -> CohortReviewResponse:
         model = self.settings.final_28d_review_llm_model

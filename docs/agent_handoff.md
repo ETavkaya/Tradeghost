@@ -432,3 +432,16 @@ When updating this file, append a short dated entry:
   - Added `last_tick_at` to the Logs scheduler status so a healthy polling loop is visible even before a scheduled job has work to process. A blank `last_run_at` is expected while no active follow-up cohort is due.
 - Deployment status:
   - Commit `14f0baa` contains the completed P2B-P2H release and was pushed to `Full-analysis-flow---new-backtest`. Host deployment and runtime verification are in progress.
+
+## 24) Latest Entry (2026-08-25)
+
+- Request:
+  - Deploy Phase 2, verify scheduler and Neo4j configuration, and investigate empty scheduler statistics.
+- Deployed and verified:
+  - Deployed commits `14f0baa`, `f39a714`, `8a89cc0`, and `e430ce8` to `192.168.0.233`; API, web, Postgres, and Neo4j containers are running, with Neo4j healthy.
+  - The scheduler is enabled in `Europe/London` at `23:30`; `last_tick_at` confirms the one-minute polling loop is alive. `last_run_at` remains empty because there are currently zero follow-up-enabled cohorts due for processing.
+  - Confirmed the application Neo4j account, 12 schema constraints, and Postgres research tables. The knowledge-graph status reports a working connection and no projection failures.
+  - Backfilled the completed `Milestone#Emre` cohort: 20 deterministic Predictions, 60 deterministic 7D/14D/28D Outcomes, and five MarketRegime snapshots. Neo4j now contains 20 Predictions linked to 60 Outcomes; all 114 queued research/report graph events completed.
+  - Corrected two runtime persistence defects found during the live backfill: canonical-bar batches now use a psycopg cursor, and outcome validity reads `PredictionRecord.selected_date`. Both fixes have regression tests.
+- Remaining operational follow-up:
+  - `Adem` still reports missing 2026-05-19 and 2026-05-20 follow-up dates. Backfill that cohort only if its historical coverage is required; creating or enabling a new cohort will produce a scheduled-run timestamp at the next eligible daily run.

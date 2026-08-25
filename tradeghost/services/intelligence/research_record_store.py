@@ -905,20 +905,21 @@ class ResearchRecordStore:
         if not bars:
             return
         with self._connect() as conn:
-            conn.executemany(
-                """
-                INSERT INTO canonical_ohlc_bars (
-                    id, market, symbol, bar_date, provider, adjustment_policy,
-                    data_version, retrieved_at, open, high, low, close, volume, source_hash
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    """
+                    INSERT INTO canonical_ohlc_bars (
+                        id, market, symbol, bar_date, provider, adjustment_policy,
+                        data_version, retrieved_at, open, high, low, close, volume, source_hash
+                    )
+                    VALUES (
+                        %(id)s::uuid, %(market)s, %(symbol)s, %(bar_date)s, %(provider)s, %(adjustment_policy)s,
+                        %(data_version)s, %(retrieved_at)s, %(open)s, %(high)s, %(low)s, %(close)s, %(volume)s, %(source_hash)s
+                    )
+                    ON CONFLICT (market, symbol, bar_date, provider, adjustment_policy, data_version) DO NOTHING
+                    """,
+                    bars,
                 )
-                VALUES (
-                    %(id)s::uuid, %(market)s, %(symbol)s, %(bar_date)s, %(provider)s, %(adjustment_policy)s,
-                    %(data_version)s, %(retrieved_at)s, %(open)s, %(high)s, %(low)s, %(close)s, %(volume)s, %(source_hash)s
-                )
-                ON CONFLICT (market, symbol, bar_date, provider, adjustment_policy, data_version) DO NOTHING
-                """,
-                bars,
-            )
             conn.commit()
 
     def list_canonical_bars(

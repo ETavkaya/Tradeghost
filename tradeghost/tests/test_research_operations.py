@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
+from tradeghost.services.intelligence.research_record_store import ResearchRecordStore
 from tradeghost.services.intelligence.service import IntelligenceService
 from tradeghost.shared.models.schemas import (
     CandidateCohort,
@@ -159,3 +160,45 @@ def test_research_dashboard_keeps_28d_outcome_separate_from_daily_path_and_expor
     assert exported.cohort_id == cohort_id
     assert exported.payload["authority"]["llm"].startswith("advisory only")
     assert exported.payload["selected_cohort"]["horizon_28d_available_count"] == 1
+
+
+def test_canonical_bar_batch_persistence_uses_a_psycopg_cursor() -> None:
+    class FakeCursor:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback) -> None:
+            return None
+
+        def executemany(self, statement, rows) -> None:
+            self.calls.append((statement, rows))
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.cursor_instance = FakeCursor()
+            self.committed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback) -> None:
+            return None
+
+        def cursor(self) -> FakeCursor:
+            return self.cursor_instance
+
+        def commit(self) -> None:
+            self.committed = True
+
+    connection = FakeConnection()
+    store = ResearchRecordStore("postgresql://example")
+    store.ensure_schema = lambda: None  # type: ignore[method-assign]
+    store._connect = lambda: connection  # type: ignore[method-assign]
+
+    store.upsert_canonical_bars([{"id": "bar-1", "symbol": "AAA"}])
+
+    assert connection.committed is True
+    assert connection.cursor_instance.calls[0][1] == [{"id": "bar-1", "symbol": "AAA"}]

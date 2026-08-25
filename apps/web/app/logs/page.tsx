@@ -172,11 +172,15 @@ export default function LogsPage() {
         {error ? <p className="mt-3 rounded-lg border border-red/40 bg-red/10 p-3 text-sm text-red">{error}</p> : null}
       </Panel>
 
-      <div className="grid gap-3 md:grid-cols-4">
+      <div className="grid gap-3 md:grid-cols-4 xl:grid-cols-8">
         <StatCard label="Scheduler" value={scheduler?.scheduler_running ? "Running" : "Stopped"} />
         <StatCard label="Next Run" value={dt(scheduler?.next_run_at)} />
-        <StatCard label="Daily Reports" value={fmt(postgres?.total_daily_reports)} />
-        <StatCard label="Active Follow-ups" value={fmt(scheduler?.active_followup_cohorts_count)} />
+        <StatCard label="Active Tracking" value={fmt(scheduler?.active_tracking_count)} />
+        <StatCard label="Mature Tracking" value={fmt(scheduler?.mature_tracking_count)} />
+        <StatCard label="Paused" value={fmt(scheduler?.paused_followup_count)} />
+        <StatCard label="Manually Archived" value={fmt(scheduler?.manually_archived_count)} />
+        <StatCard label="28D Review Ready" value={fmt(scheduler?.review_ready_28d_count)} />
+        <StatCard label="Reports Persisted" value={fmt(postgres?.total_daily_reports)} />
       </div>
 
       <Panel>
@@ -235,7 +239,7 @@ export default function LogsPage() {
       </Panel>
 
       <Panel>
-        <SectionTitle title="Active Follow-up Cohorts" subtitle="Automated cohorts eligible for scheduled reports." />
+        <SectionTitle title="Tracking Cohorts" subtitle="Active and mature cohorts remain scheduled until paused or manually archived." />
         <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
           <span className="text-slate-400">Manual run target</span>
           <select value={selectedCohortId} onChange={(event) => setSelectedCohortId(event.target.value)} className="h-9 rounded-lg border border-stroke bg-bg px-2">
@@ -249,11 +253,12 @@ export default function LogsPage() {
             <div key={cohort.cohort_id} className="rounded-xl border border-stroke/70 bg-bg/40 p-3 text-xs">
               <p className="font-semibold text-slate-100">{cohort.cohort_name}</p>
               <p className="text-slate-400">id={cohort.cohort_id}</p>
-              <p className="mt-2">enabled={fmt(cohort.followup_enabled)} target={cohort.followup_target_days} current_day={cohort.current_followup_day}</p>
-              <p>start={fmt(cohort.followup_start_date)} last_report={fmt(cohort.last_report_date)} completed={fmt(cohort.completed)}</p>
+              <p className="mt-2">status={cohort.followup_status} enabled={fmt(cohort.followup_enabled)} review_checkpoint={cohort.followup_target_days}D current_day={cohort.current_followup_day}</p>
+              <p>start={fmt(cohort.followup_started_at ?? cohort.followup_start_date)} last_report={fmt(cohort.last_report_date)} review_ready_28d={fmt(cohort.review_ready_28d)}</p>
+              <p>latest_horizon={cohort.latest_available_horizon_days ? `${cohort.latest_available_horizon_days}D` : "-"} next={cohort.next_horizon_due_days ? `${cohort.next_horizon_due_days}D ${cohort.next_horizon_due_date ?? ""}` : "-"}</p>
             </div>
           ))}
-          {status?.active_followup_cohorts.length === 0 ? <p className="text-sm text-slate-400">No active follow-up cohorts.</p> : null}
+          {status?.active_followup_cohorts.length === 0 ? <p className="text-sm text-slate-400">No active or mature tracking cohorts are scheduled.</p> : null}
         </div>
       </Panel>
 

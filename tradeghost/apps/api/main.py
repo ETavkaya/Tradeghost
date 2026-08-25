@@ -40,6 +40,7 @@ from tradeghost.shared.models.schemas import (
     CohortDailyReportSummary,
     CohortReportMode,
     CohortFollowupBackfillRequest,
+    CohortFollowupLifecycleRequest,
     CohortFollowupRequest,
     CohortFollowupSettingsRequest,
     CohortFollowupResponse,
@@ -740,6 +741,45 @@ def update_intelligence_cohort_followup_settings(
 ) -> CandidateCohort:
     try:
         return intelligence_service.update_cohort_followup_settings(cohort_id, payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/cohorts/{cohort_id}/pause-followup", response_model=CandidateCohort)
+def pause_intelligence_cohort_followup(
+    cohort_id: str,
+    payload: CohortFollowupLifecycleRequest,
+) -> CandidateCohort:
+    try:
+        return intelligence_service.pause_cohort_followup(cohort_id, payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/cohorts/{cohort_id}/resume-followup", response_model=CandidateCohort)
+def resume_intelligence_cohort_followup(
+    cohort_id: str,
+    payload: CohortFollowupLifecycleRequest,
+) -> CandidateCohort:
+    try:
+        return intelligence_service.resume_cohort_followup(cohort_id, payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/cohorts/{cohort_id}/archive-followup", response_model=CandidateCohort)
+def archive_intelligence_cohort_followup(
+    cohort_id: str,
+    payload: CohortFollowupLifecycleRequest,
+) -> CandidateCohort:
+    try:
+        return intelligence_service.archive_cohort_followup(cohort_id, payload)
     except FileNotFoundError as exc:  # pragma: no cover
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover

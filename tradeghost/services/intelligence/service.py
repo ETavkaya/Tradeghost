@@ -30,6 +30,9 @@ from tradeghost.shared.market import normalize_symbol
 from tradeghost.shared.models.schemas import (
     CandidateCohort,
     CandidateCohortStatus,
+    CohortFollowupAuditEvent,
+    CohortFollowupLifecycleRequest,
+    CohortFollowupStatus,
     CohortCandidate,
     CohortCleanupDuplicateRequest,
     CohortCleanupDuplicateResponse,
@@ -117,7 +120,8 @@ MARKET_CONTEXT_PROMPT_VERSION = "market_context_note_v1"
 FINAL_28D_REVIEW_PROMPT_VERSION = "final_28d_cohort_review_v1"
 SYMBOL_CONTEXT_PROMPT_VERSION = "symbol_context_v1"
 DAILY_FOLLOWUP_JOB_NAME = "daily_cohort_followup_job"
-OUTCOME_HORIZONS = (7, 14, 28)
+OUTCOME_HORIZONS = (7, 14, 28, 56, 90, 180, 365)
+FIRST_REVIEW_HORIZON_DAYS = 28
 
 
 class IntelligenceService:
@@ -139,6 +143,7 @@ class IntelligenceService:
         self.cohorts_path = self.base_dir / "candidate_cohorts.json"
         self.cohort_candidates_path = self.base_dir / "cohort_candidates.json"
         self.cohort_snapshots_path = self.base_dir / "cohort_daily_snapshots.json"
+        self.cohort_followup_audit_path = self.base_dir / "cohort_followup_audit.json"
         self.llm_logs_path = self.base_dir / "llm_calls.json"
         self.pipeline_logs_path = self.base_dir / "pipeline_events.json"
         self.scheduler_logs_dir = self.settings.logs_dir / "scheduler"
@@ -154,6 +159,7 @@ class IntelligenceService:
         self._pipeline_logs_lock = Lock()
         self._cohort_followup_lock = RLock()
         self._daily_followup_db_warning_logged = False
+        self._migrate_cohort_followup_lifecycle()
         self._providers: dict[str, LLMProvider] = {
             "openai": OpenAIProvider(self.settings),
             "ollama": OllamaProvider(self.settings),
@@ -337,6 +343,12 @@ class IntelligenceService:
     def _save_cohorts(self, rows: list[CandidateCohort]) -> None:
         self._write_rows(self.cohorts_path, [self._normalize_cohort_followup_defaults(row).model_dump(mode="json") for row in rows])
 
+    def _read_cohort_followup_audit_events(self) -> list[CohortFollowupAuditEvent]:
+        return [CohortFollowupAuditEvent.model_validate(row) for row in self._read_rows(self.cohort_followup_audit_path)]
+
+    def _save_cohort_followup_audit_events(self, rows: list[CohortFollowupAuditEvent]) -> None:
+        self._write_rows(self.cohort_followup_audit_path, [row.model_dump(mode="json") for row in rows])
+
     def _read_cohort_candidates(self) -> list[CohortCandidate]:
         return [CohortCandidate.model_validate(row) for row in self._read_rows(self.cohort_candidates_path)]
 
@@ -357,12 +369,87 @@ class IntelligenceService:
         updates: dict[str, Any] = {}
         if not cohort.followup_start_date:
             updates["followup_start_date"] = cohort.start_date
+        if not cohort.followup_started_at:
+            updates["followup_started_at"] = cohort.followup_start_date or cohort.start_date
         if not cohort.followup_target_days or cohort.followup_target_days <= 0:
-            updates["followup_target_days"] = 28
+            updates["followup_target_days"] = FIRST_REVIEW_HORIZON_DAYS
+        if cohort.followup_status == CohortFollowupStatus.ARCHIVED_MANUAL:
+            updates["followup_enabled"] = False
+            updates["followup_completed"] = True
+        elif cohort.followup_status in {CohortFollowupStatus.ACTIVE_TRACKING, CohortFollowupStatus.MATURE_TRACKING}:
+            updates["followup_enabled"] = True
+            updates["followup_completed"] = False
+        elif cohort.followup_enabled and cohort.followup_status == CohortFollowupStatus.PAUSED and not cohort.followup_paused_at:
+            updates["followup_status"] = (
+                CohortFollowupStatus.MATURE_TRACKING
+                if cohort.review_ready_28d_at
+                else CohortFollowupStatus.ACTIVE_TRACKING
+            )
         if self._normalize_cohort_name(cohort.name) == "milestoneemre":
             updates["followup_enabled"] = True
-            updates["followup_target_days"] = 28
+            updates["followup_target_days"] = FIRST_REVIEW_HORIZON_DAYS
+            if cohort.followup_status == CohortFollowupStatus.PAUSED and not cohort.followup_paused_at:
+                updates["followup_status"] = CohortFollowupStatus.ACTIVE_TRACKING
         return cohort.model_copy(update=updates) if updates else cohort
+
+    def _migrate_cohort_followup_lifecycle(self) -> None:
+        """Persist the non-destructive transition from legacy 28D completion."""
+        raw_rows = self._read_rows(self.cohorts_path)
+        if not raw_rows:
+            return
+        latest_snapshot_by_cohort: dict[str, date] = {}
+        for row in self._read_rows(self.cohort_snapshots_path):
+            try:
+                cohort_id = str(row.get("cohort_id") or "")
+                snapshot_date = date.fromisoformat(str(row.get("snapshot_date")))
+            except (TypeError, ValueError):
+                continue
+            prior = latest_snapshot_by_cohort.get(cohort_id)
+            if prior is None or snapshot_date > prior:
+                latest_snapshot_by_cohort[cohort_id] = snapshot_date
+
+        migrated_rows: list[dict[str, Any]] = []
+        changed = False
+        for raw in raw_rows:
+            payload = dict(raw)
+            legacy_status = str(payload.get("status") or "active")
+            legacy_completed = bool(payload.get("followup_completed")) or legacy_status == CandidateCohortStatus.COMPLETED.value
+            existing_followup_status = str(payload.get("followup_status") or "")
+            if legacy_status == CandidateCohortStatus.ARCHIVED.value or existing_followup_status == CohortFollowupStatus.ARCHIVED_MANUAL.value:
+                updates = {
+                    "followup_status": CohortFollowupStatus.ARCHIVED_MANUAL.value,
+                    "followup_enabled": False,
+                    "followup_completed": True,
+                }
+            elif legacy_completed:
+                review_ready_at = payload.get("review_ready_28d_at") or latest_snapshot_by_cohort.get(str(payload.get("id") or ""))
+                updates = {
+                    "status": CandidateCohortStatus.ACTIVE.value,
+                    "followup_status": CohortFollowupStatus.MATURE_TRACKING.value,
+                    "followup_enabled": True,
+                    "followup_completed": False,
+                    "review_ready_28d_at": review_ready_at,
+                }
+            else:
+                updates = {
+                    "followup_status": existing_followup_status
+                    or (CohortFollowupStatus.ACTIVE_TRACKING.value if payload.get("followup_enabled") else CohortFollowupStatus.PAUSED.value),
+                }
+            start_date = payload.get("followup_started_at") or payload.get("followup_start_date") or payload.get("start_date")
+            updates["followup_started_at"] = start_date
+            updates.setdefault("followup_start_date", start_date)
+            for key, value in updates.items():
+                if payload.get(key) != value:
+                    payload[key] = value
+                    changed = True
+            migrated_rows.append(payload)
+        if changed:
+            self._write_rows(self.cohorts_path, migrated_rows)
+            self._append_pipeline_event(
+                step_name="cohort_followup_lifecycle_migrated",
+                status="success",
+                message="legacy 28D completion migrated to mature_tracking without deleting cohort evidence",
+            )
 
     def _enrich_cohort_metadata(self, rows: list[CandidateCohort]) -> list[CandidateCohort]:
         candidates = self._read_cohort_candidates()
@@ -468,28 +555,14 @@ class IntelligenceService:
         return rows
 
     def archive_cohort(self, cohort_id: str) -> CohortStatusUpdateResponse:
-        cohorts = self._read_cohorts()
-        found = False
-        updated: list[CandidateCohort] = []
-        cohort_name = None
-        for row in cohorts:
-            if row.id == cohort_id:
-                found = True
-                cohort_name = row.name
-                updated.append(row.model_copy(update={"status": CandidateCohortStatus.ARCHIVED}))
-            else:
-                updated.append(row)
-        if not found:
-            raise FileNotFoundError(f"Cohort not found: {cohort_id}")
-        self._save_cohorts(updated)
-        self._append_pipeline_event(
-            step_name="cohort_archived",
-            status="success",
-            cohort_id=cohort_id,
-            cohort_name=cohort_name,
-            message="action=archive",
+        cohort = self.archive_cohort_followup(
+            cohort_id,
+            CohortFollowupLifecycleRequest(
+                reviewer_id="legacy_cohort_archive",
+                reason="Archived through the legacy cohort archive action.",
+            ),
         )
-        return CohortStatusUpdateResponse(cohort_id=cohort_id, status=CandidateCohortStatus.ARCHIVED)
+        return CohortStatusUpdateResponse(cohort_id=cohort_id, status=cohort.status)
 
     def activate_cohort(self, cohort_id: str) -> CohortStatusUpdateResponse:
         cohorts = self._read_cohorts()
@@ -524,8 +597,8 @@ class IntelligenceService:
                 updated_rows.append(row)
                 continue
             payload = row.model_dump()
-            if req.followup_enabled is not None:
-                payload["followup_enabled"] = req.followup_enabled
+            if req.followup_enabled is not None and req.followup_enabled != row.followup_enabled:
+                raise ValueError("Use the audited pause-followup or resume-followup action to change tracking state.")
             if req.followup_start_date is not None:
                 payload["followup_start_date"] = req.followup_start_date
             if req.followup_target_days is not None:
@@ -533,9 +606,7 @@ class IntelligenceService:
             if req.followup_schedule is not None:
                 payload["followup_schedule"] = req.followup_schedule.strip() or None
             if req.followup_completed is not None:
-                payload["followup_completed"] = req.followup_completed
-            if payload.get("followup_enabled") and payload.get("followup_completed"):
-                payload["followup_completed"] = False
+                raise ValueError("followup_completed is deprecated; use archive-followup for a manual archive.")
             updated_cohort = CandidateCohort.model_validate(payload)
             updated_rows.append(updated_cohort)
         if updated_cohort is None:
@@ -552,6 +623,104 @@ class IntelligenceService:
             ),
         )
         return updated_cohort
+
+    def _change_cohort_followup_lifecycle(
+        self,
+        cohort_id: str,
+        *,
+        action: str,
+        req: CohortFollowupLifecycleRequest,
+    ) -> CandidateCohort:
+        now = datetime.now(UTC)
+        cohorts = self._read_cohorts()
+        updated_rows: list[CandidateCohort] = []
+        updated_cohort: CandidateCohort | None = None
+        audit_events = self._read_cohort_followup_audit_events()
+        for row in cohorts:
+            if row.id != cohort_id:
+                updated_rows.append(row)
+                continue
+            previous_status = row.followup_status
+            previous_enabled = row.followup_enabled
+            if action == "pause":
+                if row.followup_status == CohortFollowupStatus.ARCHIVED_MANUAL:
+                    raise ValueError("An archived cohort cannot be paused; it remains reviewable but tracking is ended.")
+                updates = {
+                    "status": CandidateCohortStatus.ACTIVE,
+                    "followup_status": CohortFollowupStatus.PAUSED,
+                    "followup_enabled": False,
+                    "followup_completed": False,
+                    "followup_paused_at": now,
+                }
+            elif action == "resume":
+                if row.followup_status == CohortFollowupStatus.ARCHIVED_MANUAL:
+                    raise ValueError("An archived cohort cannot be resumed; create a new cohort to restart tracking.")
+                updates = {
+                    "status": CandidateCohortStatus.ACTIVE,
+                    "followup_status": (
+                        CohortFollowupStatus.MATURE_TRACKING
+                        if row.review_ready_28d_at
+                        else CohortFollowupStatus.ACTIVE_TRACKING
+                    ),
+                    "followup_enabled": True,
+                    "followup_completed": False,
+                    "followup_paused_at": None,
+                }
+            elif action == "archive":
+                if not req.reason.strip():
+                    raise ValueError("A manual archive reason is required.")
+                updates = {
+                    "status": CandidateCohortStatus.ARCHIVED,
+                    "followup_status": CohortFollowupStatus.ARCHIVED_MANUAL,
+                    "followup_enabled": False,
+                    "followup_completed": True,
+                    "followup_archived_at": now,
+                    "followup_archive_reason": req.reason.strip(),
+                }
+            else:  # pragma: no cover - internal guard
+                raise ValueError(f"Unsupported follow-up lifecycle action: {action}")
+            updated_cohort = row.model_copy(update=updates)
+            audit_events.append(
+                CohortFollowupAuditEvent(
+                    id=str(uuid4()),
+                    cohort_id=row.id,
+                    action=action,
+                    reviewer_id=req.reviewer_id.strip(),
+                    reason=req.reason.strip(),
+                    notes=req.notes.strip(),
+                    previous_followup_status=previous_status,
+                    followup_status=updated_cohort.followup_status,
+                    previous_followup_enabled=previous_enabled,
+                    followup_enabled=updated_cohort.followup_enabled,
+                    created_at=now,
+                )
+            )
+            updated_rows.append(updated_cohort)
+        if updated_cohort is None:
+            raise FileNotFoundError(f"Cohort not found: {cohort_id}")
+        self._save_cohorts(updated_rows)
+        self._save_cohort_followup_audit_events(audit_events)
+        self._append_pipeline_event(
+            step_name=f"cohort_followup_{action}d",
+            status="success",
+            cohort_id=updated_cohort.id,
+            cohort_name=updated_cohort.name,
+            message=(
+                f"action={action} reviewer_id={req.reviewer_id.strip()} "
+                f"followup_status={updated_cohort.followup_status.value} "
+                f"followup_enabled={str(updated_cohort.followup_enabled).lower()}"
+            ),
+        )
+        return updated_cohort
+
+    def pause_cohort_followup(self, cohort_id: str, req: CohortFollowupLifecycleRequest) -> CandidateCohort:
+        return self._change_cohort_followup_lifecycle(cohort_id, action="pause", req=req)
+
+    def resume_cohort_followup(self, cohort_id: str, req: CohortFollowupLifecycleRequest) -> CandidateCohort:
+        return self._change_cohort_followup_lifecycle(cohort_id, action="resume", req=req)
+
+    def archive_cohort_followup(self, cohort_id: str, req: CohortFollowupLifecycleRequest) -> CandidateCohort:
+        return self._change_cohort_followup_lifecycle(cohort_id, action="archive", req=req)
 
     def delete_cohort(self, cohort_id: str) -> CohortDeleteResponse:
         cohorts = self._read_cohorts()
@@ -682,13 +851,40 @@ class IntelligenceService:
         if req.apply_archive and not req.dry_run and to_archive_ids:
             cohort_rows = self._read_cohorts()
             updated_rows: list[CandidateCohort] = []
+            audit_events = self._read_cohort_followup_audit_events()
+            archived_at = datetime.now(UTC)
             for row in cohort_rows:
                 if row.id in set(to_archive_ids):
-                    updated_rows.append(row.model_copy(update={"status": CandidateCohortStatus.ARCHIVED}))
+                    updated = row.model_copy(
+                        update={
+                            "status": CandidateCohortStatus.ARCHIVED,
+                            "followup_status": CohortFollowupStatus.ARCHIVED_MANUAL,
+                            "followup_enabled": False,
+                            "followup_completed": True,
+                            "followup_archived_at": archived_at,
+                            "followup_archive_reason": "Explicit duplicate-cohort cleanup.",
+                        }
+                    )
+                    updated_rows.append(updated)
+                    audit_events.append(
+                        CohortFollowupAuditEvent(
+                            id=str(uuid4()),
+                            cohort_id=row.id,
+                            action="archive_duplicate",
+                            reviewer_id="duplicate_cleanup",
+                            reason="Explicit duplicate-cohort cleanup.",
+                            previous_followup_status=row.followup_status,
+                            followup_status=updated.followup_status,
+                            previous_followup_enabled=row.followup_enabled,
+                            followup_enabled=False,
+                            created_at=archived_at,
+                        )
+                    )
                     archived_ids.append(row.id)
                 else:
                     updated_rows.append(row)
             self._save_cohorts(updated_rows)
+            self._save_cohort_followup_audit_events(audit_events)
             self._append_pipeline_event(
                 step_name="cohort_cleanup_duplicates_applied",
                 status="success",
@@ -1881,6 +2077,7 @@ class IntelligenceService:
         directional_return_pct: float | None,
         max_favorable_excursion_pct: float | None,
         max_adverse_excursion_pct: float | None,
+        max_drawdown_pct: float | None,
         followed_through: bool | None,
         false_positive: bool | None,
         invalidated_quickly: bool | None,
@@ -1925,6 +2122,7 @@ class IntelligenceService:
             "directional_return_pct": directional_return_pct,
             "max_favorable_excursion_pct": max_favorable_excursion_pct,
             "max_adverse_excursion_pct": max_adverse_excursion_pct,
+            "max_drawdown_pct": max_drawdown_pct,
             "price_path_complete": price_path_complete,
             "daily_snapshot_path_complete": daily_snapshot_path_complete,
             "daily_snapshot_coverage_pct": daily_snapshot_coverage_pct,
@@ -2072,6 +2270,7 @@ class IntelligenceService:
                         directional_return_pct=None,
                         max_favorable_excursion_pct=None,
                         max_adverse_excursion_pct=None,
+                        max_drawdown_pct=None,
                         followed_through=None,
                         false_positive=None,
                         invalidated_quickly=None,
@@ -2285,6 +2484,7 @@ class IntelligenceService:
                     directional_return_pct=directional_return,
                     max_favorable_excursion_pct=max_favorable,
                     max_adverse_excursion_pct=max_adverse,
+                    max_drawdown_pct=max_adverse,
                     followed_through=followed_through,
                     false_positive=false_positive,
                     invalidated_quickly=invalidated_quickly,
@@ -2311,6 +2511,7 @@ class IntelligenceService:
         summaries = self.research_record_store.upsert_outcome_summaries(
             self._build_outcome_summaries(cohort_id, all_outcomes, calculated_at=evaluated_at)
         )
+        self._refresh_followup_lifecycle(cohort_id, as_of_date=evaluation_date)
         self._append_pipeline_event(
             step_name="cohort_outcomes_evaluated",
             status="success",
@@ -2357,13 +2558,40 @@ class IntelligenceService:
                 )
                 return self.get_cohort_detail(existing.id)
             if req.duplicate_strategy == CohortDuplicateStrategy.ARCHIVE_EXISTING_CREATE_NEW:
+                archived_at = datetime.now(UTC)
+                audit_events = self._read_cohort_followup_audit_events()
                 cohorts_existing = [
-                    row.model_copy(update={"status": CandidateCohortStatus.ARCHIVED})
+                    row.model_copy(
+                        update={
+                            "status": CandidateCohortStatus.ARCHIVED,
+                            "followup_status": CohortFollowupStatus.ARCHIVED_MANUAL,
+                            "followup_enabled": False,
+                            "followup_completed": True,
+                            "followup_archived_at": archived_at,
+                            "followup_archive_reason": "Explicit archive while creating a replacement duplicate cohort.",
+                        }
+                    )
                     if row.id in {x.id for x in active_same_name}
                     else row
                     for row in cohorts_existing
                 ]
                 self._save_cohorts(cohorts_existing)
+                audit_events.extend(
+                    CohortFollowupAuditEvent(
+                        id=str(uuid4()),
+                        cohort_id=row.id,
+                        action="archive_duplicate",
+                        reviewer_id="duplicate_replacement",
+                        reason="Explicit archive while creating a replacement duplicate cohort.",
+                        previous_followup_status=row.followup_status,
+                        followup_status=CohortFollowupStatus.ARCHIVED_MANUAL,
+                        previous_followup_enabled=row.followup_enabled,
+                        followup_enabled=False,
+                        created_at=archived_at,
+                    )
+                    for row in active_same_name
+                )
+                self._save_cohort_followup_audit_events(audit_events)
                 self._append_pipeline_event(
                     step_name="cohort_create_archive_existing",
                     status="success",
@@ -2612,7 +2840,7 @@ class IntelligenceService:
             )
         self._save_cohort_snapshots(snapshots)
         self._append_pipeline_event(
-            step_name="cohort_followup_completed",
+            step_name="cohort_followup_snapshot_saved",
             status="success",
             cohort_id=detail.cohort.id,
             cohort_name=detail.cohort.name,
@@ -5378,7 +5606,7 @@ class IntelligenceService:
             if database_configured:
                 try:
                     predictions = self.research_record_store.list_predictions(cohort.id)
-                    outcomes = self.research_record_store.list_outcomes(cohort.id, horizon_days=28)
+                    outcomes = self.research_record_store.list_outcomes(cohort.id)
                     summaries = self.research_record_store.list_outcome_summaries(cohort.id)
                 except Exception as exc:  # pragma: no cover - database/runtime boundary
                     messages.append(
@@ -5390,14 +5618,20 @@ class IntelligenceService:
                         )
                     )
 
-            latest_outcomes: dict[str, OutcomeRecord] = {}
+            latest_outcomes_by_horizon: dict[tuple[str, int], OutcomeRecord] = {}
             for outcome in outcomes:
-                existing = latest_outcomes.get(outcome.prediction_id)
+                key = (outcome.prediction_id, outcome.horizon_days)
+                existing = latest_outcomes_by_horizon.get(key)
                 if existing is None or (outcome.evaluated_at, outcome.created_at) > (existing.evaluated_at, existing.created_at):
-                    latest_outcomes[outcome.prediction_id] = outcome
-            available_count = sum(1 for outcome in latest_outcomes.values() if outcome.outcome_status == "available")
+                    latest_outcomes_by_horizon[key] = outcome
+            latest_28d_outcomes = {
+                prediction_id: outcome
+                for (prediction_id, horizon_days), outcome in latest_outcomes_by_horizon.items()
+                if horizon_days == FIRST_REVIEW_HORIZON_DAYS
+            }
+            available_count = sum(1 for outcome in latest_28d_outcomes.values() if outcome.outcome_status == "available")
             excluded_count = sum(
-                1 for outcome in latest_outcomes.values() if outcome.outcome_status == "data_quality_excluded"
+                1 for outcome in latest_28d_outcomes.values() if outcome.outcome_status == "data_quality_excluded"
             )
             evaluated_count = available_count + excluded_count
             pending_count = max(0, len(predictions) - evaluated_count)
@@ -5407,6 +5641,16 @@ class IntelligenceService:
                 and coverage.complete_followup_days >= coverage.expected_followup_days
                 and not coverage.duplicate_repair_required
             )
+            available_horizon_days = sorted(
+                {
+                    outcome.horizon_days
+                    for outcome in latest_outcomes_by_horizon.values()
+                    if outcome.outcome_status == "available"
+                }
+            )
+            latest_available_horizon_days = max(available_horizon_days) if available_horizon_days else None
+            next_horizon_due_days = cohort.next_horizon_due_days
+            next_horizon_due_date = cohort.next_horizon_due_date
 
             if coverage.backfill_required:
                 messages.append(
@@ -5432,6 +5676,18 @@ class IntelligenceService:
                         ),
                     )
                 )
+            if latest_available_horizon_days and latest_available_horizon_days > FIRST_REVIEW_HORIZON_DAYS:
+                messages.append(
+                    ResearchOperationalMessage(
+                        code="longer_horizon_outcomes_available",
+                        severity="success",
+                        cohort_id=cohort.id,
+                        message=(
+                            f"{cohort.name}: deterministic outcomes are available through "
+                            f"{latest_available_horizon_days}D; each horizon remains separately labeled."
+                        ),
+                    )
+                )
             if available_count and not daily_path_complete:
                 messages.append(
                     ResearchOperationalMessage(
@@ -5453,11 +5709,15 @@ class IntelligenceService:
                     predictions=predictions[:50],
                     horizon_28d_available_count=available_count,
                     horizon_28d_pending_count=pending_count,
+                    available_horizon_days=available_horizon_days,
+                    latest_available_horizon_days=latest_available_horizon_days,
+                    next_horizon_due_days=next_horizon_due_days,
+                    next_horizon_due_date=next_horizon_due_date,
                     data_quality_excluded_outcome_count=excluded_count,
                     horizon_28d_complete=horizon_complete,
                     daily_path_review_complete=daily_path_complete,
-                    outcomes=list(latest_outcomes.values())[:50],
-                    outcome_summaries=[summary for summary in summaries if summary.horizon_days == 28],
+                    outcomes=list(latest_outcomes_by_horizon.values())[:100],
+                    outcome_summaries=summaries,
                 )
             )
 
@@ -6071,8 +6331,7 @@ class IntelligenceService:
 
     def _valid_followup_day_count(self, cohort: CandidateCohort, report_date: date) -> int:
         start = cohort.followup_start_date or cohort.start_date
-        target = max(1, int(cohort.followup_target_days or 28))
-        eligible = set(self._trading_days_between(start, report_date)[:target])
+        eligible = set(self._trading_days_between(start, report_date))
         valid_dates = self._valid_followup_report_dates(cohort, through_date=report_date)
         return len(eligible.intersection(valid_dates))
 
@@ -6276,7 +6535,7 @@ class IntelligenceService:
                         error_message=str(exc),
                     )
                     self._logger.exception("daily_cohort_followup_job failed cohort_id=%s report_date=%s", cohort.id, target_date)
-            self._mark_followup_completed_if_needed(cohort.id)
+            self._refresh_followup_lifecycle(cohort.id)
         self.log_daily_followup_scheduler_event(
             "job_completed",
             status="success" if response.failed == 0 else "failed",
@@ -6387,7 +6646,7 @@ class IntelligenceService:
             )
             return response
         if not missing_dates:
-            self._mark_followup_completed_if_needed(cohort_id)
+            self._refresh_followup_lifecycle(cohort_id)
             response.skipped = 1
             self.log_daily_followup_scheduler_event(
                 "backfill_skipped_no_missing_days",
@@ -6412,7 +6671,7 @@ class IntelligenceService:
                 response.failed += 1
                 response.errors.append(f"{detail.cohort.name} {target_date.isoformat()}: {type(exc).__name__}: {exc}")
                 self._logger.exception("cohort_followup_backfill failed cohort_id=%s report_date=%s", cohort_id, target_date)
-        self._mark_followup_completed_if_needed(cohort_id)
+        self._refresh_followup_lifecycle(cohort_id)
         self.log_daily_followup_scheduler_event(
             "backfill_completed",
             status="success" if response.failed == 0 else "failed",
@@ -6438,9 +6697,11 @@ class IntelligenceService:
         return [
             row
             for row in self._read_cohorts()
-            if row.status == CandidateCohortStatus.ACTIVE
-            and row.followup_enabled
-            and not row.followup_completed
+            if row.followup_enabled
+            and row.followup_status in {
+                CohortFollowupStatus.ACTIVE_TRACKING,
+                CohortFollowupStatus.MATURE_TRACKING,
+            }
         ]
 
     def _latest_persisted_followup_report_date(self, cohort_id: str) -> date | None:
@@ -6457,8 +6718,7 @@ class IntelligenceService:
 
     def _followup_target_dates(self, cohort: CandidateCohort, *, through_date: date) -> list[date]:
         start_date = cohort.followup_start_date or cohort.start_date
-        target_days = max(1, int(cohort.followup_target_days or 28))
-        return self._trading_days_between(start_date, through_date)[:target_days]
+        return self._trading_days_between(start_date, through_date)
 
     def _incomplete_followup_snapshot_dates(
         self,
@@ -6584,7 +6844,18 @@ class IntelligenceService:
         missing = self._incomplete_followup_snapshot_dates(cohort, target_dates=eligible)
         return missing if backfill else missing[-1:]
 
-    def _mark_followup_completed_if_needed(self, cohort_id: str) -> None:
+    def _horizon_due_date(self, start_date: date, horizon_days: int) -> date:
+        cursor = start_date
+        observed_days = 0
+        while True:
+            if self._is_us_trading_day(cursor):
+                observed_days += 1
+                if observed_days >= horizon_days:
+                    return cursor
+            cursor += timedelta(days=1)
+
+    def _refresh_followup_lifecycle(self, cohort_id: str, *, as_of_date: date | None = None) -> None:
+        """Update only derived lifecycle metadata; 28D never ends tracking."""
         cohorts = self._read_cohorts()
         changed = False
         next_rows: list[CandidateCohort] = []
@@ -6592,10 +6863,46 @@ class IntelligenceService:
             if cohort.id != cohort_id:
                 next_rows.append(cohort)
                 continue
-            target_days = max(1, int(cohort.followup_target_days or 28))
-            valid_dates = self._valid_followup_report_dates(cohort)
-            if len(valid_dates) >= target_days and not cohort.followup_completed:
-                cohort = cohort.model_copy(update={"followup_completed": True, "status": CandidateCohortStatus.COMPLETED})
+            start_date = cohort.followup_start_date or cohort.followup_started_at or cohort.start_date
+            valid_dates = sorted(self._valid_followup_report_dates(cohort, through_date=as_of_date))
+            review_ready_at = cohort.review_ready_28d_at
+            if len(valid_dates) >= FIRST_REVIEW_HORIZON_DAYS and review_ready_at is None:
+                review_ready_at = valid_dates[FIRST_REVIEW_HORIZON_DAYS - 1]
+            latest_horizon: int | None = None
+            if self.research_record_store.configured:
+                try:
+                    available_horizons = {
+                        outcome.horizon_days
+                        for outcome in self.research_record_store.list_outcomes(cohort.id)
+                        if outcome.outcome_status == "available"
+                    }
+                    latest_horizon = max(available_horizons) if available_horizons else None
+                except Exception as exc:  # pragma: no cover - database/runtime boundary
+                    self._logger.warning("followup lifecycle outcome lookup failed cohort_id=%s error=%s", cohort.id, exc)
+            next_horizon = next((horizon for horizon in OUTCOME_HORIZONS if latest_horizon is None or horizon > latest_horizon), None)
+            updates: dict[str, Any] = {
+                "review_ready_28d_at": review_ready_at,
+                "latest_available_horizon_days": latest_horizon,
+                "next_horizon_due_days": next_horizon,
+                "next_horizon_due_date": self._horizon_due_date(start_date, next_horizon) if next_horizon else None,
+            }
+            if cohort.followup_status == CohortFollowupStatus.ACTIVE_TRACKING and review_ready_at:
+                updates.update(
+                    {
+                        "status": CandidateCohortStatus.ACTIVE,
+                        "followup_status": CohortFollowupStatus.MATURE_TRACKING,
+                        "followup_enabled": True,
+                        "followup_completed": False,
+                    }
+                )
+            elif cohort.followup_status in {
+                CohortFollowupStatus.ACTIVE_TRACKING,
+                CohortFollowupStatus.MATURE_TRACKING,
+            }:
+                updates.update({"status": CandidateCohortStatus.ACTIVE, "followup_enabled": True, "followup_completed": False})
+            updated = cohort.model_copy(update=updates)
+            if updated != cohort:
+                cohort = updated
                 changed = True
             next_rows.append(cohort)
         if changed:
@@ -6605,6 +6912,7 @@ class IntelligenceService:
         trading_day = self._is_us_trading_day(report_date)
         market_open = trading_day
         followup = self.run_cohort_followup(CohortFollowupRequest(cohort_id=cohort_id, report_date=report_date))
+        self._refresh_followup_lifecycle(cohort_id, as_of_date=report_date)
         detail = self.get_cohort_detail(cohort_id)
         snapshots_for_date = [row for row in followup.snapshots if row.snapshot_date == report_date]
         market_context = self._collect_market_context(report_date)
@@ -7194,7 +7502,15 @@ class IntelligenceService:
         lines.append(f"- latest_followup_date: `{deterministic_stats.get('latest_followup_date') or '-'}`")
         lines.append(f"- calendar_days_elapsed: `{deterministic_stats.get('calendar_days_elapsed', deterministic_stats.get('calendar_day_count', '-'))}`")
         lines.append(f"- trading_days_elapsed: `{deterministic_stats.get('trading_days_elapsed', '-')}`")
-        lines.append(f"- followup_day_number: `{followup_day_number}/{target_days}`")
+        lines.append(f"- followup_status: `{cohort.followup_status.value}`")
+        lines.append(f"- tracking_continues: `{str(cohort.followup_status in {CohortFollowupStatus.ACTIVE_TRACKING, CohortFollowupStatus.MATURE_TRACKING}).lower()}`")
+        lines.append(f"- review_ready_28d: `{str(cohort.review_ready_28d_at is not None).lower()}`")
+        lines.append(f"- review_ready_28d_at: `{cohort.review_ready_28d_at.isoformat() if cohort.review_ready_28d_at else '-'}`")
+        lines.append(f"- latest_available_horizon: `{cohort.latest_available_horizon_days or '-'}`")
+        lines.append(f"- next_horizon_due: `{cohort.next_horizon_due_days or '-'}`")
+        lines.append(f"- next_horizon_date: `{cohort.next_horizon_due_date.isoformat() if cohort.next_horizon_due_date else '-'}`")
+        lines.append(f"- followup_day_number: `{followup_day_number}`")
+        lines.append(f"- first_review_checkpoint_days: `{target_days}`")
         lines.append(
             f"- valid_followup_snapshot_days: "
             f"`{deterministic_stats.get('valid_followup_snapshot_days', deterministic_stats.get('valid_followup_day_count', followup_day_number))}/"
@@ -7214,6 +7530,8 @@ class IntelligenceService:
         lines.append(f"- prompt_version: `{prompt_version or '-'}`")
         lines.append(f"- fallback_used: `{str(fallback_used).lower()}`")
         lines.append(f"- llm_context_summary_present: `{str(llm_context_summary_present).lower()}`")
+        if cohort.review_ready_28d_at and cohort.followup_status == CohortFollowupStatus.MATURE_TRACKING:
+            lines.append("- tracking_note: `28D checkpoint reached. Daily tracking continues until the cohort is manually archived.`")
         lines.append("")
         lines.append("## Market Context")
         broad = market_context.get("broad_market", {})
@@ -7391,7 +7709,13 @@ class IntelligenceService:
             ),
             None,
         )
+        all_cohorts = self._read_cohorts()
         active = self._active_followup_cohorts()
+        lifecycle_counts = {
+            status.value: sum(1 for cohort in all_cohorts if cohort.followup_status == status)
+            for status in CohortFollowupStatus
+        }
+        review_ready_count = sum(1 for cohort in all_cohorts if cohort.review_ready_28d_at is not None)
         active_rows: list[dict[str, Any]] = []
         due_date = self._latest_due_report_date(now=now)
         for cohort in active:
@@ -7408,10 +7732,15 @@ class IntelligenceService:
                     "cohort_name": cohort.name,
                     "followup_enabled": cohort.followup_enabled,
                     "followup_start_date": cohort.followup_start_date.isoformat() if cohort.followup_start_date else None,
+                    "followup_started_at": cohort.followup_started_at.isoformat() if cohort.followup_started_at else None,
+                    "followup_status": cohort.followup_status.value,
                     "followup_target_days": cohort.followup_target_days,
                     "current_followup_day": current_day,
                     "last_report_date": last_report_date.isoformat() if last_report_date else None,
-                    "completed": cohort.followup_completed,
+                    "review_ready_28d": cohort.review_ready_28d_at is not None,
+                    "latest_available_horizon_days": cohort.latest_available_horizon_days,
+                    "next_horizon_due_days": cohort.next_horizon_due_days,
+                    "next_horizon_due_date": cohort.next_horizon_due_date.isoformat() if cohort.next_horizon_due_date else None,
                 }
             )
         try:
@@ -7447,6 +7776,11 @@ class IntelligenceService:
                 "last_failure_at": last_failure.get("timestamp") if last_failure else None,
                 "last_error_message": last_failure.get("error_message") if last_failure else None,
                 "active_followup_cohorts_count": len(active),
+                "active_tracking_count": lifecycle_counts[CohortFollowupStatus.ACTIVE_TRACKING.value],
+                "mature_tracking_count": lifecycle_counts[CohortFollowupStatus.MATURE_TRACKING.value],
+                "paused_followup_count": lifecycle_counts[CohortFollowupStatus.PAUSED.value],
+                "manually_archived_count": lifecycle_counts[CohortFollowupStatus.ARCHIVED_MANUAL.value],
+                "review_ready_28d_count": review_ready_count,
             },
             "daily_reports": daily_reports,
             "active_followup_cohorts": active_rows,

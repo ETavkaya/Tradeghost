@@ -1037,9 +1037,18 @@ export type CandidateCohort = {
   short_id: string | null;
   followup_enabled: boolean;
   followup_start_date: string | null;
+  followup_started_at: string | null;
   followup_target_days: number;
   followup_schedule: string | null;
   followup_completed: boolean;
+  followup_status: "active_tracking" | "mature_tracking" | "paused" | "archived_manual";
+  followup_paused_at: string | null;
+  followup_archived_at: string | null;
+  followup_archive_reason: string | null;
+  review_ready_28d_at: string | null;
+  latest_available_horizon_days: number | null;
+  next_horizon_due_days: number | null;
+  next_horizon_due_date: string | null;
 };
 
 export type CohortCleanupDuplicateResponse = {
@@ -1306,6 +1315,11 @@ export type LogsSchedulerStatus = {
   last_failure_at: string | null;
   last_error_message: string | null;
   active_followup_cohorts_count: number;
+  active_tracking_count: number;
+  mature_tracking_count: number;
+  paused_followup_count: number;
+  manually_archived_count: number;
+  review_ready_28d_count: number;
 };
 
 export type LogsActiveFollowupCohort = {
@@ -1313,10 +1327,15 @@ export type LogsActiveFollowupCohort = {
   cohort_name: string;
   followup_enabled: boolean;
   followup_start_date: string | null;
+  followup_started_at: string | null;
+  followup_status: string;
   followup_target_days: number;
   current_followup_day: number;
   last_report_date: string | null;
-  completed: boolean;
+  review_ready_28d: boolean;
+  latest_available_horizon_days: number | null;
+  next_horizon_due_days: number | null;
+  next_horizon_due_date: string | null;
 };
 
 export type LogsStatusResponse = {
@@ -1475,6 +1494,10 @@ export type ResearchCohortReadiness = {
   predictions: ResearchPredictionRecord[];
   horizon_28d_available_count: number;
   horizon_28d_pending_count: number;
+  available_horizon_days: number[];
+  latest_available_horizon_days: number | null;
+  next_horizon_due_days: number | null;
+  next_horizon_due_date: string | null;
   data_quality_excluded_outcome_count: number;
   horizon_28d_complete: boolean;
   daily_path_review_complete: boolean;

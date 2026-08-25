@@ -577,7 +577,7 @@ export default function IntelligencePage() {
           <div className="rounded-lg border border-stroke/70 p-3">
             <p className="font-semibold">Step 2: Run Follow-up</p>
             <p className="mt-1 text-slate-400">Tracks same symbols only with score/price/performance updates.</p>
-            <p className="mt-2">Status: {canRunFollowup ? (latestCohortSnapshotCount > 0 ? "completed" : "ready") : "blocked"} {canRunFollowup ? "" : "(select cohort)"}</p>
+            <p className="mt-2">Status: {canRunFollowup ? (latestCohortSnapshotCount > 0 ? "updated" : "ready") : "blocked"} {canRunFollowup ? "" : "(select cohort)"}</p>
           </div>
           <div className="rounded-lg border border-stroke/70 p-3">
             <p className="font-semibold">Step 3: Generate Contexts (Optional)</p>

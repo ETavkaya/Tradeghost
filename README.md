@@ -237,6 +237,9 @@ TradeGhost Intelligence now runs as a **cohort lifecycle workflow**:
 - re-checks the same cohort symbols only
 - updates current score/category/trend snapshots
 - updates forward performance fields (`1D`, `3D`, `7D`, `14D`, `28D`) when available
+- continues daily tracking after the first 28 valid trading days; 28D is a review checkpoint, not automatic completion
+- supports separately labeled deterministic Outcome horizons at `7D`, `14D`, `28D`, `56D`, `90D`, `180D`, and `365D` when canonical data is available
+- tracking stops only through audited `pause`, `resume`, or manual `archive` actions; all reports, snapshots, Predictions, and Outcomes remain reviewable
 
 3. Optional LLM context layer (advisory only):
 - `Generate Cohort Symbol Contexts`
@@ -278,7 +281,7 @@ When `KNOWLEDGE_GRAPH_ENABLED=true`, persisted cohort daily reports plus committ
 
 The report projection writes deterministic report, asset, category, setup, and validity facts. Phase 2D separately projects only already-committed deterministic research records; it never infers a Prediction or Outcome from report prose or LLM output.
 
-Phase 2E provides read-only, deterministic 28D similar-setup retrieval from authoritative Postgres records. It exposes matching cases by stable Prediction/Outcome UUID, excludes data-quality outcomes from performance metrics, applies an as-of cutoff to prevent future-outcome leakage, and withholds statistics below the configured minimum sample size. It does not produce trading advice.
+Phase 2E provides read-only, deterministic similar-setup retrieval from authoritative Postgres records. It defaults to clearly labeled 28D evidence and supports an explicit horizon selector without mixing horizon outcomes. It excludes data-quality outcomes from performance metrics, applies an as-of cutoff to prevent future-outcome leakage, and withholds statistics below the configured minimum sample size. It does not produce trading advice.
 
 ### Current Graph Contents
 
@@ -481,7 +484,7 @@ npm run dev
 
 TradeGhost Phase 2 turns cohort reports into a closed-loop research system.
 
-The staged implementation plan, guardrails, data-truth contract, and ticket checklist are in `docs/phase2_learning_reasoning_plan.md`. Phase 2A provides deterministic follow-up coverage and backfill. Phase 2B persists immutable Predictions and Outcomes in Postgres, using versioned canonical OHLC inputs and deterministic 7D/14D/28D evaluation. Phase 2C persists versioned market-regime snapshots and deterministic benchmark-relative attribution. Phase 2D projects only those committed facts through the transactional outbox. Phase 2E retrieves read-only historical evidence. Phase 2F stores human-gated hypotheses and sandbox-only backtest comparisons. Phase 2G mines conservative, statistically tested Pattern candidates. Phase 2H adds the read-only Research workspace, JSON audit exports, operational readiness/error status, and the runbook at `docs/phase2_operations_runbook.md`; none of these phases change scanner decisions.
+The staged implementation plan, guardrails, data-truth contract, and ticket checklist are in `docs/phase2_learning_reasoning_plan.md`. Phase 2A provides deterministic follow-up coverage and backfill. Phase 2B persists immutable Predictions and Outcomes in Postgres, using versioned canonical OHLC inputs. Phase 2C persists versioned market-regime snapshots and deterministic benchmark-relative attribution. Phase 2D projects only those committed facts through the transactional outbox. Phase 2E retrieves read-only historical evidence. Phase 2F stores human-gated hypotheses and sandbox-only backtest comparisons. Phase 2G mines conservative, statistically tested Pattern candidates. Phase 2H adds the read-only Research workspace, JSON audit exports, operational readiness/error status, and the runbook at `docs/phase2_operations_runbook.md`. Phase 2I makes `28D` the first review checkpoint while daily tracking continues through deterministic `56D`, `90D`, `180D`, and optional `365D` outcomes until a human pauses or archives the cohort; none of these phases change scanner decisions.
 
 The system learns by:
 1. Recording deterministic predictions at selection time.
@@ -507,6 +510,9 @@ Phase 2B-2F research endpoints:
 - `POST /intelligence/cohorts/{cohort_id}/predictions/backfill` (legacy immutable selection snapshots only)
 - `GET /intelligence/cohorts/{cohort_id}/outcomes`
 - `POST /intelligence/cohorts/{cohort_id}/outcomes/evaluate`
+- `POST /intelligence/cohorts/{cohort_id}/pause-followup`
+- `POST /intelligence/cohorts/{cohort_id}/resume-followup`
+- `POST /intelligence/cohorts/{cohort_id}/archive-followup`
 - `GET /intelligence/cohorts/{cohort_id}/market-regimes`
 - `POST /intelligence/reasoning/similar-setups`
 - `POST /intelligence/hypotheses`

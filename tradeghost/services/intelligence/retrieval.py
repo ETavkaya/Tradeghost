@@ -16,7 +16,6 @@ from tradeghost.shared.models.schemas import (
 )
 
 
-HORIZON_DAYS = 28
 MIN_WEIGHTED_SIMILARITY = 0.5
 
 
@@ -40,7 +39,7 @@ class SimilarSetupEvidenceService:
         source_cases = self.record_store.list_historical_evidence_cases(
             market=request.market.value,
             as_of_date=as_of_date,
-            horizon_days=HORIZON_DAYS,
+            horizon_days=request.horizon_days,
             limit=self.source_limit,
         )
         scored_cases = [
@@ -71,24 +70,30 @@ class SimilarSetupEvidenceService:
             evaluable_cases=evaluable_cases,
             data_quality_excluded_count=data_quality_excluded_count,
             as_of_date=as_of_date,
+            horizon_days=request.horizon_days,
         )
         evidence_summary = self._build_evidence_summary(
             evaluable_cases=evaluable_cases,
             sample_size_sufficient=sample_size_sufficient,
             performance=performance,
+            horizon_days=request.horizon_days,
         )
         return SimilarSetupRetrievalResponse(
             market=request.market.value,
             as_of_date=as_of_date,
+            horizon_days=request.horizon_days,
             similarity_mode=request.similarity_mode,
             similar_case_count=len(scored_cases),
             evaluable_case_count=len(evaluable_cases),
             data_quality_excluded_count=data_quality_excluded_count,
             min_sample_size=self.min_sample_size,
             sample_size_sufficient=sample_size_sufficient,
-            success_rate_28d=performance.get("success_rate_28d"),
-            failure_rate_28d=performance.get("failure_rate_28d"),
-            average_28d_return=performance.get("average_28d_return"),
+            success_rate=performance.get("success_rate"),
+            failure_rate=performance.get("failure_rate"),
+            average_return=performance.get("average_return"),
+            success_rate_28d=performance.get("success_rate") if request.horizon_days == 28 else None,
+            failure_rate_28d=performance.get("failure_rate") if request.horizon_days == 28 else None,
+            average_28d_return=performance.get("average_return") if request.horizon_days == 28 else None,
             average_relative_return=performance.get("average_relative_return"),
             common_failure_modes=(
                 self._common_failure_modes(evaluable_cases) if sample_size_sufficient else []
@@ -209,9 +214,9 @@ class SimilarSetupEvidenceService:
         returns = [case.return_pct for case in evaluable_cases if case.return_pct is not None]
         relative_returns = [case.relative_to_spy for case in evaluable_cases if case.relative_to_spy is not None]
         return {
-            "success_rate_28d": round(success_count / len(evaluable_cases) * 100.0, 2),
-            "failure_rate_28d": round(failure_count / len(evaluable_cases) * 100.0, 2),
-            "average_28d_return": round(sum(returns) / len(returns), 4) if returns else None,
+            "success_rate": round(success_count / len(evaluable_cases) * 100.0, 2),
+            "failure_rate": round(failure_count / len(evaluable_cases) * 100.0, 2),
+            "average_return": round(sum(returns) / len(returns), 4) if returns else None,
             "average_relative_return": round(sum(relative_returns) / len(relative_returns), 4) if relative_returns else None,
         }
 
@@ -251,6 +256,7 @@ class SimilarSetupEvidenceService:
         evaluable_cases: list[SimilarSetupEvidenceCase],
         data_quality_excluded_count: int,
         as_of_date: date,
+        horizon_days: int,
     ) -> list[str]:
         caveats = [
             "Historical evidence is descriptive and is not a buy, sell, hold, or rule-change recommendation.",
@@ -258,7 +264,7 @@ class SimilarSetupEvidenceService:
         ]
         if len(evaluable_cases) < self.min_sample_size:
             caveats.append(
-                f"Performance aggregates are withheld: {len(evaluable_cases)} evaluable 28D cases are below the minimum sample size of {self.min_sample_size}."
+                f"Performance aggregates are withheld: {len(evaluable_cases)} evaluable {horizon_days}D cases are below the minimum sample size of {self.min_sample_size}."
             )
         if data_quality_excluded_count:
             caveats.append(
@@ -289,19 +295,20 @@ class SimilarSetupEvidenceService:
         evaluable_cases: list[SimilarSetupEvidenceCase],
         sample_size_sufficient: bool,
         performance: dict[str, float | None],
+        horizon_days: int,
     ) -> list[str]:
         if not evaluable_cases:
-            return ["No evaluable 28D outcomes were retrieved for the requested similarity criteria."]
+            return [f"No evaluable {horizon_days}D outcomes were retrieved for the requested similarity criteria."]
         if not sample_size_sufficient:
             return [
-                f"Retrieved {len(evaluable_cases)} evaluable 28D outcomes; the configured minimum sample size has not been reached."
+                f"Retrieved {len(evaluable_cases)} evaluable {horizon_days}D outcomes; the configured minimum sample size has not been reached."
             ]
         return [
             "Retrieved "
-            f"{len(evaluable_cases)} evaluable 28D outcomes: "
-            f"success_rate={performance['success_rate_28d']}%, "
-            f"failure_rate={performance['failure_rate_28d']}%, "
-            f"average_return={performance['average_28d_return']}%."
+            f"{len(evaluable_cases)} evaluable {horizon_days}D outcomes: "
+            f"success_rate={performance['success_rate']}%, "
+            f"failure_rate={performance['failure_rate']}%, "
+            f"average_return={performance['average_return']}%."
         ]
 
 

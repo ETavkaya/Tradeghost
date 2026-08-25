@@ -1229,6 +1229,13 @@ class CandidateCohortStatus(str, Enum):
     ARCHIVED = "archived"
 
 
+class CohortFollowupStatus(str, Enum):
+    ACTIVE_TRACKING = "active_tracking"
+    MATURE_TRACKING = "mature_tracking"
+    PAUSED = "paused"
+    ARCHIVED_MANUAL = "archived_manual"
+
+
 class CandidateCohort(BaseModel):
     id: str
     name: str
@@ -1245,9 +1252,18 @@ class CandidateCohort(BaseModel):
     short_id: str | None = None
     followup_enabled: bool = False
     followup_start_date: date | None = None
+    followup_started_at: date | None = None
     followup_target_days: int = 28
     followup_schedule: str | None = None
     followup_completed: bool = False
+    followup_status: CohortFollowupStatus = CohortFollowupStatus.PAUSED
+    followup_paused_at: datetime | None = None
+    followup_archived_at: datetime | None = None
+    followup_archive_reason: str | None = None
+    review_ready_28d_at: date | None = None
+    latest_available_horizon_days: int | None = None
+    next_horizon_due_days: int | None = None
+    next_horizon_due_date: date | None = None
 
 
 class CohortCandidate(BaseModel):
@@ -1407,6 +1423,26 @@ class CohortFollowupSettingsRequest(BaseModel):
     followup_target_days: int | None = Field(default=None, ge=1, le=365)
     followup_schedule: str | None = None
     followup_completed: bool | None = None
+
+
+class CohortFollowupLifecycleRequest(BaseModel):
+    reviewer_id: str = Field(min_length=2, max_length=200)
+    reason: str = Field(default="", max_length=1000)
+    notes: str = Field(default="", max_length=4000)
+
+
+class CohortFollowupAuditEvent(BaseModel):
+    id: str
+    cohort_id: str
+    action: str
+    reviewer_id: str
+    reason: str = ""
+    notes: str = ""
+    previous_followup_status: CohortFollowupStatus
+    followup_status: CohortFollowupStatus
+    previous_followup_enabled: bool
+    followup_enabled: bool
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class CohortDeleteResponse(BaseModel):
@@ -1658,6 +1694,7 @@ class OutcomeRecord(BaseModel):
     directional_return_pct: float | None = None
     max_favorable_excursion_pct: float | None = None
     max_adverse_excursion_pct: float | None = None
+    max_drawdown_pct: float | None = None
     price_path_complete: bool = False
     daily_snapshot_path_complete: bool = False
     daily_snapshot_coverage_pct: float = 0.0
@@ -1778,6 +1815,7 @@ class SimilarSetupRequest(BaseModel):
     support_distance_pct: float | None = None
     resistance_room_pct: float | None = None
     as_of_date: date | None = None
+    horizon_days: int = Field(default=28, ge=1, le=365)
     lookback_limit: int = Field(default=25, ge=1, le=100)
     similarity_mode: SimilarSetupSimilarityMode = SimilarSetupSimilarityMode.WEIGHTED
 
@@ -1828,6 +1866,9 @@ class SimilarSetupRetrievalResponse(BaseModel):
     data_quality_excluded_count: int = 0
     min_sample_size: int
     sample_size_sufficient: bool = False
+    success_rate: float | None = None
+    failure_rate: float | None = None
+    average_return: float | None = None
     success_rate_28d: float | None = None
     failure_rate_28d: float | None = None
     average_28d_return: float | None = None
@@ -2042,6 +2083,10 @@ class ResearchCohortReadiness(BaseModel):
     predictions: list[PredictionRecord] = Field(default_factory=list)
     horizon_28d_available_count: int = 0
     horizon_28d_pending_count: int = 0
+    available_horizon_days: list[int] = Field(default_factory=list)
+    latest_available_horizon_days: int | None = None
+    next_horizon_due_days: int | None = None
+    next_horizon_due_date: date | None = None
     data_quality_excluded_outcome_count: int = 0
     horizon_28d_complete: bool = False
     daily_path_review_complete: bool = False

@@ -11,6 +11,8 @@ from tradeghost.shared.models.schemas import (
     CohortCandidate,
     CohortDailyReportDetail,
     CohortDailySnapshot,
+    CohortFollowupLifecycleRequest,
+    CohortFollowupStatus,
     CohortReviewRequest,
     MarketCode,
     ScannerCategory,
@@ -140,6 +142,7 @@ def _wire_temp_storage(service: IntelligenceService, tmp_path) -> None:
     service.cohorts_path = tmp_path / "candidate_cohorts.json"
     service.cohort_candidates_path = tmp_path / "cohort_candidates.json"
     service.cohort_snapshots_path = tmp_path / "cohort_daily_snapshots.json"
+    service.cohort_followup_audit_path = tmp_path / "cohort_followup_audit.json"
     service.llm_logs_path = tmp_path / "llm_calls.json"
     service.pipeline_logs_path = tmp_path / "pipeline_events.json"
     service.scheduler_logs_dir = tmp_path / "scheduler"
@@ -196,7 +199,7 @@ def test_phase2b_outcomes_are_deterministic_and_independent_of_snapshot_coverage
         backtest_engine=object(),
     )
     _wire_temp_storage(service, tmp_path)
-    trading_dates = service._trading_days_between(cohort.start_date, date(2026, 7, 1))
+    trading_dates = service._trading_days_between(cohort.start_date, date(2026, 10, 1))
     prices = [100.0 + index for index in range(len(trading_dates))]
     frame = pd.DataFrame(
         {
@@ -224,7 +227,7 @@ def test_phase2b_outcomes_are_deterministic_and_independent_of_snapshot_coverage
     first_evaluation = service.evaluate_cohort_outcomes(cohort_id, as_of_date=trading_dates[29])
 
     assert first_evaluation.created_outcome_count == 3
-    assert first_evaluation.pending_horizon_count == 0
+    assert first_evaluation.pending_horizon_count == 4
     outcomes_by_horizon = {outcome.horizon_days: outcome for outcome in first_evaluation.outcomes}
     assert sorted(outcomes_by_horizon) == [7, 14, 28]
     assert outcomes_by_horizon[7].return_pct == 6.0
@@ -244,6 +247,14 @@ def test_phase2b_outcomes_are_deterministic_and_independent_of_snapshot_coverage
 
     assert second_evaluation.created_outcome_count == 0
     assert second_evaluation.existing_outcome_count == 3
+
+    medium_horizon_evaluation = service.evaluate_cohort_outcomes(cohort_id, as_of_date=trading_dates[94])
+
+    assert medium_horizon_evaluation.created_outcome_count == 5
+    assert medium_horizon_evaluation.pending_horizon_count == 2
+    all_outcomes = service.research_record_store.list_outcomes(cohort_id)
+    assert {outcome.horizon_days for outcome in all_outcomes} == {7, 14, 28, 56, 90}
+    assert {outcome.id for outcome in first_evaluation.outcomes}.issubset({outcome.id for outcome in all_outcomes})
 
 
 def test_outcome_validity_reads_prediction_selected_date(tmp_path) -> None:
@@ -359,10 +370,10 @@ def test_phase2b_symbol_mismatch_creates_data_quality_excluded_outcomes(tmp_path
 
     evaluation = service.evaluate_cohort_outcomes(cohort_id, as_of_date=date(2026, 7, 1))
 
-    assert evaluation.created_outcome_count == 3
+    assert evaluation.created_outcome_count == 7
     assert evaluation.pending_horizon_count == 0
-    assert evaluation.data_quality_excluded_count == 3
-    assert {outcome.horizon_days for outcome in evaluation.outcomes} == {7, 14, 28}
+    assert evaluation.data_quality_excluded_count == 7
+    assert {outcome.horizon_days for outcome in evaluation.outcomes} == {7, 14, 28, 56, 90, 180, 365}
     assert all(outcome.outcome_status == "data_quality_excluded" for outcome in evaluation.outcomes)
     assert all("possible_symbol_price_mismatch" in outcome.data_quality_flags for outcome in evaluation.outcomes)
 
@@ -840,4 +851,64 @@ def test_backfill_rehydrates_complete_daily_report_states_idempotently(tmp_path)
     assert {snapshot.state_source for snapshot in recovered_states} == {"rehydrated_daily_report"}
     assert {snapshot.source_report_id for snapshot in recovered_states} == {"report-5555"}
     assert completed_backfill.skipped == 1
-    assert service.get_cohort_detail(cohort_id).cohort.followup_completed is True
+    restored_cohort = service.get_cohort_detail(cohort_id).cohort
+    assert restored_cohort.followup_completed is False
+    assert restored_cohort.followup_status == CohortFollowupStatus.ACTIVE_TRACKING
+
+
+def test_28d_checkpoint_keeps_cohort_tracking_until_manual_archive(tmp_path) -> None:
+    cohort_id = "77777777-7777-4777-8777-777777777777"
+    cohort, candidate = _phase2b_cohort_and_candidate(cohort_id)
+    service = IntelligenceService(
+        analysis_engine=FakeAnalysisEngine({}),
+        scanner_engine=object(),
+        backtest_engine=object(),
+    )
+    _wire_temp_storage(service, tmp_path)
+    service.research_record_store = FakeResearchRecordStore()
+    followup_dates = service._trading_days_between(cohort.start_date, date(2026, 6, 24))[:28]
+    service._save_cohorts([cohort])
+    service._save_cohort_candidates([candidate])
+    service._save_cohort_snapshots(
+        [
+            CohortDailySnapshot(cohort_id=cohort_id, symbol=candidate.symbol, snapshot_date=snapshot_date)
+            for snapshot_date in followup_dates
+        ]
+    )
+
+    service._refresh_followup_lifecycle(cohort_id, as_of_date=followup_dates[-1])
+    mature = service.get_cohort_detail(cohort_id).cohort
+
+    assert mature.followup_status == CohortFollowupStatus.MATURE_TRACKING
+    assert mature.followup_enabled is True
+    assert mature.followup_completed is False
+    assert mature.review_ready_28d_at == followup_dates[-1]
+    assert service._active_followup_cohorts()[0].id == cohort_id
+    next_date = service._trading_days_between(cohort.start_date, date(2026, 6, 25))[28]
+    assert service._missing_report_dates_for_cohort(mature, due_date=next_date, backfill=False) == [next_date]
+
+    paused = service.pause_cohort_followup(
+        cohort_id,
+        CohortFollowupLifecycleRequest(reviewer_id="reviewer-1", reason="Investigating data feed"),
+    )
+    assert paused.followup_status == CohortFollowupStatus.PAUSED
+    assert paused.followup_enabled is False
+    assert service._active_followup_cohorts() == []
+
+    resumed = service.resume_cohort_followup(
+        cohort_id,
+        CohortFollowupLifecycleRequest(reviewer_id="reviewer-1", reason="Data feed restored"),
+    )
+    assert resumed.followup_status == CohortFollowupStatus.MATURE_TRACKING
+    assert resumed.followup_enabled is True
+
+    archived = service.archive_cohort_followup(
+        cohort_id,
+        CohortFollowupLifecycleRequest(reviewer_id="reviewer-1", reason="Study closed", notes="Preserve evidence."),
+    )
+    assert archived.followup_status == CohortFollowupStatus.ARCHIVED_MANUAL
+    assert archived.followup_enabled is False
+    assert archived.followup_completed is True
+    assert len(service.get_cohort_detail(cohort_id).snapshots) == 28
+    assert len(service.get_cohort_detail(cohort_id).candidates) == 1
+    assert [event.action for event in service._read_cohort_followup_audit_events()] == ["pause", "resume", "archive"]

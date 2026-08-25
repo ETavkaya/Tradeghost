@@ -147,6 +147,7 @@ def build_outcome_projection(payload: dict[str, Any]) -> OutcomeProjection:
             "directional_return_pct": payload.get("directional_return_pct"),
             "max_favorable_excursion_pct": payload.get("max_favorable_excursion_pct"),
             "max_adverse_excursion_pct": payload.get("max_adverse_excursion_pct"),
+            "max_drawdown_pct": payload.get("max_drawdown_pct"),
             "price_path_complete": payload.get("price_path_complete"),
             "daily_snapshot_path_complete": payload.get("daily_snapshot_path_complete"),
             "daily_snapshot_coverage_pct": payload.get("daily_snapshot_coverage_pct"),
@@ -465,6 +466,8 @@ class Neo4jReportProjector:
             MERGE (outcome:Outcome {outcome_id: $outcome.outcome_id})
             SET outcome += $outcome
             MERGE (prediction)-[:RESULTED_IN]->(outcome)
+            MERGE (prediction)-[has_outcome:HAS_OUTCOME {horizon_days: $outcome.horizon_days}]->(outcome)
+            SET has_outcome.source_outcome_id = $outcome.outcome_id
             MERGE (outcome)-[:EVALUATES]->(asset)
             FOREACH (regime_id IN CASE
                 WHEN $selection_market_regime_id IS NULL THEN []

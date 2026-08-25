@@ -42,10 +42,10 @@ Existing cohorts may use an explicit deterministic backfill that reads only thei
 
 Implemented in Phase 2B:
 
-1. A deterministic evaluator checks 7, 14, and 28 trading-day horizons from the prediction selection date. For the existing cohort lifecycle, the selection session is trading day 1, so the 28D outcome is available on the 28th eligible cohort trading day.
+1. A deterministic evaluator checks separately labeled 7, 14, 28, 56, 90, 180, and optional 365 trading-day horizons from the prediction selection date. The selection session is trading day 1, so the 28D Outcome is available on the 28th eligible cohort trading day; it is the first review checkpoint, not the end of tracking.
 2. It obtains each horizon from canonical, exact-symbol OHLC data and records source, observed bar date, evaluator version, and data version.
 3. Each immutable outcome records availability, return, maximum favorable/adverse excursion, price path completeness, data-quality flags, and evaluation timestamp.
-4. A horizon outcome is available when its required price data exists; incomplete daily snapshots do not suppress it.
+4. A horizon outcome is available when its required price data exists; incomplete daily snapshots do not suppress it. Earlier Outcomes are retained when a later horizon or a data-versioned correction is recorded.
 5. Outcome records are idempotent per prediction, horizon, evaluator version, and data version. Re-evaluation creates an explicit superseding version when the underlying data changes.
 6. Phase 2C adds deterministic market, SPY, QQQ, and sector-proxy returns where applicable, plus relative returns and a descriptive attribution label. Missing benchmark data is retained as attribution evidence; it does not invalidate an otherwise valid exact-symbol outcome.
 
@@ -64,7 +64,7 @@ Breadth, yields, DXY, and additional macro inputs remain future additive evidenc
 
 Neo4j is the relationship and provenance layer, not the source of price truth or rule execution. Phase 2D projects deterministic `Report`, `ReportSegment`, `Asset`, `Signal`, `MarketRegime`, `Prediction`, deterministic `Condition`, and `Outcome` facts only after their authoritative Postgres transaction commits.
 
-The graph answers questions such as: which signals, regime, report, and rule version preceded an observed outcome; and which historical records are structurally similar. Phase 2E retrieves the underlying Postgres records first because they are authoritative, then returns their stable IDs for graph traversal. It must not infer new facts or allow a graph query to modify deterministic storage.
+The graph answers questions such as: which signals, regime, report, and rule version preceded an observed outcome; and which historical records are structurally similar. A Prediction can link to multiple separately labeled Outcome nodes by horizon. Phase 2E retrieves the underlying Postgres records first because they are authoritative, then returns their stable IDs for graph traversal. It must not infer new facts or allow a graph query to modify deterministic storage.
 
 ## 8. LLM Role
 
@@ -101,6 +101,7 @@ Implemented in Phase 2H: the `/research` workspace exposes a read-only operation
 - cohort follow-up readiness: elapsed days, complete daily coverage, missing dates, partial-state counts, and backfill status;
 - prediction cards with immutable selection facts and lineage;
 - horizon outcome cards showing availability separately from daily-path completeness;
+- lifecycle states (`active_tracking`, `mature_tracking`, `paused`, `archived_manual`) with 28D checkpoint readiness, later-horizon due dates, and audited human pause/resume/archive controls;
 - category/setup/blocker summaries with sample size and data-quality caveats;
 - evidence and graph links that expose source report, signal, regime, and outcome records;
 - hypothesis and Pattern review controls that require a reviewer ID and append-only human approval actions. A hypothesis acceptance remains a release-review state only; Pattern approval remains read-only retrieval only.
@@ -117,6 +118,7 @@ Phase 2A retains current cohort APIs and makes their readiness data explicit. Th
 - `POST /intelligence/cohorts/{cohort_id}/predictions/backfill` for immutable legacy selection snapshots
 - `GET /intelligence/cohorts/{cohort_id}/outcomes`
 - `POST /intelligence/cohorts/{cohort_id}/outcomes/evaluate`
+- `POST /intelligence/cohorts/{cohort_id}/pause-followup`, `resume-followup`, and `archive-followup` with human reviewer attribution
 - `GET /intelligence/cohorts/{cohort_id}/market-regimes`
 - `POST /intelligence/reasoning/similar-setups`
 - `GET /research/predictions` and `GET /research/predictions/{prediction_id}`
@@ -147,9 +149,9 @@ Every prediction and outcome must include `cohort_id`, `rule_version`, `feature_
 
 ## 15. Neo4j Extension
 
-Implemented in Phase 2D: the shared Postgres transactional outbox emits typed committed-record events for market regimes, Predictions, and Outcomes. The idempotent Neo4j projection uses `MERGE` by Postgres UUID and creates `PREDICTS`, `VALID_IF`, `INVALIDATED_BY`, `PERFORMED_UNDER`, `RESULTED_IN`, `EVALUATES`, `SOURCE_REPORT`, and `SUPERSEDES` relationships. It serializes nested provenance fields as JSON properties and never lets Neo4j or an LLM create source records.
+Implemented in Phase 2D: the shared Postgres transactional outbox emits typed committed-record events for market regimes, Predictions, and Outcomes. The idempotent Neo4j projection uses `MERGE` by Postgres UUID and creates `PREDICTS`, `VALID_IF`, `INVALIDATED_BY`, `PERFORMED_UNDER`, `RESULTED_IN`, `HAS_OUTCOME` (with `horizon_days`), `EVALUATES`, `SOURCE_REPORT`, and `SUPERSEDES` relationships. It serializes nested provenance fields as JSON properties and never lets Neo4j or an LLM create source records.
 
-Implemented in Phase 2E: `POST /intelligence/reasoning/similar-setups` deterministically compares immutable Prediction facts and their latest 28D Outcomes. It supports exact or weighted matching for symbol, category, setup, structure, blocker, risk flags, selection regime, and coarse location buckets. The response discloses case counts, data-quality exclusions, incomplete daily-path coverage, result caps, concentration, and a strict as-of cutoff. Performance aggregates are withheld below `RESEARCH_RETRIEVAL_MIN_SAMPLE_SIZE`; the endpoint returns descriptive evidence only, never trade advice or rule changes.
+Implemented in Phase 2E: `POST /intelligence/reasoning/similar-setups` deterministically compares immutable Prediction facts and Outcomes at an explicit `horizon_days` value (default `28`). It supports exact or weighted matching for symbol, category, setup, structure, blocker, risk flags, selection regime, and coarse location buckets. The response discloses case counts, data-quality exclusions, incomplete daily-path coverage, result caps, concentration, and a strict as-of cutoff. Performance aggregates are withheld below `RESEARCH_RETRIEVAL_MIN_SAMPLE_SIZE`; the endpoint returns descriptive evidence only, never trade advice or rule changes.
 
 Projection is one-way, idempotent, and replayable. Neo4j never becomes the authority for prices, outcomes, or rules, and no LLM writes directly to it.
 
@@ -163,6 +165,7 @@ Projection is one-way, idempotent, and replayable. Neo4j never becomes the autho
 - **2F — Hypotheses and Validation:** implemented human-gated hypothesis records, date-split sandbox comparisons, and append-only review audit. No production rule mutation is included.
 - **2G — Pattern Discovery:** implemented conservative statistical candidates, chronological holdout checks, and human-gated read-only retrieval approval. Neo4j Pattern projection and scanner mutation are intentionally excluded.
 - **2H — UI, Operations, and Documentation:** implemented read-only research UI, operational readiness/error status, JSON audit exports, and runbooks. The existing Logs page remains responsible for manual follow-up and backfill execution.
+- **2I — Multi-Horizon Lifecycle:** 28D is a review checkpoint, not auto-completion. Cohorts continue daily `active_tracking`/`mature_tracking` until audited human pause or manual archive; deterministic 56D/90D/180D/365D Outcomes remain separately stored and labeled.
 
 ## 17. Acceptance Criteria
 
@@ -176,6 +179,7 @@ Projection is one-way, idempotent, and replayable. Neo4j never becomes the autho
 - A Phase 2F candidate must pass train, validation, and out-of-sample sandbox criteria before human release approval; approval does not change production scanner configuration.
 - A Phase 2G Pattern candidate must pass fixed sample, coverage, concentration, confidence-interval, baseline, and holdout thresholds before a human can approve read-only retrieval use.
 - The Research dashboard must show 28D outcome availability separately from daily-path coverage, list missing/backfill dates, and keep all review actions human-attributed.
+- A 28D-ready cohort must remain scheduled as `mature_tracking` until manually paused or archived; it must retain prior Outcomes while later horizons are evaluated.
 
 ## 18. Risk Register
 
@@ -219,3 +223,5 @@ Deploy each phase behind explicit configuration flags. Add schema migrations bef
 - [x] **P2F-001:** Add human-gated rule hypotheses and frozen backtest validation.
 - [x] **P2G-001:** Define statistical thresholds and review workflow for pattern candidates.
 - [x] **P2H-001:** Build research UI, audit exports, monitoring, and operating runbooks.
+- [x] **P2I-001:** Replace 28D auto-completion with audited active/mature/pause/archive lifecycle states and continuous daily tracking.
+- [x] **P2I-002:** Add deterministic 56D/90D/180D/365D Outcome horizons, explicit max-drawdown persistence, horizon-labeled retrieval, and Neo4j multi-outcome projection.

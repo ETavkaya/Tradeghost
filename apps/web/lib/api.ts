@@ -309,6 +309,15 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)
     }),
+  changeCohortFollowupLifecycle: (
+    cohortId: string,
+    action: "pause-followup" | "resume-followup" | "archive-followup",
+    payload: { reviewer_id: string; reason?: string; notes?: string },
+  ) => fetchJson<CandidateCohort>(`/api/intelligence/cohorts/${encodeURIComponent(cohortId)}/${action}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  }),
   deleteCohort: (cohortId: string) =>
     fetchJson<CohortDeleteResponse>(`/api/intelligence/cohorts/${encodeURIComponent(cohortId)}`, { method: "DELETE" }),
   cleanupDuplicateCohorts: (payload: { dry_run?: boolean; apply_archive?: boolean }) =>

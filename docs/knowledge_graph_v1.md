@@ -157,7 +157,7 @@ POST /intelligence/knowledge-graph/research-backfill?limit=100
 
 ## Read-only historical evidence retrieval
 
-Phase 2E exposes `POST /intelligence/reasoning/similar-setups` for deterministic case-based evidence retrieval. It reads the authoritative Postgres Prediction and latest 28D Outcome records rather than treating Neo4j as a price or evaluation authority. Returned Prediction, Outcome, and market-regime IDs are the same IDs projected to Neo4j, so callers may traverse the graph after receiving the evidence response.
+Phase 2E exposes `POST /intelligence/reasoning/similar-setups` for deterministic case-based evidence retrieval. It reads authoritative Postgres Prediction and Outcome records at an explicit, separately labeled `horizon_days` value (default `28`) rather than treating Neo4j as a price or evaluation authority. A Prediction projects to its multiple `Outcome` nodes through `HAS_OUTCOME {horizon_days}` and retains the existing `RESULTED_IN` lineage. Returned Prediction, Outcome, and market-regime IDs are the same IDs projected to Neo4j, so callers may traverse the graph after receiving the evidence response.
 
 The request can constrain symbol, category, setup, trend, extension, trigger, blocker, risk flags, selection regime, and coarse price/EMA200, support-distance, or resistance-room buckets. `exact` mode requires every supplied criterion; `weighted` mode uses the fraction of supplied deterministic criteria that match and requires at least 50% similarity.
 

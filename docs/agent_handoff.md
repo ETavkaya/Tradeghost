@@ -445,3 +445,22 @@ When updating this file, append a short dated entry:
   - Corrected two runtime persistence defects found during the live backfill: canonical-bar batches now use a psycopg cursor, and outcome validity reads `PredictionRecord.selected_date`. Both fixes have regression tests.
 - Remaining operational follow-up:
   - `Adem` still reports missing 2026-05-19 and 2026-05-20 follow-up dates. Backfill that cohort only if its historical coverage is required; creating or enabling a new cohort will produce a scheduled-run timestamp at the next eligible daily run.
+
+## 25) Latest Entry (2026-08-25)
+
+- Request:
+  - Change cohort lifecycle so the 28D review is a checkpoint, not automatic completion; extend deterministic outcome tracking and preserve LLM/scanner guardrails.
+- Implemented locally:
+  - Added durable JSON-backed cohort lifecycle migration and fields for `active_tracking`, `mature_tracking`, `paused`, and `archived_manual`. Legacy 28D-completed cohorts migrate to enabled `mature_tracking` unless already archived.
+  - Scheduled follow-up now includes active and mature cohorts indefinitely and considers every eligible trading date after the start date. It marks `review_ready_28d_at` and transitions to mature tracking without setting `followup_completed`.
+  - Added audited pause, resume, and archive APIs; manual archive requires reviewer ID and reason, disables future tracking, and preserves all evidence.
+  - Extended deterministic Outcome horizons to 56D, 90D, 180D, and 365D, added explicit `max_drawdown_pct` migration/persistence, horizon-labeled retrieval, and Neo4j `HAS_OUTCOME` edges alongside existing lineage.
+  - Updated Logs and Research lifecycle terminology and controls; daily reports now state whether tracking continues and identify latest/next outcome horizons.
+- Validation run:
+  - `python -m compileall tradeghost`
+  - `pytest -q tradeghost/tests/test_cohort_review.py tradeghost/tests/test_research_operations.py tradeghost/tests/test_knowledge_graph_projection.py` (`17 passed`)
+  - `npm run build` in `apps/web` and `git diff --check` (passed).
+- Deployment follow-up:
+  1. Commit and deploy this lifecycle release to `192.168.0.233`; the API startup applies `005_phase2i_multihorizon_lifecycle.sql`.
+  2. Verify legacy 28D cohorts are `mature_tracking`, re-enable only cohorts that were automatically completed, and keep manually archived cohorts archived.
+  3. Run a bounded Outcome evaluation and graph research backfill to project any newly available 56D+ records and `HAS_OUTCOME` edges.

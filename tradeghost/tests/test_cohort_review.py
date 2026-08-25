@@ -246,6 +246,38 @@ def test_phase2b_outcomes_are_deterministic_and_independent_of_snapshot_coverage
     assert second_evaluation.existing_outcome_count == 3
 
 
+def test_outcome_validity_reads_prediction_selected_date(tmp_path) -> None:
+    cohort_id = "27272727-2727-4272-8272-272727272727"
+    cohort, candidate = _phase2b_cohort_and_candidate(cohort_id)
+    service = IntelligenceService(
+        analysis_engine=FakeAnalysisEngine({}),
+        scanner_engine=object(),
+        backtest_engine=object(),
+    )
+    _wire_temp_storage(service, tmp_path)
+    service._save_cohorts([cohort])
+    service._save_cohort_candidates([candidate])
+    service._save_cohort_snapshots(
+        [
+            CohortDailySnapshot(
+                cohort_id=cohort_id,
+                symbol=candidate.symbol,
+                snapshot_date=date(2026, 5, 14),
+                still_valid_candidate=True,
+            )
+        ]
+    )
+
+    invalidated_quickly, stayed_valid = service._outcome_validity_flags(
+        service.get_cohort_detail(cohort_id),
+        service._prediction_record_from_candidate(cohort, candidate),
+        outcome_date=date(2026, 5, 20),
+    )
+
+    assert invalidated_quickly is False
+    assert stayed_valid is True
+
+
 def test_phase2c_outcomes_include_deterministic_regime_and_benchmark_attribution(tmp_path) -> None:
     cohort_id = "28282828-2828-4282-8282-282828282828"
     cohort, candidate = _phase2b_cohort_and_candidate(cohort_id)

@@ -1823,12 +1823,12 @@ class IntelligenceService:
             for snapshot in detail.snapshots
             if normalize_symbol(snapshot.symbol, detail.cohort.market.value).strip().upper()
             == normalize_symbol(prediction.symbol, prediction.market).strip().upper()
-            and prediction.selection_date <= snapshot.snapshot_date <= outcome_date
+            and prediction.selected_date <= snapshot.snapshot_date <= outcome_date
         ]
         matching.sort(key=lambda snapshot: snapshot.snapshot_date)
         if not matching:
             return None, None
-        quick_window = set(self._trading_days_between(prediction.selection_date, outcome_date)[:7])
+        quick_window = set(self._trading_days_between(prediction.selected_date, outcome_date)[:7])
         invalidated_quickly = any(
             snapshot.validity_state == "invalid" and snapshot.snapshot_date in quick_window
             for snapshot in matching

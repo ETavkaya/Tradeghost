@@ -26,6 +26,8 @@ import {
   IntelligenceRunReport,
   IntelligenceRunReportExport,
   IntelligenceDashboardResponse,
+  ResearchAuditExport,
+  ResearchDashboardResponse,
   IntelligenceRunResponse,
   LLMConnectionStatus,
   LLMDebugLog,
@@ -258,6 +260,24 @@ export const api = {
   deleteMonitoringSchedule: (scheduleId: string) =>
     fetchJson<{ status: string }>(`/api/monitoring/schedules/${encodeURIComponent(scheduleId)}`, { method: "DELETE" }),
   getIntelligenceDashboard: () => fetchJson<IntelligenceDashboardResponse>("/api/intelligence/dashboard"),
+  getResearchDashboard: () => fetchJson<ResearchDashboardResponse>("/api/intelligence/research/dashboard"),
+  exportResearchAudit: (cohortId?: string) => {
+    const params = new URLSearchParams();
+    if (cohortId) params.set("cohort_id", cohortId);
+    return fetchJson<ResearchAuditExport>(`/api/intelligence/research/audit-export${params.toString() ? `?${params.toString()}` : ""}`);
+  },
+  reviewResearchHypothesis: (hypothesisId: string, action: "accept" | "reject", reviewerId: string, reviewerNotes: string) =>
+    fetchJson(`/api/intelligence/hypotheses/${encodeURIComponent(hypothesisId)}/${action}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reviewer_id: reviewerId, reviewer_notes: reviewerNotes })
+    }),
+  reviewResearchPattern: (patternId: string, action: "approve" | "reject", reviewerId: string, reviewerNotes: string) =>
+    fetchJson(`/api/intelligence/patterns/${encodeURIComponent(patternId)}/${action}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reviewer_id: reviewerId, reviewer_notes: reviewerNotes })
+    }),
   runDailyPipeline: (payload: Record<string, unknown>) =>
     fetchJson<IntelligenceRunResponse>("/api/intelligence/daily-pipeline", {
       method: "POST",

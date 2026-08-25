@@ -14,6 +14,7 @@ const tabs = [
   { label: "Backtest", href: "/backtest" },
   { label: "Monitor", href: "/monitor" },
   { label: "Intelligence", href: "/intelligence" },
+  { label: "Research", href: "/research" },
   { label: "Logic", href: "/logic" },
   { label: "Logs", href: "/logs" }
 ];

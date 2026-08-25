@@ -9,6 +9,7 @@ from uuid import uuid4
 @dataclass(frozen=True)
 class KnowledgeGraphOutboxEvent:
     id: str
+    event_type: str
     event_version: int
     aggregate_id: str
     payload: dict[str, Any]
@@ -16,7 +17,11 @@ class KnowledgeGraphOutboxEvent:
 
 
 class KnowledgeGraphOutboxStore:
-    event_type = "cohort_daily_report.upserted.v1"
+    report_event_type = "cohort_daily_report.upserted.v1"
+    event_type = report_event_type
+    prediction_event_type = "research.prediction.committed.v1"
+    outcome_event_type = "research.outcome.committed.v1"
+    market_regime_event_type = "research.market_regime.committed.v1"
 
     def __init__(self, database_url: str) -> None:
         self.database_url = (database_url or "").strip()
@@ -67,8 +72,23 @@ class KnowledgeGraphOutboxStore:
             )
             conn.commit()
 
-    def enqueue_with_connection(self, conn: Any, *, aggregate_id: str, payload: dict[str, Any]) -> None:
-        dedupe_key = f"cohort_daily_report:{aggregate_id}"
+    def enqueue_with_connection(
+        self,
+        conn: Any,
+        *,
+        aggregate_id: str,
+        payload: dict[str, Any],
+        event_type: str = report_event_type,
+        dedupe_key: str | None = None,
+    ) -> None:
+        event_type = str(event_type).strip()
+        if not event_type:
+            raise ValueError("Knowledge graph outbox event_type is required")
+        dedupe_key = dedupe_key or (
+            f"cohort_daily_report:{aggregate_id}"
+            if event_type == self.report_event_type
+            else f"{event_type}:{aggregate_id}"
+        )
         conn.execute(
             """
             INSERT INTO knowledge_graph_outbox (
@@ -92,7 +112,7 @@ class KnowledgeGraphOutboxStore:
             """,
             (
                 str(uuid4()),
-                self.event_type,
+                event_type,
                 aggregate_id,
                 dedupe_key,
                 json.dumps(payload),
@@ -187,14 +207,23 @@ class KnowledgeGraphOutboxStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT status, count(*) AS count
+                SELECT event_type, status, count(*) AS count
                 FROM knowledge_graph_outbox
-                GROUP BY status
+                GROUP BY event_type, status
                 """
             ).fetchall()
+        counts: dict[str, int] = {}
+        counts_by_event_type: dict[str, dict[str, int]] = {}
+        for row in rows:
+            event_type = str(row["event_type"])
+            status = str(row["status"])
+            count = int(row["count"])
+            counts[status] = counts.get(status, 0) + count
+            counts_by_event_type.setdefault(event_type, {})[status] = count
         return {
             "configured": True,
-            "counts": {str(row["status"]): int(row["count"]) for row in rows},
+            "counts": counts,
+            "counts_by_event_type": counts_by_event_type,
         }
 
     @staticmethod
@@ -204,6 +233,7 @@ class KnowledgeGraphOutboxStore:
             payload = json.loads(payload)
         return KnowledgeGraphOutboxEvent(
             id=str(row["id"]),
+            event_type=str(row["event_type"]),
             event_version=int(row["event_version"]),
             aggregate_id=str(row["aggregate_id"]),
             payload=payload if isinstance(payload, dict) else {},

@@ -1597,6 +1597,485 @@ class CohortCoverageMonitorResponse(BaseModel):
     readiness_message: str
 
 
+class PredictionRecord(BaseModel):
+    id: str
+    idempotency_key: str
+    payload_hash: str
+    cohort_id: str
+    symbol: str
+    market: str
+    selected_at: datetime
+    selected_date: date
+    selected_price: float | None = None
+    categories: list[str] = Field(default_factory=list)
+    setup_type: str = ""
+    trend_state: str = ""
+    extension_state: str | None = None
+    score_dynamics_state: str | None = None
+    trigger_state: str | None = None
+    trigger_score: float | None = None
+    trigger_threshold: float | None = None
+    score: float | None = None
+    candidate_type: str | None = None
+    entry_readiness: str | None = None
+    blocked_by: str | None = None
+    risk_flags: list[str] = Field(default_factory=list)
+    data_quality_flags: list[str] = Field(default_factory=list)
+    expected_horizon_days: int = 28
+    expected_direction: str = "up"
+    prediction_type: str
+    invalidation_conditions: dict[str, Any] = Field(default_factory=dict)
+    deterministic_reason: str = ""
+    selection_snapshot_json: dict[str, Any] = Field(default_factory=dict)
+    source_run_id: str | None = None
+    source_report_id: str | None = None
+    rule_version: str
+    feature_version: str
+    data_version: str
+    selection_market_regime_id: str | None = None
+    supersedes_prediction_id: str | None = None
+    correction_reason: str | None = None
+    created_at: datetime
+
+
+class OutcomeRecord(BaseModel):
+    id: str
+    idempotency_key: str
+    payload_hash: str
+    prediction_id: str
+    cohort_id: str
+    symbol: str
+    market: str
+    horizon_days: int
+    selection_date: date
+    outcome_date: date | None = None
+    evaluated_at: datetime
+    outcome_status: str
+    outcome_label: str
+    selected_price: float | None = None
+    horizon_price: float | None = None
+    return_pct: float | None = None
+    directional_return_pct: float | None = None
+    max_favorable_excursion_pct: float | None = None
+    max_adverse_excursion_pct: float | None = None
+    price_path_complete: bool = False
+    daily_snapshot_path_complete: bool = False
+    daily_snapshot_coverage_pct: float = 0.0
+    followed_through: bool | None = None
+    false_positive: bool | None = None
+    invalidated_quickly: bool | None = None
+    missed_follow_through: bool | None = None
+    stayed_valid: bool | None = None
+    categories: list[str] = Field(default_factory=list)
+    setup_type: str | None = None
+    blocked_by: str | None = None
+    data_quality_flags: list[str] = Field(default_factory=list)
+    attribution_json: dict[str, Any] = Field(default_factory=dict)
+    selection_market_regime_id: str | None = None
+    outcome_market_regime_id: str | None = None
+    market_regime_label: str | None = None
+    market_return_pct: float | None = None
+    sector_proxy_symbol: str | None = None
+    sector_return_pct: float | None = None
+    relative_to_spy: float | None = None
+    relative_to_qqq: float | None = None
+    relative_to_sector_proxy: float | None = None
+    attribution_label: str | None = None
+    price_source: str | None = None
+    selection_bar_date: date | None = None
+    horizon_bar_date: date | None = None
+    evaluator_version: str
+    rule_version: str
+    feature_version: str
+    data_version: str
+    supersedes_outcome_id: str | None = None
+    created_at: datetime
+
+
+class PredictionBackfillResponse(BaseModel):
+    cohort_id: str
+    created_prediction_count: int = 0
+    existing_prediction_count: int = 0
+    predictions: list[PredictionRecord] = Field(default_factory=list)
+
+
+class MarketRegimeSnapshot(BaseModel):
+    id: str
+    idempotency_key: str
+    payload_hash: str
+    market: str
+    as_of_date: date
+    primary_benchmark_symbol: str | None = None
+    benchmark_returns_json: dict[str, dict[str, float | None]] = Field(default_factory=dict)
+    volatility_20d_pct: float | None = None
+    regime_label: str
+    classifier_version: str
+    raw_inputs_json: dict[str, Any] = Field(default_factory=dict)
+    data_quality_flags: list[str] = Field(default_factory=list)
+    rule_version: str
+    feature_version: str
+    data_version: str
+    created_at: datetime
+
+
+class CohortMarketRegimesResponse(BaseModel):
+    cohort_id: str
+    snapshots: list[MarketRegimeSnapshot] = Field(default_factory=list)
+
+
+class OutcomeSummaryRecord(BaseModel):
+    cohort_id: str
+    grouping: str
+    group_value: str
+    horizon_days: int
+    prediction_count: int = 0
+    available_outcome_count: int = 0
+    data_quality_excluded_count: int = 0
+    positive_count: int = 0
+    negative_count: int = 0
+    average_return_pct: float | None = None
+    rule_version: str
+    feature_version: str
+    data_version: str
+    evaluator_version: str
+    calculated_at: datetime
+
+
+class CohortOutcomesResponse(BaseModel):
+    cohort_id: str
+    outcomes: list[OutcomeRecord] = Field(default_factory=list)
+    summaries: list[OutcomeSummaryRecord] = Field(default_factory=list)
+
+
+class OutcomeEvaluationResponse(BaseModel):
+    cohort_id: str
+    evaluated_at: datetime
+    created_outcome_count: int = 0
+    existing_outcome_count: int = 0
+    pending_horizon_count: int = 0
+    data_quality_excluded_count: int = 0
+    outcomes: list[OutcomeRecord] = Field(default_factory=list)
+    summaries: list[OutcomeSummaryRecord] = Field(default_factory=list)
+
+
+class SimilarSetupSimilarityMode(str, Enum):
+    EXACT = "exact"
+    WEIGHTED = "weighted"
+
+
+class SimilarSetupRequest(BaseModel):
+    market: MarketCode = MarketCode.US
+    symbol: str | None = None
+    category: str | None = None
+    setup_type: str | None = None
+    trend_state: str | None = None
+    extension_state: str | None = None
+    trigger_state: str | None = None
+    blocked_by: str | None = None
+    risk_flags: list[str] = Field(default_factory=list)
+    market_regime: str | None = None
+    price_vs_ema200_pct: float | None = None
+    support_distance_pct: float | None = None
+    resistance_room_pct: float | None = None
+    as_of_date: date | None = None
+    lookback_limit: int = Field(default=25, ge=1, le=100)
+    similarity_mode: SimilarSetupSimilarityMode = SimilarSetupSimilarityMode.WEIGHTED
+
+
+class HistoricalEvidenceFrequency(BaseModel):
+    kind: str
+    value: str
+    count: int
+    share_pct: float
+
+
+class SimilarSetupEvidenceCase(BaseModel):
+    prediction_id: str
+    outcome_id: str
+    cohort_id: str
+    symbol: str
+    market: str
+    selected_date: date
+    outcome_date: date | None = None
+    categories: list[str] = Field(default_factory=list)
+    setup_type: str | None = None
+    trend_state: str | None = None
+    extension_state: str | None = None
+    trigger_state: str | None = None
+    blocked_by: str | None = None
+    risk_flags: list[str] = Field(default_factory=list)
+    selection_market_regime: str | None = None
+    outcome_market_regime: str | None = None
+    outcome_status: str
+    outcome_label: str
+    return_pct: float | None = None
+    relative_to_spy: float | None = None
+    attribution_label: str | None = None
+    data_quality_flags: list[str] = Field(default_factory=list)
+    daily_snapshot_path_complete: bool = False
+    daily_snapshot_coverage_pct: float = 0.0
+    similarity_score: float
+    matched_features: list[str] = Field(default_factory=list)
+
+
+class SimilarSetupRetrievalResponse(BaseModel):
+    market: str
+    as_of_date: date
+    horizon_days: int = 28
+    similarity_mode: SimilarSetupSimilarityMode
+    similar_case_count: int = 0
+    evaluable_case_count: int = 0
+    data_quality_excluded_count: int = 0
+    min_sample_size: int
+    sample_size_sufficient: bool = False
+    success_rate_28d: float | None = None
+    failure_rate_28d: float | None = None
+    average_28d_return: float | None = None
+    average_relative_return: float | None = None
+    common_failure_modes: list[HistoricalEvidenceFrequency] = Field(default_factory=list)
+    common_success_conditions: list[HistoricalEvidenceFrequency] = Field(default_factory=list)
+    top_similar_predictions: list[SimilarSetupEvidenceCase] = Field(default_factory=list)
+    evidence_summary: list[str] = Field(default_factory=list)
+    caveats: list[str] = Field(default_factory=list)
+
+
+class RuleHypothesisStatus(str, Enum):
+    DRAFT = "draft"
+    EVIDENCE_READY = "evidence_ready"
+    BACKTEST_RUNNING = "backtest_running"
+    VALIDATED = "validated"
+    REJECTED = "rejected"
+    APPROVED_FOR_RELEASE = "approved_for_release"
+
+
+class HypothesisGeneratedBy(str, Enum):
+    DETERMINISTIC_ANALYZER = "deterministic_analyzer"
+    HUMAN = "human"
+    LLM_SUMMARY = "llm_summary"
+
+
+class HypothesisTemporalSplit(BaseModel):
+    train_start: date
+    train_end: date
+    validation_start: date
+    validation_end: date
+    out_of_sample_start: date
+    out_of_sample_end: date
+
+
+class HypothesisBacktestConfigPatch(BaseModel):
+    score_threshold: float | None = Field(default=None, ge=0.0, le=100.0)
+    strategy_mode: StrategyMode | None = None
+    warmup_bars: int | None = Field(default=None, ge=20, le=400)
+
+
+class RuleHypothesisCreateRequest(BaseModel):
+    title: str = Field(min_length=3, max_length=240)
+    hypothesis_text: str = Field(min_length=10, max_length=4000)
+    expected_metric: str = Field(min_length=3, max_length=1000)
+    evidence_prediction_ids: list[str] = Field(min_length=1, max_length=500)
+    evidence_outcome_ids: list[str] = Field(min_length=1, max_length=500)
+    affected_conditions: dict[str, Any] = Field(default_factory=dict)
+    suggested_rule_change: str = Field(default="", max_length=4000)
+    proposed_config_patch: HypothesisBacktestConfigPatch
+    affected_universe: dict[str, Any] = Field(default_factory=dict)
+    temporal_split: HypothesisTemporalSplit
+    generated_by: HypothesisGeneratedBy = HypothesisGeneratedBy.HUMAN
+    submitted_by: str = Field(min_length=2, max_length=200)
+    idempotency_key: str | None = Field(default=None, min_length=3, max_length=300)
+
+
+class RuleHypothesis(BaseModel):
+    id: str
+    idempotency_key: str
+    payload_hash: str
+    title: str
+    hypothesis_text: str
+    expected_metric: str
+    evidence_json: dict[str, Any] = Field(default_factory=dict)
+    affected_conditions: dict[str, Any] = Field(default_factory=dict)
+    suggested_rule_change: str = ""
+    proposed_config_patch: HypothesisBacktestConfigPatch
+    affected_universe: dict[str, Any] = Field(default_factory=dict)
+    temporal_split: HypothesisTemporalSplit
+    generated_by: HypothesisGeneratedBy
+    submitted_by: str
+    status: RuleHypothesisStatus
+    rule_version: str
+    feature_version: str
+    data_version: str
+    candidate_rule_version: str
+    latest_validation_id: str | None = None
+    review_notes: str | None = None
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class HypothesisBacktestRequest(BaseModel):
+    market: MarketCode = MarketCode.US
+    symbols: list[str] = Field(min_length=1, max_length=50)
+    window: str = Field(default="5y", min_length=2, max_length=8)
+    minimum_total_trades: int = Field(default=30, ge=1, le=100000)
+    minimum_expectancy_delta_pct: float = Field(default=0.0, ge=-100.0, le=100.0)
+    maximum_drawdown_regression_pct: float = Field(default=0.0, ge=0.0, le=100.0)
+
+
+class HypothesisValidationRun(BaseModel):
+    id: str
+    hypothesis_id: str
+    idempotency_key: str
+    input_hash: str
+    validation_status: str
+    qualified_for_review: bool = False
+    frozen_input_json: dict[str, Any] = Field(default_factory=dict)
+    baseline_metrics_json: dict[str, Any] = Field(default_factory=dict)
+    candidate_metrics_json: dict[str, Any] = Field(default_factory=dict)
+    criteria_json: dict[str, Any] = Field(default_factory=dict)
+    caveats: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    evaluator_version: str
+    started_at: datetime
+    completed_at: datetime | None = None
+
+
+class RuleHypothesisReview(BaseModel):
+    id: str
+    hypothesis_id: str
+    action: str
+    from_status: RuleHypothesisStatus | None = None
+    to_status: RuleHypothesisStatus
+    reviewer_id: str
+    reviewer_notes: str = ""
+    details_json: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class PatternCandidateStatus(str, Enum):
+    CANDIDATE = "candidate"
+    APPROVED_FOR_RETRIEVAL = "approved_for_retrieval"
+    REJECTED = "rejected"
+    ARCHIVED = "archived"
+
+
+class PatternDiscoveryRequest(BaseModel):
+    market: MarketCode = MarketCode.US
+    as_of_date: date | None = None
+    horizon_days: int = Field(default=28, ge=1, le=365)
+
+
+class PatternCandidate(BaseModel):
+    id: str
+    idempotency_key: str
+    payload_hash: str
+    pattern_key: str
+    market: str
+    horizon_days: int
+    condition_set: dict[str, str] = Field(default_factory=dict)
+    population_definition: dict[str, Any] = Field(default_factory=dict)
+    metrics_json: dict[str, Any] = Field(default_factory=dict)
+    source_prediction_ids: list[str] = Field(default_factory=list)
+    source_outcome_ids: list[str] = Field(default_factory=list)
+    sample_size: int
+    evaluable_case_count: int
+    success_count: int
+    success_rate_pct: float | None = None
+    average_return_pct: float | None = None
+    effect_size_pct_points: float | None = None
+    p_value: float | None = None
+    confidence_interval_low_pct: float | None = None
+    confidence_interval_high_pct: float | None = None
+    approval_eligible: bool = False
+    status: PatternCandidateStatus
+    rule_version: str
+    feature_version: str
+    data_version: str
+    statistics_version: str
+    as_of_date: date
+    review_notes: str | None = None
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PatternDiscoveryResponse(BaseModel):
+    market: str
+    horizon_days: int
+    as_of_date: date
+    source_case_count: int = 0
+    evaluable_case_count: int = 0
+    candidate_count: int = 0
+    created_candidate_count: int = 0
+    thresholds: dict[str, Any] = Field(default_factory=dict)
+    caveats: list[str] = Field(default_factory=list)
+    patterns: list[PatternCandidate] = Field(default_factory=list)
+
+
+class PatternCandidateReview(BaseModel):
+    id: str
+    pattern_candidate_id: str
+    action: str
+    from_status: PatternCandidateStatus | None = None
+    to_status: PatternCandidateStatus
+    reviewer_id: str
+    reviewer_notes: str = ""
+    details_json: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class PatternReviewRequest(BaseModel):
+    reviewer_id: str = Field(min_length=2, max_length=200)
+    reviewer_notes: str = Field(default="", max_length=4000)
+
+
+class HypothesisReviewRequest(BaseModel):
+    reviewer_id: str = Field(min_length=2, max_length=200)
+    reviewer_notes: str = Field(default="", max_length=4000)
+
+
+class ResearchCohortReadiness(BaseModel):
+    cohort: CandidateCohort
+    coverage: CohortCoverageMonitorResponse
+    prediction_count: int = 0
+    predictions: list[PredictionRecord] = Field(default_factory=list)
+    horizon_28d_available_count: int = 0
+    horizon_28d_pending_count: int = 0
+    data_quality_excluded_outcome_count: int = 0
+    horizon_28d_complete: bool = False
+    daily_path_review_complete: bool = False
+    outcomes: list[OutcomeRecord] = Field(default_factory=list)
+    outcome_summaries: list[OutcomeSummaryRecord] = Field(default_factory=list)
+
+
+class ResearchOperationalMessage(BaseModel):
+    code: str
+    severity: str
+    message: str
+    cohort_id: str | None = None
+
+
+class ResearchDashboardResponse(BaseModel):
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    database_configured: bool = False
+    knowledge_graph: dict[str, Any] = Field(default_factory=dict)
+    cohorts: list[ResearchCohortReadiness] = Field(default_factory=list)
+    hypotheses: list[RuleHypothesis] = Field(default_factory=list)
+    hypothesis_status_counts: dict[str, int] = Field(default_factory=dict)
+    patterns: list[PatternCandidate] = Field(default_factory=list)
+    pattern_status_counts: dict[str, int] = Field(default_factory=dict)
+    recent_pipeline_errors: list[PipelineDebugEvent] = Field(default_factory=list)
+    operational_messages: list[ResearchOperationalMessage] = Field(default_factory=list)
+
+
+class ResearchAuditExport(BaseModel):
+    filename: str
+    exported_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    cohort_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class CohortDailyReportSummary(BaseModel):
     id: str | None = None
     cohort_id: str

@@ -182,6 +182,14 @@ Default threshold:
   - `POST /intelligence/cohorts/symbol-contexts`
   - `POST /intelligence/cohorts/briefing`
   - `POST /intelligence/cohorts/review`
+  - `GET /intelligence/cohorts/{cohort_id}/coverage`
+  - `GET /intelligence/cohorts/{cohort_id}/predictions`
+  - `POST /intelligence/cohorts/{cohort_id}/predictions/backfill`
+  - `GET /intelligence/cohorts/{cohort_id}/outcomes`
+  - `POST /intelligence/cohorts/{cohort_id}/outcomes/evaluate`
+  - `GET /intelligence/cohorts/{cohort_id}/market-regimes`
+  - `GET /intelligence/research/dashboard`
+  - `GET /intelligence/research/audit-export?cohort_id={cohort_id}`
   - `GET /intelligence/cohorts/{cohort_id}/export`
   - `GET /intelligence/cohorts/{cohort_id}/daily-reports`
   - `GET /intelligence/cohorts/{cohort_id}/daily-reports/{report_date}`
@@ -212,6 +220,7 @@ Default threshold:
 - `Backtest` (enabled after a successful analysis context is created)
 - `Monitor`
 - `Intelligence` (cohort-first deterministic workflow + optional LLM interpretation)
+- `Research` (read-only Prediction/Outcome readiness, audit export, and human-gated review workspace)
 - `Logic` (pipeline + mode + setup-status transparency page)
 
 ## Intelligence Workflow
@@ -260,12 +269,16 @@ TradeGhost's daily Intelligence reports are the evidence source for an auditable
 
 The V1 graph schema, prediction lifecycle, outcome rules, data flow, and anti-feedback safeguards are specified in `docs/knowledge_graph_v1.md`. The executable Neo4j constraints and indexes are in `tradeghost/knowledge_graph/knowledge_graph_v1.cypher`.
 
-When `KNOWLEDGE_GRAPH_ENABLED=true`, new persisted cohort daily reports are added to a Postgres transactional outbox and projected into Neo4j by an idempotent background worker. The operational endpoints are:
+When `KNOWLEDGE_GRAPH_ENABLED=true`, persisted cohort daily reports plus committed deterministic market-regime, Prediction, and Outcome records are added to one Postgres transactional outbox and projected into Neo4j by an idempotent background worker. The operational endpoints are:
 - `GET /intelligence/knowledge-graph/status`
 - `POST /intelligence/knowledge-graph/process`
 - `POST /intelligence/knowledge-graph/backfill`
+- `POST /intelligence/knowledge-graph/research-backfill`
+- `POST /intelligence/reasoning/similar-setups`
 
-The first projection stage writes only deterministic report, asset, category, setup, and validity facts. It intentionally does not create `Prediction` or `Outcome` nodes from incomplete report fields.
+The report projection writes deterministic report, asset, category, setup, and validity facts. Phase 2D separately projects only already-committed deterministic research records; it never infers a Prediction or Outcome from report prose or LLM output.
+
+Phase 2E provides read-only, deterministic 28D similar-setup retrieval from authoritative Postgres records. It exposes matching cases by stable Prediction/Outcome UUID, excludes data-quality outcomes from performance metrics, applies an as-of cutoff to prevent future-outcome leakage, and withholds statistics below the configured minimum sample size. It does not produce trading advice.
 
 ### Current Graph Contents
 
@@ -285,7 +298,7 @@ RETURN path
 LIMIT 100
 ```
 
-The Docker-host backfill currently contains 29 reports, 20 assets, and 1,827 deterministic signals. Labels such as `Prediction`, `Outcome`, `Condition`, and `Pattern` appear in the schema because their constraints are installed, but they will remain unpopulated until the next V1 slice adds strict prediction extraction and deterministic outcome evaluation.
+The Docker-host backfill currently contains 29 reports, 20 assets, and 1,827 deterministic signals. After the local P2B/P2C/P2D changes are deployed, run the research backfill to project committed `MarketRegime`, `Prediction`, `Condition`, and `Outcome` nodes without changing existing report facts.
 - Discovery Advanced Settings are intentionally reduced to:
   - `LLM Concurrency`
   - `LLM Timeout (sec)`
@@ -468,7 +481,7 @@ npm run dev
 
 TradeGhost Phase 2 turns cohort reports into a closed-loop research system.
 
-The staged implementation plan, guardrails, data-truth contract, and ticket checklist are in `docs/phase2_learning_reasoning_plan.md`. Phase 2A currently strengthens deterministic follow-up coverage and backfill; durable Prediction and Outcome records are deferred to Phase 2B.
+The staged implementation plan, guardrails, data-truth contract, and ticket checklist are in `docs/phase2_learning_reasoning_plan.md`. Phase 2A provides deterministic follow-up coverage and backfill. Phase 2B persists immutable Predictions and Outcomes in Postgres, using versioned canonical OHLC inputs and deterministic 7D/14D/28D evaluation. Phase 2C persists versioned market-regime snapshots and deterministic benchmark-relative attribution. Phase 2D projects only those committed facts through the transactional outbox. Phase 2E retrieves read-only historical evidence. Phase 2F stores human-gated hypotheses and sandbox-only backtest comparisons. Phase 2G mines conservative, statistically tested Pattern candidates. Phase 2H adds the read-only Research workspace, JSON audit exports, operational readiness/error status, and the runbook at `docs/phase2_operations_runbook.md`; none of these phases change scanner decisions.
 
 The system learns by:
 1. Recording deterministic predictions at selection time.
@@ -483,5 +496,26 @@ The LLM can only:
 - explain
 - retrieve historical evidence
 - summarize outcomes
-- propose hypotheses
-- draft human-reviewable rule changes
+- draft an advisory hypothesis outside the deterministic writer
+
+Phase 2F requires a human or deterministic monitor to persist a hypothesis. A persisted record freezes Prediction/Outcome evidence IDs and their rule/feature/data versions, declares train/validation/out-of-sample dates, and limits the candidate patch to sandbox-local backtest parameters. A successful human approval moves it only to `approved_for_release` with a candidate rule version; it never changes production scanner configuration. A separate controlled release must create and activate any production rule version.
+
+Phase 2G discovers Pattern candidates only from persisted, exact-market Outcomes. A candidate needs at least 30 records, 80% evaluable coverage, three cohorts, diversified symbols, a chronological holdout, confidence intervals, and a significant holdout edge versus an independent baseline. Human approval only changes its retrieval status to `approved_for_retrieval`; it does not project a Neo4j node, alter a rule, or change a score.
+
+Phase 2B-2F research endpoints:
+- `GET /intelligence/cohorts/{cohort_id}/predictions`
+- `POST /intelligence/cohorts/{cohort_id}/predictions/backfill` (legacy immutable selection snapshots only)
+- `GET /intelligence/cohorts/{cohort_id}/outcomes`
+- `POST /intelligence/cohorts/{cohort_id}/outcomes/evaluate`
+- `GET /intelligence/cohorts/{cohort_id}/market-regimes`
+- `POST /intelligence/reasoning/similar-setups`
+- `POST /intelligence/hypotheses`
+- `GET /intelligence/hypotheses` and `GET /intelligence/hypotheses/{hypothesis_id}`
+- `POST /intelligence/hypotheses/{hypothesis_id}/backtest`
+- `POST /intelligence/hypotheses/{hypothesis_id}/accept`
+- `POST /intelligence/hypotheses/{hypothesis_id}/reject`
+- `GET /intelligence/hypotheses/{hypothesis_id}/reviews`
+- `POST /intelligence/patterns/discover`
+- `GET /intelligence/patterns` or `GET /research/patterns`
+- `POST /intelligence/patterns/{pattern_candidate_id}/approve`
+- `POST /intelligence/patterns/{pattern_candidate_id}/reject`

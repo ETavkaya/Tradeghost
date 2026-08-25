@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import math
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, date, datetime, timedelta
@@ -11,12 +13,15 @@ from threading import Lock, RLock
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 from zoneinfo import ZoneInfo
 
 from tradeghost.services.analysis_engine import AnalysisEngine
 from tradeghost.services.backtest.engine import BacktestEngine
 from tradeghost.services.intelligence.daily_report_store import CohortDailyReportStore
+from tradeghost.services.intelligence.pattern_discovery import PatternDiscoveryService
+from tradeghost.services.intelligence.retrieval import SimilarSetupEvidenceService
+from tradeghost.services.intelligence.research_record_store import ResearchRecordStore
 from tradeghost.services.knowledge_graph.service import KnowledgeGraphIngestionService
 from tradeghost.services.intelligence.providers import LLMProvider, OllamaProvider, OpenAIProvider
 from tradeghost.services.scanner.engine import ScannerEngine
@@ -47,6 +52,8 @@ from tradeghost.shared.models.schemas import (
     CohortReviewStats,
     CohortCoverageAnomaly,
     CohortCoverageMonitorResponse,
+    CohortMarketRegimesResponse,
+    CohortOutcomesResponse,
     CohortStatusUpdateResponse,
     DailyBriefing,
     DailyBriefingRequest,
@@ -55,6 +62,10 @@ from tradeghost.shared.models.schemas import (
     DailyRun,
     DailyRunDetail,
     IntelligenceDashboardResponse,
+    ResearchAuditExport,
+    ResearchCohortReadiness,
+    ResearchDashboardResponse,
+    ResearchOperationalMessage,
     IntelligenceReviewApproval,
     IntelligenceReviewApprovalRequest,
     IntelligenceRunReport,
@@ -62,11 +73,33 @@ from tradeghost.shared.models.schemas import (
     IntelligenceRunResponse,
     LLMResponseTestRequest,
     LLMResponseTestResult,
+    MarketRegimeSnapshot,
     LatestCohortState,
     LLMConnectionStatus,
     LLMDebugLog,
     PipelineDebugEvent,
+    OutcomeEvaluationResponse,
+    OutcomeRecord,
+    OutcomeSummaryRecord,
+    PatternCandidate,
+    PatternCandidateReview,
+    PatternCandidateStatus,
+    PatternDiscoveryRequest,
+    PatternDiscoveryResponse,
+    PatternReviewRequest,
+    PredictionBackfillResponse,
+    PredictionRecord,
+    HypothesisBacktestRequest,
+    HypothesisGeneratedBy,
+    HypothesisReviewRequest,
+    HypothesisValidationRun,
+    RuleHypothesis,
+    RuleHypothesisReview,
+    RuleHypothesisCreateRequest,
+    RuleHypothesisStatus,
     ReviewReadiness,
+    SimilarSetupRequest,
+    SimilarSetupRetrievalResponse,
     ScannerRequest,
     SymbolBacktestSummary,
     SymbolContext,
@@ -84,6 +117,7 @@ MARKET_CONTEXT_PROMPT_VERSION = "market_context_note_v1"
 FINAL_28D_REVIEW_PROMPT_VERSION = "final_28d_cohort_review_v1"
 SYMBOL_CONTEXT_PROMPT_VERSION = "symbol_context_v1"
 DAILY_FOLLOWUP_JOB_NAME = "daily_cohort_followup_job"
+OUTCOME_HORIZONS = (7, 14, 28)
 
 
 class IntelligenceService:
@@ -110,6 +144,7 @@ class IntelligenceService:
         self.scheduler_logs_dir = self.settings.logs_dir / "scheduler"
         self.scheduler_logs_path = self.scheduler_logs_dir / "daily_followup.log"
         self.daily_report_store = CohortDailyReportStore(self.settings.database_url)
+        self.research_record_store = ResearchRecordStore(self.settings.database_url)
         self.knowledge_graph_service = KnowledgeGraphIngestionService(self.settings)
         self.analysis_engine = analysis_engine or AnalysisEngine()
         self.scanner_engine = scanner_engine or ScannerEngine(analysis_engine=self.analysis_engine)
@@ -666,6 +701,1637 @@ class IntelligenceService:
             archived_cohort_ids=sorted(set(archived_ids)),
         )
 
+    def _research_versions(self) -> dict[str, str]:
+        return {
+            "rule_version": self.settings.research_rule_version,
+            "feature_version": self.settings.research_feature_version,
+            "data_version": self.settings.research_data_version,
+            "evaluator_version": self.settings.research_outcome_evaluator_version,
+        }
+
+    @staticmethod
+    def _stable_payload_hash(payload: dict[str, Any]) -> str:
+        encoded = json.dumps(payload, default=str, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _selection_structure_value(snapshot: dict[str, Any], *keys: str) -> Any:
+        for key in keys:
+            if snapshot.get(key) is not None:
+                return snapshot[key]
+        for nested_key in ("setup_interpretation", "entry_gate", "trigger", "location"):
+            nested = snapshot.get(nested_key)
+            if not isinstance(nested, dict):
+                continue
+            for key in keys:
+                if nested.get(key) is not None:
+                    return nested[key]
+        return None
+
+    @staticmethod
+    def _optional_float(value: Any) -> float | None:
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _prediction_type_for_candidate(candidate: CohortCandidate, categories: list[str]) -> tuple[str, str]:
+        category_set = {category.strip().lower() for category in categories}
+        if "overextended" in category_set:
+            return "overextended_failure_risk", "down"
+        if candidate.selected_data_quality_flags or candidate.selected_blocked_by == "data_quality":
+            return "risk_monitor", "up"
+        if "value_rebuild" in category_set:
+            return "value_rebuild_watch", "up"
+        if "momentum_mode" in category_set or "trend_mode" in category_set:
+            return "follow_through_watch", "up"
+        return "follow_through_watch", "up"
+
+    def _prediction_record_from_candidate(
+        self,
+        cohort: CandidateCohort,
+        candidate: CohortCandidate,
+        *,
+        selection_market_regime_id: str | None = None,
+    ) -> PredictionRecord:
+        versions = self._research_versions()
+        market = candidate.market.value if hasattr(candidate.market, "value") else str(candidate.market)
+        symbol = normalize_symbol(candidate.symbol, market).strip().upper()
+        categories = sorted(
+            {
+                category.value if hasattr(category, "value") else str(category)
+                for category in candidate.selected_categories
+                if str(category).strip()
+            }
+        )
+        snapshot = candidate.selected_structure_snapshot or {}
+        prediction_type, expected_direction = self._prediction_type_for_candidate(candidate, categories)
+        selected_at = candidate.selected_at.astimezone(UTC) if candidate.selected_at.tzinfo else candidate.selected_at.replace(tzinfo=UTC)
+        idempotency_key = ":".join(
+            (
+                cohort.id,
+                market.lower(),
+                symbol,
+                selected_at.isoformat(),
+                versions["rule_version"],
+            )
+        )
+        invalidation_conditions = {
+            "confirmation": candidate.selected_confirm_entry_condition,
+            "invalidation": candidate.selected_invalidation_condition,
+        }
+        body = {
+            "idempotency_key": idempotency_key,
+            "cohort_id": cohort.id,
+            "symbol": symbol,
+            "market": market.lower(),
+            "selected_at": selected_at.isoformat(),
+            "selected_price": candidate.selected_price,
+            "categories": categories,
+            "setup_type": candidate.selected_setup_type,
+            "trend_state": candidate.selected_trend_state,
+            "extension_state": self._selection_structure_value(snapshot, "extension_state"),
+            "score_dynamics_state": candidate.selected_score_dynamics,
+            "trigger_state": self._selection_structure_value(snapshot, "trigger_state"),
+            "trigger_score": self._optional_float(self._selection_structure_value(snapshot, "trigger_score")),
+            "trigger_threshold": self._optional_float(self._selection_structure_value(snapshot, "trigger_threshold", "min_trigger_score")),
+            "score": candidate.selected_score,
+            "candidate_type": candidate.selected_candidate_type,
+            "entry_readiness": candidate.selected_entry_readiness,
+            "blocked_by": candidate.selected_blocked_by,
+            "risk_flags": sorted(set(candidate.selected_risk_flags)),
+            "data_quality_flags": sorted(set(candidate.selected_data_quality_flags)),
+            "expected_horizon_days": 28,
+            "expected_direction": expected_direction,
+            "prediction_type": prediction_type,
+            "invalidation_conditions": invalidation_conditions,
+            "deterministic_reason": candidate.selected_reason,
+            "selection_snapshot_json": candidate.model_dump(mode="json"),
+            "rule_version": versions["rule_version"],
+            "feature_version": versions["feature_version"],
+            "data_version": versions["data_version"],
+            "selection_market_regime_id": selection_market_regime_id,
+        }
+        return PredictionRecord(
+            id=str(uuid5(NAMESPACE_URL, f"tradeghost:prediction:{idempotency_key}")),
+            payload_hash=self._stable_payload_hash(body),
+            selected_date=selected_at.date(),
+            created_at=datetime.now(UTC),
+            **body,
+        )
+
+    def _persist_selection_predictions(
+        self,
+        cohort: CandidateCohort,
+        candidates: list[CohortCandidate],
+    ) -> list[PredictionRecord]:
+        if not candidates:
+            return []
+        if not self.research_record_store.configured:
+            self._append_pipeline_event(
+                step_name="cohort_prediction_records_skipped",
+                status="warning",
+                cohort_id=cohort.id,
+                cohort_name=cohort.name,
+                message="DATABASE_URL is not configured; immutable Phase 2B prediction records were not created.",
+            )
+            return []
+        selection_regime = self._selection_market_regime_for_cohort(cohort)
+        records = [
+            self._prediction_record_from_candidate(
+                cohort,
+                candidate,
+                selection_market_regime_id=selection_regime.id,
+            )
+            for candidate in candidates
+        ]
+        persisted, created_count = self.research_record_store.create_predictions(records)
+        self._append_pipeline_event(
+            step_name="cohort_prediction_records_persisted",
+            status="success",
+            cohort_id=cohort.id,
+            cohort_name=cohort.name,
+            message=f"created={created_count} existing={len(persisted) - created_count}",
+        )
+        return persisted
+
+    def list_cohort_predictions(self, cohort_id: str) -> list[PredictionRecord]:
+        _ = self.get_cohort_detail(cohort_id)
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; Phase 2B prediction records are unavailable.")
+        return self.research_record_store.list_predictions(cohort_id)
+
+    def backfill_cohort_prediction_records(self, cohort_id: str) -> PredictionBackfillResponse:
+        detail = self.get_cohort_detail(cohort_id)
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; Phase 2B prediction backfill requires Postgres.")
+        selection_regime = self._selection_market_regime_for_cohort(detail.cohort)
+        records = [
+            self._prediction_record_from_candidate(
+                detail.cohort,
+                candidate,
+                selection_market_regime_id=selection_regime.id,
+            )
+            for candidate in detail.candidates
+        ]
+        persisted, created_count = self.research_record_store.create_predictions(records)
+        self._append_pipeline_event(
+            step_name="cohort_prediction_records_backfilled",
+            status="success",
+            cohort_id=detail.cohort.id,
+            cohort_name=detail.cohort.name,
+            message=f"created={created_count} existing={len(persisted) - created_count} source=immutable_selection_snapshot",
+        )
+        return PredictionBackfillResponse(
+            cohort_id=cohort_id,
+            created_prediction_count=created_count,
+            existing_prediction_count=len(persisted) - created_count,
+            predictions=persisted,
+        )
+
+    def list_cohort_outcomes(self, cohort_id: str, horizon_days: int | None = None) -> CohortOutcomesResponse:
+        _ = self.get_cohort_detail(cohort_id)
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; Phase 2B outcome records are unavailable.")
+        return CohortOutcomesResponse(
+            cohort_id=cohort_id,
+            outcomes=self.research_record_store.list_outcomes(cohort_id, horizon_days=horizon_days),
+            summaries=self.research_record_store.list_outcome_summaries(cohort_id),
+        )
+
+    def list_cohort_market_regimes(self, cohort_id: str) -> CohortMarketRegimesResponse:
+        _ = self.get_cohort_detail(cohort_id)
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; Phase 2C market-regime records are unavailable.")
+        predictions = self.research_record_store.list_predictions(cohort_id)
+        outcomes = self.research_record_store.list_outcomes(cohort_id)
+        snapshot_ids = {
+            snapshot_id
+            for snapshot_id in [
+                *(prediction.selection_market_regime_id for prediction in predictions),
+                *(outcome.selection_market_regime_id for outcome in outcomes),
+                *(outcome.outcome_market_regime_id for outcome in outcomes),
+            ]
+            if snapshot_id
+        }
+        snapshots = [
+            snapshot
+            for snapshot_id in snapshot_ids
+            if (snapshot := self.research_record_store.get_market_regime_snapshot(snapshot_id)) is not None
+        ]
+        return CohortMarketRegimesResponse(
+            cohort_id=cohort_id,
+            snapshots=sorted(snapshots, key=lambda snapshot: (snapshot.as_of_date, snapshot.created_at)),
+        )
+
+    def retrieve_similar_setups(self, request: SimilarSetupRequest) -> SimilarSetupRetrievalResponse:
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; historical evidence retrieval requires Postgres.")
+        return SimilarSetupEvidenceService(
+            record_store=self.research_record_store,
+            min_sample_size=self.settings.research_retrieval_min_sample_size,
+            source_limit=self.settings.research_retrieval_source_limit,
+        ).retrieve(request)
+
+    def discover_pattern_candidates(self, request: PatternDiscoveryRequest) -> PatternDiscoveryResponse:
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; pattern discovery requires Postgres.")
+        return PatternDiscoveryService(
+            record_store=self.research_record_store,
+            min_sample_size=self.settings.research_pattern_min_sample_size,
+            min_evaluable_ratio=self.settings.research_pattern_min_evaluable_ratio,
+            min_distinct_cohorts=self.settings.research_pattern_min_distinct_cohorts,
+            max_symbol_concentration=self.settings.research_pattern_max_symbol_concentration,
+            min_effect_size_pct_points=self.settings.research_pattern_min_effect_size_pct_points,
+            max_p_value=self.settings.research_pattern_max_p_value,
+            source_limit=self.settings.research_pattern_source_limit,
+        ).discover(request)
+
+    def list_pattern_candidates(
+        self,
+        *,
+        market: str | None = None,
+        status: PatternCandidateStatus | None = None,
+        as_of_date: date | None = None,
+    ) -> list[PatternCandidate]:
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; pattern discovery requires Postgres.")
+        return self.research_record_store.list_pattern_candidates(
+            market=market,
+            status=status,
+            as_of_date=as_of_date,
+        )
+
+    def get_pattern_candidate(self, pattern_candidate_id: str) -> PatternCandidate:
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; pattern discovery requires Postgres.")
+        record = self.research_record_store.get_pattern_candidate(pattern_candidate_id)
+        if record is None:
+            raise FileNotFoundError(f"Pattern candidate was not found: {pattern_candidate_id}")
+        return record
+
+    def list_pattern_candidate_reviews(self, pattern_candidate_id: str) -> list[PatternCandidateReview]:
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; pattern discovery requires Postgres.")
+        return self.research_record_store.list_pattern_candidate_reviews(pattern_candidate_id)
+
+    def approve_pattern_candidate(
+        self,
+        pattern_candidate_id: str,
+        request: PatternReviewRequest,
+    ) -> PatternCandidate:
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; pattern discovery requires Postgres.")
+        record = self.get_pattern_candidate(pattern_candidate_id)
+        if not record.approval_eligible:
+            raise ValueError("Pattern candidate did not pass the fixed statistical and holdout thresholds.")
+        return self.research_record_store.transition_pattern_candidate(
+            pattern_candidate_id,
+            allowed_current_statuses={PatternCandidateStatus.CANDIDATE},
+            new_status=PatternCandidateStatus.APPROVED_FOR_RETRIEVAL,
+            reviewer_id=request.reviewer_id,
+            reviewer_notes=request.reviewer_notes,
+            action="approved_for_retrieval",
+            details={
+                "production_config_mutated": False,
+                "neo4j_pattern_projected": False,
+                "statistics_version": record.statistics_version,
+            },
+        )
+
+    def reject_pattern_candidate(
+        self,
+        pattern_candidate_id: str,
+        request: PatternReviewRequest,
+    ) -> PatternCandidate:
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; pattern discovery requires Postgres.")
+        return self.research_record_store.transition_pattern_candidate(
+            pattern_candidate_id,
+            allowed_current_statuses={PatternCandidateStatus.CANDIDATE},
+            new_status=PatternCandidateStatus.REJECTED,
+            reviewer_id=request.reviewer_id,
+            reviewer_notes=request.reviewer_notes,
+            action="rejected",
+            details={"production_config_mutated": False, "neo4j_pattern_projected": False},
+        )
+
+    def create_rule_hypothesis(self, request: RuleHypothesisCreateRequest) -> RuleHypothesis:
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; rule hypotheses require Postgres.")
+        if request.generated_by == HypothesisGeneratedBy.LLM_SUMMARY:
+            raise ValueError("LLM summaries are advisory only and cannot create persisted rule hypotheses.")
+        self._validate_hypothesis_temporal_split(request.temporal_split)
+        if not self._has_hypothesis_config_patch(request.proposed_config_patch.model_dump()):
+            raise ValueError("A hypothesis must include at least one supported sandbox configuration change.")
+
+        prediction_ids = sorted(set(request.evidence_prediction_ids))
+        outcome_ids = sorted(set(request.evidence_outcome_ids))
+        predictions = self.research_record_store.get_predictions_by_ids(prediction_ids)
+        outcomes = self.research_record_store.get_outcomes_by_ids(outcome_ids)
+        if {record.id for record in predictions} != set(prediction_ids):
+            raise ValueError("One or more evidence_prediction_ids do not reference persisted Prediction records.")
+        if {record.id for record in outcomes} != set(outcome_ids):
+            raise ValueError("One or more evidence_outcome_ids do not reference persisted Outcome records.")
+        if any(outcome.prediction_id not in set(prediction_ids) for outcome in outcomes):
+            raise ValueError("Each evidence Outcome must be linked to one of the supplied evidence Predictions.")
+
+        version_sets = {
+            "rule_version": {record.rule_version for record in [*predictions, *outcomes]},
+            "feature_version": {record.feature_version for record in [*predictions, *outcomes]},
+            "data_version": {record.data_version for record in [*predictions, *outcomes]},
+        }
+        inconsistent = [name for name, versions in version_sets.items() if len(versions) != 1]
+        if inconsistent:
+            raise ValueError(
+                "Hypothesis evidence must share one frozen " + ", ".join(inconsistent) + "."
+            )
+        versions = {name: next(iter(values)) for name, values in version_sets.items()}
+        evidence_json = self._build_hypothesis_evidence(predictions, outcomes)
+        payload_body = {
+            "title": request.title,
+            "hypothesis_text": request.hypothesis_text,
+            "expected_metric": request.expected_metric,
+            "evidence_json": evidence_json,
+            "affected_conditions": request.affected_conditions,
+            "suggested_rule_change": request.suggested_rule_change,
+            "proposed_config_patch": request.proposed_config_patch.model_dump(mode="json"),
+            "affected_universe": request.affected_universe,
+            "temporal_split": request.temporal_split.model_dump(mode="json"),
+            "generated_by": request.generated_by.value,
+            "submitted_by": request.submitted_by,
+            **versions,
+        }
+        payload_hash = self._stable_payload_hash(payload_body)
+        idempotency_key = request.idempotency_key or f"rule-hypothesis:{payload_hash}"
+        now = datetime.now(UTC)
+        record = RuleHypothesis(
+            id=str(uuid5(NAMESPACE_URL, f"tradeghost:rule-hypothesis:{idempotency_key}")),
+            idempotency_key=idempotency_key,
+            payload_hash=payload_hash,
+            title=request.title,
+            hypothesis_text=request.hypothesis_text,
+            expected_metric=request.expected_metric,
+            evidence_json=evidence_json,
+            affected_conditions=request.affected_conditions,
+            suggested_rule_change=request.suggested_rule_change,
+            proposed_config_patch=request.proposed_config_patch,
+            affected_universe=request.affected_universe,
+            temporal_split=request.temporal_split,
+            generated_by=request.generated_by,
+            submitted_by=request.submitted_by,
+            status=RuleHypothesisStatus.EVIDENCE_READY,
+            rule_version=versions["rule_version"],
+            feature_version=versions["feature_version"],
+            data_version=versions["data_version"],
+            candidate_rule_version=f"{versions['rule_version']}:candidate:{payload_hash[:12]}",
+            created_at=now,
+            updated_at=now,
+        )
+        persisted, _ = self.research_record_store.create_rule_hypothesis(record)
+        return persisted
+
+    def list_rule_hypotheses(self, status: RuleHypothesisStatus | None = None) -> list[RuleHypothesis]:
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; rule hypotheses require Postgres.")
+        return self.research_record_store.list_rule_hypotheses(status=status)
+
+    def get_rule_hypothesis(self, hypothesis_id: str) -> RuleHypothesis:
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; rule hypotheses require Postgres.")
+        hypothesis = self.research_record_store.get_rule_hypothesis(hypothesis_id)
+        if hypothesis is None:
+            raise FileNotFoundError(f"Rule hypothesis was not found: {hypothesis_id}")
+        return hypothesis
+
+    def list_rule_hypothesis_reviews(self, hypothesis_id: str) -> list[RuleHypothesisReview]:
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; rule hypotheses require Postgres.")
+        return self.research_record_store.list_rule_hypothesis_reviews(hypothesis_id)
+
+    def run_rule_hypothesis_backtest(
+        self,
+        hypothesis_id: str,
+        request: HypothesisBacktestRequest,
+    ) -> HypothesisValidationRun:
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; rule-hypothesis validation requires Postgres.")
+        hypothesis = self.research_record_store.get_rule_hypothesis(hypothesis_id)
+        if hypothesis is None:
+            raise FileNotFoundError(f"Rule hypothesis was not found: {hypothesis_id}")
+        if hypothesis.status in {RuleHypothesisStatus.REJECTED, RuleHypothesisStatus.APPROVED_FOR_RELEASE}:
+            raise ValueError(f"Rule hypothesis {hypothesis_id} is closed with status {hypothesis.status.value}.")
+        self._validate_hypothesis_temporal_split(hypothesis.temporal_split)
+        normalized_symbols = sorted(
+            {normalize_symbol(symbol, request.market).strip().upper() for symbol in request.symbols if symbol.strip()}
+        )
+        if not normalized_symbols:
+            raise ValueError("At least one non-empty symbol is required for hypothesis validation.")
+        frozen_input = {
+            "hypothesis_id": hypothesis.id,
+            "baseline_rule_version": hypothesis.rule_version,
+            "candidate_rule_version": hypothesis.candidate_rule_version,
+            "feature_version": hypothesis.feature_version,
+            "data_version": hypothesis.data_version,
+            "symbols": normalized_symbols,
+            "market": request.market.value,
+            "window": request.window,
+            "temporal_split": hypothesis.temporal_split.model_dump(mode="json"),
+            "candidate_config_patch": hypothesis.proposed_config_patch.model_dump(mode="json"),
+            "criteria": {
+                "minimum_total_trades": request.minimum_total_trades,
+                "minimum_expectancy_delta_pct": request.minimum_expectancy_delta_pct,
+                "maximum_drawdown_regression_pct": request.maximum_drawdown_regression_pct,
+            },
+            "backtest_engine": "backtest_engine_v1",
+        }
+        input_hash = self._stable_payload_hash(frozen_input)
+        existing = self.research_record_store.get_hypothesis_validation_by_input_hash(hypothesis.id, input_hash)
+        if existing is not None:
+            return existing
+        if hypothesis.status == RuleHypothesisStatus.BACKTEST_RUNNING:
+            raise ValueError(f"Rule hypothesis {hypothesis_id} already has a validation in progress.")
+        if hypothesis.status not in {RuleHypothesisStatus.EVIDENCE_READY, RuleHypothesisStatus.VALIDATED}:
+            raise ValueError(f"Rule hypothesis {hypothesis_id} is not ready for backtest validation.")
+
+        now = datetime.now(UTC)
+        pending = HypothesisValidationRun(
+            id=str(uuid5(NAMESPACE_URL, f"tradeghost:rule-hypothesis-validation:{hypothesis.id}:{input_hash}")),
+            hypothesis_id=hypothesis.id,
+            idempotency_key=f"rule-hypothesis-validation:{hypothesis.id}:{input_hash}",
+            input_hash=input_hash,
+            validation_status="running",
+            frozen_input_json=frozen_input,
+            evaluator_version="hypothesis_backtest_v1",
+            started_at=now,
+        )
+        persisted, created = self.research_record_store.create_hypothesis_validation_run(pending)
+        if not created:
+            return persisted
+        self.research_record_store.transition_rule_hypothesis(
+            hypothesis.id,
+            allowed_current_statuses={RuleHypothesisStatus.EVIDENCE_READY, RuleHypothesisStatus.VALIDATED},
+            new_status=RuleHypothesisStatus.BACKTEST_RUNNING,
+            reviewer_id="deterministic_backtest",
+            action="backtest_started",
+            details={"validation_id": persisted.id, "input_hash": input_hash},
+        )
+        try:
+            completed = self._execute_hypothesis_validation(hypothesis, request, normalized_symbols, persisted)
+        except Exception as exc:
+            failed = persisted.model_copy(
+                update={
+                    "validation_status": "failed",
+                    "errors": [str(exc)],
+                    "completed_at": datetime.now(UTC),
+                }
+            )
+            self.research_record_store.complete_hypothesis_validation_run(failed)
+            self.research_record_store.transition_rule_hypothesis(
+                hypothesis.id,
+                allowed_current_statuses={RuleHypothesisStatus.BACKTEST_RUNNING},
+                new_status=RuleHypothesisStatus.EVIDENCE_READY,
+                reviewer_id="deterministic_backtest",
+                action="backtest_failed",
+                reviewer_notes=str(exc),
+                details={"validation_id": persisted.id},
+            )
+            raise
+
+        self.research_record_store.complete_hypothesis_validation_run(completed)
+        next_status = RuleHypothesisStatus.VALIDATED if completed.qualified_for_review else RuleHypothesisStatus.EVIDENCE_READY
+        self.research_record_store.transition_rule_hypothesis(
+            hypothesis.id,
+            allowed_current_statuses={RuleHypothesisStatus.BACKTEST_RUNNING},
+            new_status=next_status,
+            reviewer_id="deterministic_backtest",
+            action="backtest_completed",
+            reviewer_notes="Candidate met all frozen comparison criteria." if completed.qualified_for_review else "Candidate did not meet all frozen comparison criteria.",
+            latest_validation_id=completed.id,
+            details={
+                "validation_id": completed.id,
+                "qualified_for_review": completed.qualified_for_review,
+            },
+        )
+        return completed
+
+    def approve_rule_hypothesis(
+        self,
+        hypothesis_id: str,
+        request: HypothesisReviewRequest,
+    ) -> RuleHypothesis:
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; rule hypotheses require Postgres.")
+        hypothesis = self.research_record_store.get_rule_hypothesis(hypothesis_id)
+        if hypothesis is None:
+            raise FileNotFoundError(f"Rule hypothesis was not found: {hypothesis_id}")
+        if hypothesis.status != RuleHypothesisStatus.VALIDATED or not hypothesis.latest_validation_id:
+            raise ValueError("Only a validated hypothesis with a completed comparison can be approved for release.")
+        validation = self.research_record_store.get_hypothesis_validation_run(hypothesis.latest_validation_id)
+        if validation is None or validation.validation_status != "completed" or not validation.qualified_for_review:
+            raise ValueError("The latest hypothesis validation did not qualify for human release review.")
+        return self.research_record_store.transition_rule_hypothesis(
+            hypothesis.id,
+            allowed_current_statuses={RuleHypothesisStatus.VALIDATED},
+            new_status=RuleHypothesisStatus.APPROVED_FOR_RELEASE,
+            reviewer_id=request.reviewer_id,
+            reviewer_notes=request.reviewer_notes,
+            action="approved_for_release",
+            details={
+                "validation_id": validation.id,
+                "candidate_rule_version": hypothesis.candidate_rule_version,
+                "production_config_mutated": False,
+            },
+        )
+
+    def reject_rule_hypothesis(
+        self,
+        hypothesis_id: str,
+        request: HypothesisReviewRequest,
+    ) -> RuleHypothesis:
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; rule hypotheses require Postgres.")
+        return self.research_record_store.transition_rule_hypothesis(
+            hypothesis_id,
+            allowed_current_statuses={
+                RuleHypothesisStatus.DRAFT,
+                RuleHypothesisStatus.EVIDENCE_READY,
+                RuleHypothesisStatus.VALIDATED,
+            },
+            new_status=RuleHypothesisStatus.REJECTED,
+            reviewer_id=request.reviewer_id,
+            reviewer_notes=request.reviewer_notes,
+            action="rejected",
+            details={"production_config_mutated": False},
+        )
+
+    @staticmethod
+    def _has_hypothesis_config_patch(patch: dict[str, Any]) -> bool:
+        return any(value is not None for value in patch.values())
+
+    @staticmethod
+    def _validate_hypothesis_temporal_split(split: Any) -> None:
+        periods = (
+            (split.train_start, split.train_end, "train"),
+            (split.validation_start, split.validation_end, "validation"),
+            (split.out_of_sample_start, split.out_of_sample_end, "out_of_sample"),
+        )
+        for start, end, name in periods:
+            if start > end:
+                raise ValueError(f"Hypothesis {name} split start must be on or before its end.")
+        if not (split.train_end < split.validation_start <= split.validation_end < split.out_of_sample_start):
+            raise ValueError("Hypothesis train, validation, and out-of-sample splits must be ordered and non-overlapping.")
+
+    @staticmethod
+    def _build_hypothesis_evidence(
+        predictions: list[PredictionRecord],
+        outcomes: list[OutcomeRecord],
+    ) -> dict[str, Any]:
+        return {
+            "prediction_ids": sorted(record.id for record in predictions),
+            "outcome_ids": sorted(record.id for record in outcomes),
+            "predictions": [
+                {
+                    "id": record.id,
+                    "cohort_id": record.cohort_id,
+                    "symbol": record.symbol,
+                    "market": record.market,
+                    "selected_date": record.selected_date,
+                    "categories": record.categories,
+                    "setup_type": record.setup_type,
+                    "blocked_by": record.blocked_by,
+                    "selection_market_regime_id": record.selection_market_regime_id,
+                }
+                for record in sorted(predictions, key=lambda value: value.id)
+            ],
+            "outcomes": [
+                {
+                    "id": record.id,
+                    "prediction_id": record.prediction_id,
+                    "horizon_days": record.horizon_days,
+                    "outcome_date": record.outcome_date,
+                    "outcome_status": record.outcome_status,
+                    "outcome_label": record.outcome_label,
+                    "return_pct": record.return_pct,
+                    "false_positive": record.false_positive,
+                    "missed_follow_through": record.missed_follow_through,
+                    "data_quality_flags": record.data_quality_flags,
+                }
+                for record in sorted(outcomes, key=lambda value: value.id)
+            ],
+            "data_quality_excluded_outcome_count": sum(
+                1 for record in outcomes if record.outcome_status == "data_quality_excluded"
+            ),
+            "outcome_clusters": {
+                "false_positive": sum(1 for record in outcomes if record.false_positive is True),
+                "missed_follow_through": sum(1 for record in outcomes if record.missed_follow_through is True),
+                "invalidated_quickly": sum(1 for record in outcomes if record.invalidated_quickly is True),
+            },
+        }
+
+    def _execute_hypothesis_validation(
+        self,
+        hypothesis: RuleHypothesis,
+        request: HypothesisBacktestRequest,
+        symbols: list[str],
+        validation: HypothesisValidationRun,
+    ) -> HypothesisValidationRun:
+        patch = hypothesis.proposed_config_patch
+        splits = {
+            "train": (hypothesis.temporal_split.train_start, hypothesis.temporal_split.train_end),
+            "validation": (hypothesis.temporal_split.validation_start, hypothesis.temporal_split.validation_end),
+            "out_of_sample": (
+                hypothesis.temporal_split.out_of_sample_start,
+                hypothesis.temporal_split.out_of_sample_end,
+            ),
+        }
+        baseline_metrics: dict[str, Any] = {}
+        candidate_metrics: dict[str, Any] = {}
+        errors: list[str] = []
+        caveats = [
+            "Backtest comparison uses sandbox-local parameters only; it does not mutate scanner settings or production rules.",
+            "Backtest artifacts freeze returned metrics, configured versions, and observed evaluation dates. Replays still depend on the recorded market-data version and provider availability.",
+        ]
+        qualified_splits: list[bool] = []
+
+        for split_name, (start_date, end_date) in splits.items():
+            baseline_summaries = []
+            candidate_summaries = []
+            split_errors: list[str] = []
+            for symbol in symbols:
+                try:
+                    baseline = self.backtest_engine.run(
+                        symbol,
+                        window=request.window,
+                        market=request.market.value,
+                        evaluation_start=start_date,
+                        evaluation_end=end_date,
+                    )
+                    candidate = self.backtest_engine.run(
+                        symbol,
+                        window=request.window,
+                        market=request.market.value,
+                        score_threshold=patch.score_threshold,
+                        strategy_mode=patch.strategy_mode,
+                        warmup_bars=patch.warmup_bars,
+                        evaluation_start=start_date,
+                        evaluation_end=end_date,
+                    )
+                except Exception as exc:
+                    split_errors.append(f"{split_name}:{symbol}:{exc}")
+                    continue
+                baseline_summaries.append(baseline)
+                candidate_summaries.append(candidate)
+
+            baseline_aggregate = self._aggregate_hypothesis_backtests(baseline_summaries)
+            candidate_aggregate = self._aggregate_hypothesis_backtests(candidate_summaries)
+            expectancy_delta = round(
+                candidate_aggregate["expectancy_pct"] - baseline_aggregate["expectancy_pct"],
+                4,
+            )
+            drawdown_regression = round(
+                candidate_aggregate["max_drawdown_pct"] - baseline_aggregate["max_drawdown_pct"],
+                4,
+            )
+            split_qualified = (
+                not split_errors
+                and len(baseline_summaries) == len(symbols)
+                and baseline_aggregate["total_trades"] >= request.minimum_total_trades
+                and candidate_aggregate["total_trades"] >= request.minimum_total_trades
+                and expectancy_delta >= request.minimum_expectancy_delta_pct
+                and drawdown_regression <= request.maximum_drawdown_regression_pct
+            )
+            baseline_metrics[split_name] = {
+                **baseline_aggregate,
+                "symbol_runs": [self._hypothesis_backtest_summary(summary) for summary in baseline_summaries],
+            }
+            candidate_metrics[split_name] = {
+                **candidate_aggregate,
+                "symbol_runs": [self._hypothesis_backtest_summary(summary) for summary in candidate_summaries],
+                "expectancy_delta_pct": expectancy_delta,
+                "drawdown_regression_pct": drawdown_regression,
+                "qualified": split_qualified,
+            }
+            errors.extend(split_errors)
+            qualified_splits.append(split_qualified)
+
+        if errors:
+            caveats.append("One or more symbol/split comparisons failed; the candidate cannot qualify for release review.")
+        qualified = bool(qualified_splits) and all(qualified_splits)
+        return validation.model_copy(
+            update={
+                "validation_status": "completed",
+                "qualified_for_review": qualified,
+                "baseline_metrics_json": baseline_metrics,
+                "candidate_metrics_json": candidate_metrics,
+                "criteria_json": validation.frozen_input_json["criteria"],
+                "caveats": caveats,
+                "errors": errors,
+                "completed_at": datetime.now(UTC),
+            }
+        )
+
+    @staticmethod
+    def _aggregate_hypothesis_backtests(summaries: list[Any]) -> dict[str, Any]:
+        total_trades = sum(int(summary.trades) for summary in summaries)
+        weighted = lambda field: round(
+            sum(float(getattr(summary, field)) * int(summary.trades) for summary in summaries) / total_trades,
+            4,
+        ) if total_trades else 0.0
+        return {
+            "symbol_count": len(summaries),
+            "total_trades": total_trades,
+            "win_rate_pct": weighted("win_rate"),
+            "average_return_pct": weighted("average_return"),
+            "expectancy_pct": weighted("expectancy"),
+            "average_hold_days": weighted("average_hold_days"),
+            "max_drawdown_pct": round(max((float(summary.max_drawdown) for summary in summaries), default=0.0), 4),
+        }
+
+    @staticmethod
+    def _hypothesis_backtest_summary(summary: Any) -> dict[str, Any]:
+        return {
+            "ticker": summary.ticker,
+            "period_start": summary.period_start,
+            "period_end": summary.period_end,
+            "trades": summary.trades,
+            "win_rate_pct": summary.win_rate,
+            "average_return_pct": summary.average_return,
+            "max_drawdown_pct": summary.max_drawdown,
+            "average_hold_days": summary.average_hold_days,
+            "expectancy_pct": summary.expectancy,
+            "score_threshold_used": summary.score_threshold_used,
+            "strategy_mode_used": summary.strategy_mode_used,
+            "analysis_config": summary.analysis_config.model_dump(mode="json"),
+            "generated_at": summary.generated_at,
+        }
+
+    @staticmethod
+    def _frame_numeric_value(row: Any, column: str) -> float | None:
+        for candidate in (column, column.lower(), column.upper(), column.title()):
+            try:
+                value = row[candidate]
+            except (KeyError, TypeError):
+                continue
+            try:
+                return float(value) if value is not None else None
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _load_canonical_bars(
+        self,
+        prediction: PredictionRecord,
+        *,
+        as_of_date: date,
+    ) -> tuple[list[dict[str, Any]], str, list[str]]:
+        return self._load_canonical_bars_for_symbol(
+            prediction.symbol,
+            market=prediction.market,
+            as_of_date=as_of_date,
+            base_data_version=prediction.data_version or self.settings.research_data_version,
+        )
+
+    def _load_canonical_bars_for_symbol(
+        self,
+        symbol: str,
+        *,
+        market: str,
+        as_of_date: date,
+        base_data_version: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str, list[str]]:
+        normalized_market = market.lower()
+        requested_symbol = normalize_symbol(symbol, normalized_market).strip().upper()
+        source_base_version = base_data_version or self.settings.research_data_version
+        try:
+            bundle = self.analysis_engine.data_service.get_market_data(
+                symbol,
+                market=normalized_market,
+                period="2y",
+                use_cache=True,
+            )
+        except Exception:
+            return [], source_base_version, ["canonical_ohlc_fetch_error"]
+        bundle_symbol = str(getattr(bundle, "normalized_ticker", "") or "").strip().upper()
+        if requested_symbol and bundle_symbol and requested_symbol != bundle_symbol:
+            return [], source_base_version, ["possible_symbol_price_mismatch"]
+        frame = getattr(bundle, "daily", None)
+        if frame is None or getattr(frame, "empty", True):
+            return [], source_base_version, ["missing_price_series"]
+        raw_bars: list[dict[str, Any]] = []
+        for timestamp, row in frame.sort_index().iterrows():
+            bar_date = timestamp.date()
+            if bar_date > as_of_date:
+                continue
+            close = self._frame_numeric_value(row, "close")
+            if close is None or close <= 0:
+                continue
+            raw_bars.append(
+                {
+                    "bar_date": bar_date,
+                    "open": self._frame_numeric_value(row, "open"),
+                    "high": self._frame_numeric_value(row, "high") or close,
+                    "low": self._frame_numeric_value(row, "low") or close,
+                    "close": close,
+                    "volume": self._frame_numeric_value(row, "volume"),
+                }
+            )
+        if not raw_bars:
+            return [], source_base_version, ["missing_price_series"]
+        source_hash = self._stable_payload_hash(
+            {
+                "market": normalized_market,
+                "symbol": requested_symbol,
+                "bars": raw_bars,
+            }
+        )
+        source_data_version = f"{source_base_version}:source:{source_hash[:16]}"
+        retrieved_at = datetime.now(UTC)
+        self.research_record_store.upsert_canonical_bars(
+            [
+                {
+                    "id": str(
+                        uuid5(
+                            NAMESPACE_URL,
+                            f"tradeghost:canonical-bar:{normalized_market}:{requested_symbol}:{bar['bar_date'].isoformat()}:{source_data_version}",
+                        )
+                    ),
+                    "market": normalized_market,
+                    "symbol": requested_symbol,
+                    "bar_date": bar["bar_date"],
+                    "provider": self.settings.data_provider,
+                    "adjustment_policy": "provider_default",
+                    "data_version": source_data_version,
+                    "retrieved_at": retrieved_at,
+                    "open": bar["open"],
+                    "high": bar["high"],
+                    "low": bar["low"],
+                    "close": bar["close"],
+                    "volume": bar["volume"],
+                    "source_hash": source_hash,
+                }
+                for bar in raw_bars
+            ]
+        )
+        stored_bars = self.research_record_store.list_canonical_bars(
+            market=normalized_market,
+            symbol=requested_symbol,
+            data_version=source_data_version,
+            through_date=as_of_date,
+        )
+        canonical_bars = [
+            {
+                "bar_date": bar["bar_date"],
+                "open": self._optional_float(bar.get("open")),
+                "high": self._optional_float(bar.get("high")),
+                "low": self._optional_float(bar.get("low")),
+                "close": self._optional_float(bar.get("close")),
+                "volume": self._optional_float(bar.get("volume")),
+            }
+            for bar in stored_bars
+            if self._optional_float(bar.get("close")) is not None
+        ]
+        return canonical_bars, source_data_version, []
+
+    @staticmethod
+    def _market_regime_benchmarks(market: str) -> tuple[str, ...]:
+        if market.lower() == "bist":
+            return ("XU100.IS",)
+        return ("SPY", "QQQ", "IWM")
+
+    @staticmethod
+    def _return_over_sessions(bars: list[dict[str, Any]], sessions: int) -> float | None:
+        if len(bars) <= sessions:
+            return None
+        return IntelligenceService._return_from_price_pair(bars[-(sessions + 1)]["close"], bars[-1]["close"])
+
+    @staticmethod
+    def _volatility_20d_pct(bars: list[dict[str, Any]]) -> float | None:
+        if len(bars) < 21:
+            return None
+        closes = [float(bar["close"]) for bar in bars[-21:] if bar.get("close")]
+        if len(closes) < 21:
+            return None
+        daily_returns = [(current / previous) - 1.0 for previous, current in zip(closes, closes[1:]) if previous > 0]
+        if len(daily_returns) < 2:
+            return None
+        mean_return = sum(daily_returns) / len(daily_returns)
+        variance = sum((value - mean_return) ** 2 for value in daily_returns) / (len(daily_returns) - 1)
+        return round(math.sqrt(variance) * math.sqrt(252) * 100.0, 4)
+
+    @staticmethod
+    def _classify_market_regime(
+        market: str,
+        benchmark_returns: dict[str, dict[str, float | None]],
+        primary_benchmark_symbol: str | None,
+    ) -> str:
+        if not primary_benchmark_symbol:
+            return "unavailable"
+        primary_return = benchmark_returns.get(primary_benchmark_symbol, {}).get("28d")
+        if primary_return is None:
+            return "unavailable"
+        if market.lower() == "us":
+            spy_return = benchmark_returns.get("SPY", {}).get("28d")
+            qqq_return = benchmark_returns.get("QQQ", {}).get("28d")
+            if spy_return is not None and qqq_return is not None:
+                if spy_return < 0 and qqq_return < 0:
+                    return "risk_off"
+                if qqq_return - spy_return >= 2.0:
+                    return "tech_led"
+                if spy_return > 0 and qqq_return > 0:
+                    return "risk_on"
+        return "risk_on" if primary_return > 0 else "risk_off" if primary_return < 0 else "neutral"
+
+    def _get_or_create_market_regime_snapshot(
+        self,
+        *,
+        market: str,
+        as_of_date: date,
+    ) -> MarketRegimeSnapshot:
+        normalized_market = market.lower()
+        benchmarks = self._market_regime_benchmarks(normalized_market)
+        benchmark_returns: dict[str, dict[str, float | None]] = {}
+        raw_inputs: dict[str, Any] = {"benchmarks": {}}
+        quality_flags: list[str] = []
+        primary_bars: list[dict[str, Any]] = []
+        for index, benchmark_symbol in enumerate(benchmarks):
+            bars, source_data_version, flags = self._load_canonical_bars_for_symbol(
+                benchmark_symbol,
+                market=normalized_market,
+                as_of_date=as_of_date,
+                base_data_version=self.settings.research_data_version,
+            )
+            if flags:
+                quality_flags.extend(f"{benchmark_symbol}:{flag}" for flag in flags)
+            benchmark_returns[benchmark_symbol] = {
+                f"{sessions}d": self._return_over_sessions(bars, sessions)
+                for sessions in (1, 7, 14, 28)
+            }
+            raw_inputs["benchmarks"][benchmark_symbol] = {
+                "source_data_version": source_data_version,
+                "latest_bar_date": bars[-1]["bar_date"].isoformat() if bars else None,
+                "latest_close": bars[-1]["close"] if bars else None,
+                "bar_count": len(bars),
+            }
+            if index == 0:
+                primary_bars = bars
+        primary_symbol = benchmarks[0] if benchmarks else None
+        raw_inputs["volatility_method"] = "20_session_close_return_sample_std_annualized_252"
+        raw_inputs["as_of_date"] = as_of_date.isoformat()
+        raw_inputs["classifier_version"] = self.settings.market_regime_classifier_version
+        regime_label = self._classify_market_regime(normalized_market, benchmark_returns, primary_symbol)
+        versions = self._research_versions()
+        data_version = f"{versions['data_version']}:regime:{self._stable_payload_hash(raw_inputs)[:16]}"
+        idempotency_key = ":".join(
+            (
+                normalized_market,
+                as_of_date.isoformat(),
+                self.settings.market_regime_classifier_version,
+                data_version,
+            )
+        )
+        body = {
+            "idempotency_key": idempotency_key,
+            "market": normalized_market,
+            "as_of_date": as_of_date,
+            "primary_benchmark_symbol": primary_symbol,
+            "benchmark_returns_json": benchmark_returns,
+            "volatility_20d_pct": self._volatility_20d_pct(primary_bars),
+            "regime_label": regime_label,
+            "classifier_version": self.settings.market_regime_classifier_version,
+            "raw_inputs_json": raw_inputs,
+            "data_quality_flags": sorted(set(quality_flags)),
+            "rule_version": versions["rule_version"],
+            "feature_version": versions["feature_version"],
+            "data_version": data_version,
+        }
+        snapshot = MarketRegimeSnapshot(
+            id=str(uuid5(NAMESPACE_URL, f"tradeghost:market-regime:{idempotency_key}")),
+            payload_hash=self._stable_payload_hash(body),
+            created_at=datetime.now(UTC),
+            **body,
+        )
+        persisted, _ = self.research_record_store.create_market_regime_snapshot(snapshot)
+        return persisted
+
+    def _selection_market_regime_for_cohort(self, cohort: CandidateCohort) -> MarketRegimeSnapshot:
+        return self._get_or_create_market_regime_snapshot(market=cohort.market.value, as_of_date=cohort.start_date)
+
+    @staticmethod
+    def _sector_proxy_for_prediction(prediction: PredictionRecord) -> str | None:
+        if prediction.market.lower() != "us":
+            return None
+        sector = str(prediction.selection_snapshot_json.get("selected_sector") or "").strip().lower()
+        proxies = {
+            "technology": "XLK",
+            "semiconductors": "SOXX",
+            "financial services": "XLF",
+            "financial": "XLF",
+            "healthcare": "XLV",
+            "health care": "XLV",
+            "energy": "XLE",
+            "consumer defensive": "XLP",
+            "consumer cyclical": "XLY",
+            "communication services": "XLC",
+            "industrials": "XLI",
+            "basic materials": "XLB",
+            "utilities": "XLU",
+            "real estate": "XLRE",
+        }
+        return proxies.get(sector)
+
+    def _benchmark_return_for_outcome(
+        self,
+        *,
+        benchmark_symbol: str,
+        market: str,
+        selection_date: date,
+        outcome_date: date,
+        cache: dict[tuple[str, str, date, date], tuple[float | None, str, list[str]]],
+    ) -> tuple[float | None, str, list[str]]:
+        key = (market.lower(), benchmark_symbol, selection_date, outcome_date)
+        if key in cache:
+            return cache[key]
+        bars, source_data_version, flags = self._load_canonical_bars_for_symbol(
+            benchmark_symbol,
+            market=market,
+            as_of_date=outcome_date,
+            base_data_version=self.settings.research_data_version,
+        )
+        start = next((bar for bar in bars if bar["bar_date"] >= selection_date), None)
+        end = next((bar for bar in reversed(bars) if bar["bar_date"] <= outcome_date), None)
+        result = (
+            self._return_from_price_pair(start["close"], end["close"]) if start and end and not flags else None,
+            source_data_version,
+            flags,
+        )
+        cache[key] = result
+        return result
+
+    @staticmethod
+    def _relative_return(stock_return_pct: float | None, benchmark_return_pct: float | None) -> float | None:
+        if stock_return_pct is None or benchmark_return_pct is None:
+            return None
+        return round(stock_return_pct - benchmark_return_pct, 4)
+
+    @staticmethod
+    def _attribution_label(
+        *,
+        return_pct: float | None,
+        market_return_pct: float | None,
+        relative_to_market: float | None,
+        sector_return_pct: float | None,
+        relative_to_sector_proxy: float | None,
+    ) -> str:
+        if return_pct is None or market_return_pct is None:
+            return "unattributed"
+        if relative_to_market is not None and abs(relative_to_market) <= 1.0 and abs(market_return_pct) >= 1.0:
+            return "market_beta_move"
+        if (
+            relative_to_sector_proxy is not None
+            and sector_return_pct is not None
+            and abs(relative_to_sector_proxy) <= 1.0
+            and abs(sector_return_pct) >= 1.0
+        ):
+            return "sector_beta_move"
+        return "stock_specific_move"
+
+    def _outcome_snapshot_coverage(
+        self,
+        detail: CohortDetail,
+        *,
+        horizon_days: int,
+        outcome_date: date,
+    ) -> dict[str, Any]:
+        return self._cohort_followup_coverage(
+            detail.cohort,
+            detail.snapshots,
+            days_required=horizon_days,
+            through_date=outcome_date,
+        )
+
+    def _outcome_validity_flags(
+        self,
+        detail: CohortDetail,
+        prediction: PredictionRecord,
+        *,
+        outcome_date: date,
+    ) -> tuple[bool | None, bool | None]:
+        matching = [
+            snapshot
+            for snapshot in detail.snapshots
+            if normalize_symbol(snapshot.symbol, detail.cohort.market.value).strip().upper()
+            == normalize_symbol(prediction.symbol, prediction.market).strip().upper()
+            and prediction.selection_date <= snapshot.snapshot_date <= outcome_date
+        ]
+        matching.sort(key=lambda snapshot: snapshot.snapshot_date)
+        if not matching:
+            return None, None
+        quick_window = set(self._trading_days_between(prediction.selection_date, outcome_date)[:7])
+        invalidated_quickly = any(
+            snapshot.validity_state == "invalid" and snapshot.snapshot_date in quick_window
+            for snapshot in matching
+        )
+        latest = matching[-1]
+        stayed_valid = bool(latest.still_valid_candidate is True and not invalidated_quickly)
+        return invalidated_quickly, stayed_valid
+
+    def _record_outcome_data_quality(
+        self,
+        prediction: PredictionRecord,
+        *,
+        event_code: str,
+        details: dict[str, Any],
+        data_version: str,
+        observed_at: datetime,
+    ) -> None:
+        self.research_record_store.record_data_quality_event(
+            id=str(uuid5(NAMESPACE_URL, f"tradeghost:data-quality:{prediction.id}:{event_code}:{data_version}")),
+            dedupe_key=f"prediction:{prediction.id}:{event_code}:{data_version}",
+            entity_type="prediction",
+            entity_id=prediction.id,
+            cohort_id=prediction.cohort_id,
+            symbol=prediction.symbol,
+            event_code=event_code,
+            severity="warning",
+            details=details,
+            rule_version=prediction.rule_version,
+            feature_version=prediction.feature_version,
+            data_version=data_version,
+            observed_at=observed_at,
+        )
+
+    def _build_outcome_record(
+        self,
+        prediction: PredictionRecord,
+        *,
+        horizon_days: int,
+        evaluated_at: datetime,
+        data_version: str,
+        outcome_status: str,
+        outcome_label: str,
+        selected_price: float | None,
+        horizon_price: float | None,
+        outcome_date: date | None,
+        selection_bar_date: date | None,
+        price_path_complete: bool,
+        daily_snapshot_path_complete: bool,
+        daily_snapshot_coverage_pct: float,
+        directional_return_pct: float | None,
+        max_favorable_excursion_pct: float | None,
+        max_adverse_excursion_pct: float | None,
+        followed_through: bool | None,
+        false_positive: bool | None,
+        invalidated_quickly: bool | None,
+        missed_follow_through: bool | None,
+        stayed_valid: bool | None,
+        data_quality_flags: list[str],
+        outcome_market_regime: MarketRegimeSnapshot | None,
+        market_return_pct: float | None,
+        sector_proxy_symbol: str | None,
+        sector_return_pct: float | None,
+        relative_to_spy: float | None,
+        relative_to_qqq: float | None,
+        relative_to_sector_proxy: float | None,
+        attribution_label: str | None,
+        attribution_json: dict[str, Any],
+        price_source: str | None,
+        supersedes_outcome_id: str | None,
+    ) -> OutcomeRecord:
+        return_pct = self._return_from_price_pair(selected_price, horizon_price)
+        idempotency_key = ":".join(
+            (
+                prediction.id,
+                str(horizon_days),
+                self.settings.research_outcome_evaluator_version,
+                data_version,
+            )
+        )
+        body = {
+            "idempotency_key": idempotency_key,
+            "prediction_id": prediction.id,
+            "cohort_id": prediction.cohort_id,
+            "symbol": prediction.symbol,
+            "market": prediction.market,
+            "horizon_days": horizon_days,
+            "selection_date": prediction.selected_date,
+            "outcome_date": outcome_date,
+            "outcome_status": outcome_status,
+            "outcome_label": outcome_label,
+            "selected_price": selected_price,
+            "horizon_price": horizon_price,
+            "return_pct": return_pct,
+            "directional_return_pct": directional_return_pct,
+            "max_favorable_excursion_pct": max_favorable_excursion_pct,
+            "max_adverse_excursion_pct": max_adverse_excursion_pct,
+            "price_path_complete": price_path_complete,
+            "daily_snapshot_path_complete": daily_snapshot_path_complete,
+            "daily_snapshot_coverage_pct": daily_snapshot_coverage_pct,
+            "followed_through": followed_through,
+            "false_positive": false_positive,
+            "invalidated_quickly": invalidated_quickly,
+            "missed_follow_through": missed_follow_through,
+            "stayed_valid": stayed_valid,
+            "categories": prediction.categories,
+            "setup_type": prediction.setup_type,
+            "blocked_by": prediction.blocked_by,
+            "data_quality_flags": sorted(set(data_quality_flags)),
+            "attribution_json": attribution_json,
+            "selection_market_regime_id": prediction.selection_market_regime_id,
+            "outcome_market_regime_id": outcome_market_regime.id if outcome_market_regime else None,
+            "market_regime_label": outcome_market_regime.regime_label if outcome_market_regime else None,
+            "market_return_pct": market_return_pct,
+            "sector_proxy_symbol": sector_proxy_symbol,
+            "sector_return_pct": sector_return_pct,
+            "relative_to_spy": relative_to_spy,
+            "relative_to_qqq": relative_to_qqq,
+            "relative_to_sector_proxy": relative_to_sector_proxy,
+            "attribution_label": attribution_label,
+            "price_source": price_source,
+            "selection_bar_date": selection_bar_date,
+            "horizon_bar_date": outcome_date,
+            "evaluator_version": self.settings.research_outcome_evaluator_version,
+            "rule_version": prediction.rule_version,
+            "feature_version": prediction.feature_version,
+            "data_version": data_version,
+            "supersedes_outcome_id": supersedes_outcome_id,
+        }
+        return OutcomeRecord(
+            id=str(uuid5(NAMESPACE_URL, f"tradeghost:outcome:{idempotency_key}")),
+            payload_hash=self._stable_payload_hash(body),
+            evaluated_at=evaluated_at,
+            created_at=evaluated_at,
+            **body,
+        )
+
+    def _build_outcome_summaries(
+        self,
+        cohort_id: str,
+        outcomes: list[OutcomeRecord],
+        *,
+        calculated_at: datetime,
+    ) -> list[OutcomeSummaryRecord]:
+        latest_by_prediction_horizon: dict[tuple[str, int], OutcomeRecord] = {}
+        for outcome in outcomes:
+            key = (outcome.prediction_id, outcome.horizon_days)
+            existing = latest_by_prediction_horizon.get(key)
+            if existing is None or (outcome.evaluated_at, outcome.created_at) > (existing.evaluated_at, existing.created_at):
+                latest_by_prediction_horizon[key] = outcome
+        grouped: dict[tuple[str, str, int], list[OutcomeRecord]] = {}
+        for outcome in latest_by_prediction_horizon.values():
+            group_values = {
+                "category": outcome.categories or ["uncategorized"],
+                "setup_type": [outcome.setup_type or "unknown"],
+                "blocked_by": [outcome.blocked_by or "none"],
+                "market_regime": [outcome.market_regime_label or "unavailable"],
+            }
+            for grouping, values in group_values.items():
+                for value in values:
+                    grouped.setdefault((grouping, str(value), outcome.horizon_days), []).append(outcome)
+        versions = self._research_versions()
+        summaries: list[OutcomeSummaryRecord] = []
+        for (grouping, group_value, horizon_days), rows in sorted(grouped.items()):
+            available = [row for row in rows if row.outcome_status == "available" and row.return_pct is not None]
+            excluded = [row for row in rows if row.outcome_status == "data_quality_excluded"]
+            directional_returns = [row.directional_return_pct for row in available if row.directional_return_pct is not None]
+            summaries.append(
+                OutcomeSummaryRecord(
+                    cohort_id=cohort_id,
+                    grouping=grouping,
+                    group_value=group_value,
+                    horizon_days=horizon_days,
+                    prediction_count=len(rows),
+                    available_outcome_count=len(available),
+                    data_quality_excluded_count=len(excluded),
+                    positive_count=sum(1 for value in directional_returns if value > 0),
+                    negative_count=sum(1 for value in directional_returns if value < 0),
+                    average_return_pct=(
+                        round(sum(float(row.return_pct) for row in available) / len(available), 4)
+                        if available
+                        else None
+                    ),
+                    rule_version=versions["rule_version"],
+                    feature_version=versions["feature_version"],
+                    data_version=versions["data_version"],
+                    evaluator_version=versions["evaluator_version"],
+                    calculated_at=calculated_at,
+                )
+            )
+        return summaries
+
+    def evaluate_cohort_outcomes(
+        self,
+        cohort_id: str,
+        *,
+        as_of_date: date | None = None,
+    ) -> OutcomeEvaluationResponse:
+        detail = self.get_cohort_detail(cohort_id)
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; Phase 2B outcome evaluation requires Postgres.")
+        evaluated_at = datetime.now(UTC)
+        evaluation_date = as_of_date or date.today()
+        predictions = self.research_record_store.list_predictions(cohort_id)
+        persisted_outcomes: list[OutcomeRecord] = []
+        created_count = 0
+        existing_count = 0
+        pending_count = 0
+        benchmark_cache: dict[tuple[str, str, date, date], tuple[float | None, str, list[str]]] = {}
+        regime_cache: dict[tuple[str, date], MarketRegimeSnapshot] = {}
+        for prediction in predictions:
+            bars, source_data_version, source_flags = self._load_canonical_bars(prediction, as_of_date=evaluation_date)
+            if source_flags:
+                for horizon_days in OUTCOME_HORIZONS:
+                    data_version = f"{prediction.data_version}:quality:{self._stable_payload_hash({'flags': source_flags})[:16]}"
+                    self._record_outcome_data_quality(
+                        prediction,
+                        event_code=source_flags[0],
+                        details={"flags": source_flags, "as_of_date": evaluation_date.isoformat()},
+                        data_version=data_version,
+                        observed_at=evaluated_at,
+                    )
+                    prior_id = self.research_record_store.latest_outcome_id(
+                        prediction.id,
+                        horizon_days=horizon_days,
+                        evaluator_version=self.settings.research_outcome_evaluator_version,
+                    )
+                    outcome = self._build_outcome_record(
+                        prediction,
+                        horizon_days=horizon_days,
+                        evaluated_at=evaluated_at,
+                        data_version=data_version,
+                        outcome_status="data_quality_excluded",
+                        outcome_label="data_quality_excluded",
+                        selected_price=prediction.selected_price,
+                        horizon_price=None,
+                        outcome_date=None,
+                        selection_bar_date=None,
+                        price_path_complete=False,
+                        daily_snapshot_path_complete=False,
+                        daily_snapshot_coverage_pct=0.0,
+                        directional_return_pct=None,
+                        max_favorable_excursion_pct=None,
+                        max_adverse_excursion_pct=None,
+                        followed_through=None,
+                        false_positive=None,
+                        invalidated_quickly=None,
+                        missed_follow_through=None,
+                        stayed_valid=None,
+                        data_quality_flags=source_flags,
+                        outcome_market_regime=None,
+                        market_return_pct=None,
+                        sector_proxy_symbol=None,
+                        sector_return_pct=None,
+                        relative_to_spy=None,
+                        relative_to_qqq=None,
+                        relative_to_sector_proxy=None,
+                        attribution_label="unattributed",
+                        attribution_json={"canonical_source_version": source_data_version},
+                        price_source=self.settings.data_provider,
+                        supersedes_outcome_id=prior_id,
+                    )
+                    persisted, created = self.research_record_store.create_outcome(outcome)
+                    persisted_outcomes.append(persisted)
+                    created_count += int(created)
+                    existing_count += int(not created)
+                continue
+            start_positions = [index for index, bar in enumerate(bars) if bar["bar_date"] >= prediction.selected_date]
+            if not start_positions:
+                pending_count += len(OUTCOME_HORIZONS)
+                continue
+            selection_position = start_positions[0]
+            series = bars[selection_position:]
+            for horizon_days in OUTCOME_HORIZONS:
+                if len(series) < horizon_days:
+                    pending_count += 1
+                    continue
+                path = series[:horizon_days]
+                selection_bar = path[0]
+                horizon_bar = path[-1]
+                selected_price = prediction.selected_price or selection_bar["close"]
+                quality_flags = sorted(set(prediction.data_quality_flags))
+                snapshot_coverage = self._outcome_snapshot_coverage(
+                    detail,
+                    horizon_days=horizon_days,
+                    outcome_date=horizon_bar["bar_date"],
+                )
+                return_pct = self._return_from_price_pair(selected_price, horizon_bar["close"])
+                regime_key = (prediction.market.lower(), horizon_bar["bar_date"])
+                outcome_regime = regime_cache.get(regime_key)
+                if outcome_regime is None:
+                    outcome_regime = self._get_or_create_market_regime_snapshot(
+                        market=prediction.market,
+                        as_of_date=horizon_bar["bar_date"],
+                    )
+                    regime_cache[regime_key] = outcome_regime
+                primary_benchmark = outcome_regime.primary_benchmark_symbol
+                market_return_pct = None
+                market_source_data_version = None
+                market_flags: list[str] = []
+                if primary_benchmark:
+                    market_return_pct, market_source_data_version, market_flags = self._benchmark_return_for_outcome(
+                        benchmark_symbol=primary_benchmark,
+                        market=prediction.market,
+                        selection_date=prediction.selected_date,
+                        outcome_date=horizon_bar["bar_date"],
+                        cache=benchmark_cache,
+                    )
+                spy_return_pct = market_return_pct if primary_benchmark == "SPY" else None
+                spy_source_data_version = market_source_data_version if primary_benchmark == "SPY" else None
+                spy_flags = market_flags if primary_benchmark == "SPY" else []
+                qqq_return_pct = None
+                qqq_source_data_version = None
+                qqq_flags: list[str] = []
+                if prediction.market.lower() == "us":
+                    qqq_return_pct, qqq_source_data_version, qqq_flags = self._benchmark_return_for_outcome(
+                        benchmark_symbol="QQQ",
+                        market=prediction.market,
+                        selection_date=prediction.selected_date,
+                        outcome_date=horizon_bar["bar_date"],
+                        cache=benchmark_cache,
+                    )
+                sector_proxy_symbol = self._sector_proxy_for_prediction(prediction)
+                sector_return_pct = None
+                sector_source_data_version = None
+                sector_flags: list[str] = []
+                if sector_proxy_symbol:
+                    sector_return_pct, sector_source_data_version, sector_flags = self._benchmark_return_for_outcome(
+                        benchmark_symbol=sector_proxy_symbol,
+                        market=prediction.market,
+                        selection_date=prediction.selected_date,
+                        outcome_date=horizon_bar["bar_date"],
+                        cache=benchmark_cache,
+                    )
+                relative_to_market = self._relative_return(return_pct, market_return_pct)
+                relative_to_spy = self._relative_return(return_pct, spy_return_pct)
+                relative_to_qqq = self._relative_return(return_pct, qqq_return_pct)
+                relative_to_sector_proxy = self._relative_return(return_pct, sector_return_pct)
+                attribution_label = self._attribution_label(
+                    return_pct=return_pct,
+                    market_return_pct=market_return_pct,
+                    relative_to_market=relative_to_market,
+                    sector_return_pct=sector_return_pct,
+                    relative_to_sector_proxy=relative_to_sector_proxy,
+                )
+                attribution_json = {
+                    "canonical_source_version": source_data_version,
+                    "outcome_market_regime_id": outcome_regime.id,
+                    "market_regime_label": outcome_regime.regime_label,
+                    "primary_benchmark_symbol": primary_benchmark,
+                    "relative_to_primary_benchmark": relative_to_market,
+                    "benchmark_sources": {
+                        "primary": {
+                            "symbol": primary_benchmark,
+                            "data_version": market_source_data_version,
+                            "data_quality_flags": market_flags,
+                        },
+                        "SPY": {
+                            "data_version": spy_source_data_version,
+                            "data_quality_flags": spy_flags,
+                        },
+                        "QQQ": {
+                            "data_version": qqq_source_data_version,
+                            "data_quality_flags": qqq_flags,
+                        },
+                        "sector_proxy": {
+                            "symbol": sector_proxy_symbol,
+                            "data_version": sector_source_data_version,
+                            "data_quality_flags": sector_flags,
+                        },
+                    },
+                }
+                price_path_payload = {
+                    "selection_date": prediction.selected_date,
+                    "horizon_days": horizon_days,
+                    "bars": path,
+                    "attribution": attribution_json,
+                }
+                data_version = f"{prediction.data_version}:path:{self._stable_payload_hash(price_path_payload)[:16]}"
+                direction_multiplier = -1.0 if prediction.expected_direction == "down" else 1.0
+                directional_return = round(float(return_pct) * direction_multiplier, 4) if return_pct is not None else None
+                high_values = [float(bar["high"] or bar["close"]) for bar in path]
+                low_values = [float(bar["low"] or bar["close"]) for bar in path]
+                if selected_price is None or selected_price <= 0:
+                    quality_flags.append("missing_selected_price")
+                    max_favorable = None
+                    max_adverse = None
+                elif prediction.expected_direction == "down":
+                    max_favorable = round((selected_price - min(low_values)) / selected_price * 100.0, 4)
+                    max_adverse = round((selected_price - max(high_values)) / selected_price * 100.0, 4)
+                else:
+                    max_favorable = round((max(high_values) - selected_price) / selected_price * 100.0, 4)
+                    max_adverse = round((min(low_values) - selected_price) / selected_price * 100.0, 4)
+                invalidated_quickly, stayed_valid = self._outcome_validity_flags(
+                    detail,
+                    prediction,
+                    outcome_date=horizon_bar["bar_date"],
+                )
+                if quality_flags:
+                    outcome_status = "data_quality_excluded"
+                    outcome_label = "data_quality_excluded"
+                    followed_through = None
+                    false_positive = None
+                    missed_follow_through = None
+                    self._record_outcome_data_quality(
+                        prediction,
+                        event_code=quality_flags[0],
+                        details={"flags": quality_flags, "horizon_days": horizon_days},
+                        data_version=data_version,
+                        observed_at=evaluated_at,
+                    )
+                elif directional_return is None:
+                    outcome_status = "data_quality_excluded"
+                    outcome_label = "data_quality_excluded"
+                    followed_through = None
+                    false_positive = None
+                    missed_follow_through = None
+                elif directional_return > 0:
+                    outcome_status = "available"
+                    outcome_label = "success"
+                    followed_through = True
+                    false_positive = False
+                    missed_follow_through = False
+                elif directional_return < 0:
+                    outcome_status = "available"
+                    outcome_label = "failure"
+                    followed_through = False
+                    false_positive = prediction.expected_direction == "up"
+                    missed_follow_through = prediction.expected_direction == "up" and not bool(invalidated_quickly)
+                else:
+                    outcome_status = "available"
+                    outcome_label = "neutral"
+                    followed_through = False
+                    false_positive = False
+                    missed_follow_through = False
+                prior_id = self.research_record_store.latest_outcome_id(
+                    prediction.id,
+                    horizon_days=horizon_days,
+                    evaluator_version=self.settings.research_outcome_evaluator_version,
+                )
+                outcome = self._build_outcome_record(
+                    prediction,
+                    horizon_days=horizon_days,
+                    evaluated_at=evaluated_at,
+                    data_version=data_version,
+                    outcome_status=outcome_status,
+                    outcome_label=outcome_label,
+                    selected_price=selected_price,
+                    horizon_price=horizon_bar["close"],
+                    outcome_date=horizon_bar["bar_date"],
+                    selection_bar_date=selection_bar["bar_date"],
+                    price_path_complete=len(path) == horizon_days,
+                    daily_snapshot_path_complete=snapshot_coverage["daily_path_review_complete"],
+                    daily_snapshot_coverage_pct=snapshot_coverage["snapshot_coverage_pct"],
+                    directional_return_pct=directional_return,
+                    max_favorable_excursion_pct=max_favorable,
+                    max_adverse_excursion_pct=max_adverse,
+                    followed_through=followed_through,
+                    false_positive=false_positive,
+                    invalidated_quickly=invalidated_quickly,
+                    missed_follow_through=missed_follow_through,
+                    stayed_valid=stayed_valid,
+                    data_quality_flags=quality_flags,
+                    outcome_market_regime=outcome_regime,
+                    market_return_pct=market_return_pct,
+                    sector_proxy_symbol=sector_proxy_symbol,
+                    sector_return_pct=sector_return_pct,
+                    relative_to_spy=relative_to_spy,
+                    relative_to_qqq=relative_to_qqq,
+                    relative_to_sector_proxy=relative_to_sector_proxy,
+                    attribution_label=attribution_label,
+                    attribution_json=attribution_json,
+                    price_source=self.settings.data_provider,
+                    supersedes_outcome_id=prior_id,
+                )
+                persisted, created = self.research_record_store.create_outcome(outcome)
+                persisted_outcomes.append(persisted)
+                created_count += int(created)
+                existing_count += int(not created)
+        all_outcomes = self.research_record_store.list_outcomes(cohort_id)
+        summaries = self.research_record_store.upsert_outcome_summaries(
+            self._build_outcome_summaries(cohort_id, all_outcomes, calculated_at=evaluated_at)
+        )
+        self._append_pipeline_event(
+            step_name="cohort_outcomes_evaluated",
+            status="success",
+            cohort_id=detail.cohort.id,
+            cohort_name=detail.cohort.name,
+            message=(
+                f"created={created_count} existing={existing_count} pending={pending_count} "
+                f"data_quality_excluded={sum(1 for row in persisted_outcomes if row.outcome_status == 'data_quality_excluded')}"
+            ),
+        )
+        return OutcomeEvaluationResponse(
+            cohort_id=cohort_id,
+            evaluated_at=evaluated_at,
+            created_outcome_count=created_count,
+            existing_outcome_count=existing_count,
+            pending_horizon_count=pending_count,
+            data_quality_excluded_count=sum(1 for row in persisted_outcomes if row.outcome_status == "data_quality_excluded"),
+            outcomes=persisted_outcomes,
+            summaries=summaries,
+        )
+
     def run_discovery_create_cohort(self, req: DiscoveryCreateCohortRequest) -> CohortDetail:
         if not req.name.strip():
             raise ValueError("Cohort name is required.")
@@ -741,12 +2407,12 @@ class IntelligenceService:
         )
 
         cohort_candidates = self._read_cohort_candidates()
+        selected_candidates: list[CohortCandidate] = []
         for row in discovery.symbol_results:
             selected_blocked_by = row.blocked_by
             if selected_blocked_by == "none":
                 selected_blocked_by = self._blocked_by_from_risk_flags(row.risk_flags, fallback="none")
-            cohort_candidates.append(
-                CohortCandidate(
+            selected_candidate = CohortCandidate(
                     cohort_id=cohort.id,
                     symbol=row.symbol,
                     market=row.market,
@@ -780,8 +2446,10 @@ class IntelligenceService:
                     selected_sector=row.sector,
                     selected_industry=row.industry,
                 )
-            )
+            cohort_candidates.append(selected_candidate)
+            selected_candidates.append(selected_candidate)
         self._save_cohort_candidates(cohort_candidates)
+        self._persist_selection_predictions(cohort, selected_candidates)
         return self.get_cohort_detail(cohort.id)
 
     def run_cohort_followup(self, req: CohortFollowupRequest) -> CohortFollowupResponse:
@@ -3082,6 +4750,7 @@ class IntelligenceService:
         *,
         days_required: int = 28,
         as_of_date: date | None = None,
+        emit_event: bool = True,
     ) -> CohortCoverageMonitorResponse:
         """Inspect persisted candidate-day states without changing cohort data.
 
@@ -3227,16 +4896,17 @@ class IntelligenceService:
             status=status,
             readiness_message=readiness_message,
         )
-        self._append_pipeline_event(
-            step_name="cohort_followup_coverage_monitor",
-            status="warning" if anomalies else "success",
-            cohort_id=detail.cohort.id,
-            cohort_name=detail.cohort.name,
-            message=(
-                f"status={status} expected_days={monitor.expected_followup_days} "
-                f"complete_days={monitor.complete_followup_days} anomalies={monitor.anomaly_count}"
-            ),
-        )
+        if emit_event:
+            self._append_pipeline_event(
+                step_name="cohort_followup_coverage_monitor",
+                status="warning" if anomalies else "success",
+                cohort_id=detail.cohort.id,
+                cohort_name=detail.cohort.name,
+                message=(
+                    f"status={status} expected_days={monitor.expected_followup_days} "
+                    f"complete_days={monitor.complete_followup_days} anomalies={monitor.anomaly_count}"
+                ),
+            )
         return monitor
 
     def run_cohort_review(self, req: CohortReviewRequest) -> CohortReviewResponse:
@@ -3666,6 +5336,200 @@ class IntelligenceService:
             cohort_details=cohort_details,
             review_readiness=self._compute_review_readiness(),
             deterministic_review_stats=self._compute_deterministic_review_stats(details),
+        )
+
+    def get_research_dashboard(self) -> ResearchDashboardResponse:
+        """Return a read-only operational view of persisted research facts.
+
+        This deliberately aggregates the deterministic Postgres records and
+        coverage monitor without invoking an LLM, re-running the scanner, or
+        changing follow-up state. Coverage checks suppress their normal
+        pipeline event so polling this endpoint does not manufacture activity.
+        """
+        messages: list[ResearchOperationalMessage] = []
+        database_configured = self.research_record_store.configured
+        try:
+            knowledge_graph = self.get_knowledge_graph_status()
+        except Exception as exc:  # pragma: no cover - runtime/network boundary
+            knowledge_graph = {"enabled": False, "error": str(exc)}
+            messages.append(
+                ResearchOperationalMessage(
+                    code="knowledge_graph_status_unavailable",
+                    severity="warning",
+                    message=f"Knowledge-graph status could not be read: {exc}",
+                )
+            )
+
+        if not database_configured:
+            messages.append(
+                ResearchOperationalMessage(
+                    code="research_database_not_configured",
+                    severity="error",
+                    message="DATABASE_URL is not configured; Prediction, Outcome, hypothesis, and pattern records are unavailable.",
+                )
+            )
+
+        cohort_rows: list[ResearchCohortReadiness] = []
+        for cohort in self.list_cohorts():
+            coverage = self.get_cohort_coverage(cohort.id, days_required=28, emit_event=False)
+            predictions: list[PredictionRecord] = []
+            outcomes: list[OutcomeRecord] = []
+            summaries: list[OutcomeSummaryRecord] = []
+            if database_configured:
+                try:
+                    predictions = self.research_record_store.list_predictions(cohort.id)
+                    outcomes = self.research_record_store.list_outcomes(cohort.id, horizon_days=28)
+                    summaries = self.research_record_store.list_outcome_summaries(cohort.id)
+                except Exception as exc:  # pragma: no cover - database/runtime boundary
+                    messages.append(
+                        ResearchOperationalMessage(
+                            code="research_records_unavailable",
+                            severity="error",
+                            cohort_id=cohort.id,
+                            message=f"Persisted research records could not be read for cohort {cohort.name}: {exc}",
+                        )
+                    )
+
+            latest_outcomes: dict[str, OutcomeRecord] = {}
+            for outcome in outcomes:
+                existing = latest_outcomes.get(outcome.prediction_id)
+                if existing is None or (outcome.evaluated_at, outcome.created_at) > (existing.evaluated_at, existing.created_at):
+                    latest_outcomes[outcome.prediction_id] = outcome
+            available_count = sum(1 for outcome in latest_outcomes.values() if outcome.outcome_status == "available")
+            excluded_count = sum(
+                1 for outcome in latest_outcomes.values() if outcome.outcome_status == "data_quality_excluded"
+            )
+            evaluated_count = available_count + excluded_count
+            pending_count = max(0, len(predictions) - evaluated_count)
+            horizon_complete = bool(predictions) and evaluated_count >= len(predictions)
+            daily_path_complete = (
+                coverage.expected_followup_days > 0
+                and coverage.complete_followup_days >= coverage.expected_followup_days
+                and not coverage.duplicate_repair_required
+            )
+
+            if coverage.backfill_required:
+                messages.append(
+                    ResearchOperationalMessage(
+                        code="followup_backfill_required",
+                        severity="warning",
+                        cohort_id=cohort.id,
+                        message=(
+                            f"{cohort.name}: snapshot backfill is required for "
+                            f"{len(coverage.backfill_dates)} trading day(s)."
+                        ),
+                    )
+                )
+            if available_count:
+                messages.append(
+                    ResearchOperationalMessage(
+                        code="horizon_28d_outcomes_available",
+                        severity="success",
+                        cohort_id=cohort.id,
+                        message=(
+                            f"{cohort.name}: {available_count}/{len(predictions)} deterministic 28D outcome(s) are available "
+                            f"regardless of daily snapshot coverage."
+                        ),
+                    )
+                )
+            if available_count and not daily_path_complete:
+                messages.append(
+                    ResearchOperationalMessage(
+                        code="daily_path_incomplete",
+                        severity="warning",
+                        cohort_id=cohort.id,
+                        message=(
+                            f"{cohort.name}: 28D outcome review is available, but the daily path remains incomplete "
+                            f"({coverage.complete_followup_days}/{coverage.expected_followup_days} complete trading days)."
+                        ),
+                    )
+                )
+
+            cohort_rows.append(
+                ResearchCohortReadiness(
+                    cohort=cohort,
+                    coverage=coverage,
+                    prediction_count=len(predictions),
+                    predictions=predictions[:50],
+                    horizon_28d_available_count=available_count,
+                    horizon_28d_pending_count=pending_count,
+                    data_quality_excluded_outcome_count=excluded_count,
+                    horizon_28d_complete=horizon_complete,
+                    daily_path_review_complete=daily_path_complete,
+                    outcomes=list(latest_outcomes.values())[:50],
+                    outcome_summaries=[summary for summary in summaries if summary.horizon_days == 28],
+                )
+            )
+
+        hypotheses: list[RuleHypothesis] = []
+        patterns: list[PatternCandidate] = []
+        if database_configured:
+            try:
+                hypotheses = self.research_record_store.list_rule_hypotheses()[:100]
+                patterns = self.research_record_store.list_pattern_candidates()[:100]
+            except Exception as exc:  # pragma: no cover - database/runtime boundary
+                messages.append(
+                    ResearchOperationalMessage(
+                        code="research_review_records_unavailable",
+                        severity="error",
+                        message=f"Hypothesis or pattern records could not be read: {exc}",
+                    )
+                )
+
+        def status_counts(records: list[Any]) -> dict[str, int]:
+            counts: dict[str, int] = {}
+            for record in records:
+                status = getattr(record.status, "value", record.status)
+                key = str(status)
+                counts[key] = counts.get(key, 0) + 1
+            return counts
+
+        recent_errors = [
+            event
+            for event in self._read_pipeline_events()
+            if event.status.lower() in {"error", "failed"} or event.error_message
+        ]
+        return ResearchDashboardResponse(
+            database_configured=database_configured,
+            knowledge_graph=knowledge_graph,
+            cohorts=cohort_rows,
+            hypotheses=hypotheses,
+            hypothesis_status_counts=status_counts(hypotheses),
+            patterns=patterns,
+            pattern_status_counts=status_counts(patterns),
+            recent_pipeline_errors=sorted(recent_errors, key=lambda event: event.timestamp, reverse=True)[:30],
+            operational_messages=messages,
+        )
+
+    def export_research_audit(self, cohort_id: str | None = None) -> ResearchAuditExport:
+        """Build a serializable research audit snapshot without changing source records."""
+        dashboard = self.get_research_dashboard()
+        selected = None
+        if cohort_id:
+            selected = next((row for row in dashboard.cohorts if row.cohort.id == cohort_id), None)
+            if selected is None:
+                raise FileNotFoundError(f"Cohort not found: {cohort_id}")
+
+        payload: dict[str, Any] = {
+            "export_kind": "tradeghost_research_audit_v1",
+            "authority": {
+                "predictions_outcomes": "Postgres deterministic records",
+                "graph": "Neo4j projection only; not the source of price or rule truth",
+                "llm": "advisory only; cannot create or mutate these records",
+            },
+            "dashboard": dashboard.model_dump(mode="json"),
+        }
+        if selected is not None:
+            payload["selected_cohort"] = selected.model_dump(mode="json")
+            payload["daily_reports"] = [
+                report.model_dump(mode="json") for report in self.list_cohort_daily_reports(selected.cohort.id)
+            ]
+
+        suffix = cohort_id[:8] if cohort_id else "all-cohorts"
+        return ResearchAuditExport(
+            filename=f"tradeghost-research-audit-{date.today().isoformat()}-{suffix}.json",
+            cohort_id=cohort_id,
+            payload=payload,
         )
 
     def get_run_report(self, run_id: str) -> IntelligenceRunReport:
@@ -4843,7 +6707,25 @@ class IntelligenceService:
             "fallback_used": fallback_used,
             "error_message": "; ".join(error_messages) if error_messages else None,
         }
-        return self.daily_report_store.upsert_report(record)
+        persisted_report = self.daily_report_store.upsert_report(record)
+        if self.research_record_store.configured:
+            try:
+                self.evaluate_cohort_outcomes(cohort_id, as_of_date=report_date)
+            except Exception as exc:  # pragma: no cover
+                self._logger.exception(
+                    "cohort_outcome_evaluation_failed cohort_id=%s report_date=%s",
+                    cohort_id,
+                    report_date,
+                )
+                self._append_pipeline_event(
+                    step_name="cohort_outcomes_evaluation_failed",
+                    status="failed",
+                    cohort_id=detail.cohort.id,
+                    cohort_name=detail.cohort.name,
+                    message=f"report_date={report_date.isoformat()}",
+                    error_message=f"{type(exc).__name__}: {exc}",
+                )
+        return persisted_report
 
     def _followup_day_number(self, cohort: CandidateCohort, report_date: date) -> int:
         target = max(1, int(cohort.followup_target_days or 28))
@@ -5635,6 +7517,13 @@ class IntelligenceService:
 
     def backfill_knowledge_graph_reports(self, limit: int = 100) -> dict[str, Any]:
         queued = self.daily_report_store.enqueue_existing_reports_for_graph(limit=limit)
+        processed = self.process_pending_graph_events(limit=limit)
+        return {"queued": queued, **processed}
+
+    def backfill_knowledge_graph_research_records(self, limit: int = 100) -> dict[str, Any]:
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; research graph backfill requires Postgres.")
+        queued = self.research_record_store.enqueue_existing_records_for_graph(limit=limit)
         processed = self.process_pending_graph_events(limit=limit)
         return {"queued": queued, **processed}
 

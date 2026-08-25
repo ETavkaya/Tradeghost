@@ -38,7 +38,7 @@ class KnowledgeGraphIngestionService:
         result["claimed"] = len(events)
         for event in events:
             try:
-                self.projector.project(event.payload)
+                self.projector.project(event.payload, event_type=event.event_type)
                 if self.outbox.mark_processed(event):
                     result["projected"] += 1
             except Exception as exc:  # pragma: no cover - network/runtime boundary

@@ -5,9 +5,10 @@ __pycache__/
 .pytest_cache/
 .cache/
 tradeghost.egg-info/
+build/
+.tmp-wheel/
 pytest-cache-files-*/
 
 apps/web/node_modules/
 apps/web/.next/
 apps/web/out/
-

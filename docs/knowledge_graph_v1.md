@@ -45,11 +45,13 @@ All primary IDs are generated in Postgres as UUIDs and copied unchanged to Neo4j
 
 The source text is stored outside the graph in Postgres/object storage. `ReportSegment` keeps a bounded excerpt only, plus the authoritative source reference and vector point ID. A correction creates a new extraction run and projection version; it never edits the historical report, original prediction, or previous outcome.
 
-### Implemented first projection
+### Implemented projections
 
-The initial implementation writes only deterministic facts already present in `cohort_daily_reports`: `Report`, a bounded `ReportSegment`, `Asset`, and `Signal` nodes for selected category, setup type, and current validity. These are joined by `HAS_SEGMENT`, `REPORT_MENTIONS`, `HAS_SIGNAL`, `SIGNAL_FOR`, and `EXTRACTED_FROM` relationships.
+The initial report projection writes only deterministic facts already present in `cohort_daily_reports`: `Report`, a bounded `ReportSegment`, `Asset`, and `Signal` nodes for selected category, setup type, and current validity. These are joined by `HAS_SEGMENT`, `REPORT_MENTIONS`, `HAS_SIGNAL`, `SIGNAL_FOR`, and `EXTRACTED_FROM` relationships.
 
-It deliberately does not create a `Prediction` or `Outcome` node from a cohort candidate. Current reports do not yet carry a validated target, activation rule, invalidation threshold, and horizon together, so inferring those values would violate the evidence policy. The next extraction slice adds that typed contract before prediction writes are enabled.
+Phase 2D projects only immutable relational records already committed by deterministic Phase 2B/2C code. `research.market_regime.committed.v1`, `research.prediction.committed.v1`, and `research.outcome.committed.v1` events create `MarketRegime`, `Prediction`, deterministic `Condition`, and `Outcome` nodes keyed by their Postgres UUIDs. The projection creates `PREDICTS`, `VALID_IF`, `INVALIDATED_BY`, `PERFORMED_UNDER`, `RESULTED_IN`, `EVALUATES`, `SOURCE_REPORT`, and `SUPERSEDES` edges when their committed IDs exist.
+
+It does not create a `Prediction` or `Outcome` from a cohort candidate, report prose, or LLM output. Missing report nodes and benchmark data remain explicit gaps rather than inferred graph facts.
 
 ## Exact graph model
 
@@ -96,6 +98,9 @@ Every relationship includes `created_at`, `source_report_id` where evidence-base
 | `PERFORMED_UNDER` | `Prediction -> MarketRegime` | The regime assigned at activation time. |
 | `USES_STRATEGY` | `Prediction -> Strategy` | The deterministic configuration used to form the report. |
 | `RESULTED_IN` | `Prediction -> Outcome` | One append-only terminal evaluation record. |
+| `EVALUATES` | `Outcome -> Asset` | The exact asset whose canonical price path was evaluated. |
+| `SOURCE_REPORT` | `Prediction -> Report` | Optional committed report provenance; omitted when no persisted source report ID exists. |
+| `SUPERSEDES` | `Prediction/Outcome -> Prediction/Outcome` | Explicit immutable correction lineage. |
 | `CORRELATED_WITH` | `Pattern -> Signal/MarketRegime/Event` | A statistically calculated association with `sample_size`, `effect_size`, `p_value`, and `calculated_at`. |
 | `SIMILAR_TO` | `Pattern/Prediction -> Pattern/Prediction` | A versioned similarity result with method and score; it is advisory only. |
 | `INSTANCE_OF` | `Prediction -> Pattern` | An evaluated setup belongs to an approved historical pattern. |
@@ -139,7 +144,7 @@ The agent retrieves three separately labelled context classes for later reports:
 
 ## Current operational flow
 
-Each report upsert writes a `cohort_daily_report.upserted.v1` event in the same Postgres transaction. The outbox has a stable report deduplication key, versioned payloads, row locking, retry timing, and stale-processing recovery. The worker claims events only after the report transaction commits, projects each payload through Neo4j `MERGE` operations, and marks the matching event version complete. A report update during projection increments the event version and remains pending for another projection, preventing an older worker from marking newer report content complete.
+Each report upsert writes a `cohort_daily_report.upserted.v1` event in the same Postgres transaction. Each committed deterministic market-regime, Prediction, and Outcome write likewise emits its typed research event in the same transaction. The outbox has stable aggregate deduplication keys, versioned payloads, row locking, retry timing, and stale-processing recovery. The worker claims events only after source transactions commit, projects each payload through Neo4j `MERGE` operations, and marks the matching event version complete. A later source write increments the event version and remains pending for another projection, preventing an older worker from marking newer content complete.
 
 Use these API endpoints after graph connectivity is enabled:
 
@@ -147,11 +152,22 @@ Use these API endpoints after graph connectivity is enabled:
 GET  /intelligence/knowledge-graph/status
 POST /intelligence/knowledge-graph/process?limit=25
 POST /intelligence/knowledge-graph/backfill?limit=100
+POST /intelligence/knowledge-graph/research-backfill?limit=100
 ```
+
+## Read-only historical evidence retrieval
+
+Phase 2E exposes `POST /intelligence/reasoning/similar-setups` for deterministic case-based evidence retrieval. It reads the authoritative Postgres Prediction and latest 28D Outcome records rather than treating Neo4j as a price or evaluation authority. Returned Prediction, Outcome, and market-regime IDs are the same IDs projected to Neo4j, so callers may traverse the graph after receiving the evidence response.
+
+The request can constrain symbol, category, setup, trend, extension, trigger, blocker, risk flags, selection regime, and coarse price/EMA200, support-distance, or resistance-room buckets. `exact` mode requires every supplied criterion; `weighted` mode uses the fraction of supplied deterministic criteria that match and requires at least 50% similarity.
+
+The response is evidence, not a recommendation. It only includes selections and observed outcome dates before the request's `as_of_date` (or older data-quality evaluations with no observed date), uses the latest version per Prediction/horizon, excludes `data_quality_excluded` records from metrics, reports incomplete daily-path coverage separately, and withholds performance aggregates until the configured minimum sample size is reached. It also discloses source-window caps and symbol concentration.
 
 ## Pattern and confidence policy
 
-A `Pattern` begins as `candidate` only after a deterministic grouping key derived from normalized signals, regime, asset class, direction, horizon, and strategy version has occurred at least 30 times with at least 80% evaluable outcomes. Promotion to `approved` additionally requires a predeclared statistical test, a confidence interval, and an effect size beyond a configured minimum versus a baseline. The job records population definition, exclusions, lookback boundaries, calculation code version, and as-of timestamp.
+A `Pattern` begins as `candidate` only after a deterministic grouping key derived from normalized selection conditions, regime, horizon, and rule/feature/data versions has occurred at least 30 times with at least 80% evaluable outcomes. Promotion to `approved` additionally requires a predeclared statistical test, a confidence interval, and an effect size beyond a configured minimum versus a baseline. The job records population definition, exclusions, lookback boundaries, calculation code version, and as-of timestamp.
+
+Phase 2G implements this policy first as Postgres `pattern_candidates`: fixed low-dimensional condition groups, `30` observations, `80%` evaluable coverage, at least `3` cohorts, at most `50%` single-symbol concentration, chronological train/validation splits, Wilson intervals, and a two-proportion validation test. Human approval changes only the record to `approved_for_retrieval`; P2G intentionally emits no graph event and creates no Neo4j `Pattern` node or `INSTANCE_OF` edge. A future graph projection must consume only approved candidate IDs and preserve the stored statistics version, source IDs, and as-of date.
 
 Historical performance may calibrate a displayed confidence only through a versioned, regularized calculation that reports sample size and uncertainty. It must not adjust the original `confidence_raw`, suppress losing examples, create targets retroactively, or let the LLM create a pattern based on narrative similarity alone.
 

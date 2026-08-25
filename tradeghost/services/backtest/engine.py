@@ -247,6 +247,8 @@ class BacktestEngine:
         max_hold_days: int,
         config: AnalysisConfig,
         tested_setup_path: str = "all_eligible_paths",
+        evaluation_start: date | None = None,
+        evaluation_end: date | None = None,
     ) -> _SimulationResult:
         trades: list[BacktestTrade] = []
         position: _Position | None = None
@@ -254,6 +256,19 @@ class BacktestEngine:
         warmup = min(config.warmup_bars, max(20, len(daily) // 3))
         eval_bars = WINDOW_TO_BARS.get(config.lookback_window, len(daily))
         sim_start_idx = max(warmup, max(0, len(daily) - eval_bars))
+        sim_end_idx = len(daily)
+        if evaluation_start is not None:
+            sim_start_idx = max(
+                sim_start_idx,
+                int(daily.index.searchsorted(pd.Timestamp(evaluation_start), side="left")),
+            )
+        if evaluation_end is not None:
+            sim_end_idx = min(
+                sim_end_idx,
+                int(daily.index.searchsorted(pd.Timestamp(evaluation_end), side="right")),
+            )
+        if sim_start_idx >= sim_end_idx:
+            raise ValueError("Requested backtest evaluation window has no available bars")
         selected_path = self._normalize_tested_setup_path(tested_setup_path)
         path_diagnostics: dict[str, dict[str, int]] = {
             "all_eligible_paths": self._empty_path_diag(),
@@ -293,7 +308,7 @@ class BacktestEngine:
         evaluation_start_date: date | None = None
         evaluation_end_date: date | None = None
 
-        for i in range(sim_start_idx, len(daily)):
+        for i in range(sim_start_idx, sim_end_idx):
             slice_daily = daily.iloc[: i + 1]
             current_row = slice_daily.iloc[-1]
             current_date = slice_daily.index[-1]
@@ -802,7 +817,11 @@ class BacktestEngine:
         score_threshold: float | None = None,
         strategy_mode: StrategyMode | str | None = None,
         warmup_bars: int | None = None,
+        evaluation_start: date | None = None,
+        evaluation_end: date | None = None,
     ) -> BacktestSummary:
+        if evaluation_start is not None and evaluation_end is not None and evaluation_start > evaluation_end:
+            raise ValueError("evaluation_start must be on or before evaluation_end")
         config = build_analysis_config(
             ticker=ticker,
             market=market,
@@ -821,14 +840,16 @@ class BacktestEngine:
             max_hold_days=self.settings.backtest_max_hold_days,
             config=config,
             tested_setup_path="all_eligible_paths",
+            evaluation_start=evaluation_start,
+            evaluation_end=evaluation_end,
         )
         metrics = self._compute_metrics(sim.trades)
 
         display = visible_window_slice(bundle.daily, config.lookback_window)
         return BacktestSummary(
             ticker=bundle.ticker,
-            period_start=display.index[0].date(),
-            period_end=display.index[-1].date(),
+            period_start=sim.evaluation_start_date or display.index[0].date(),
+            period_end=sim.evaluation_end_date or display.index[-1].date(),
             analysis_config=config,
             trades=int(metrics["trades"]),
             win_rate=metrics["win_rate"],

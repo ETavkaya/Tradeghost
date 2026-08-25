@@ -1399,6 +1399,143 @@ export type IntelligenceDashboardResponse = {
   };
 };
 
+export type ResearchPredictionRecord = {
+  id: string;
+  cohort_id: string;
+  symbol: string;
+  market: string;
+  selected_at: string;
+  selected_date: string;
+  selected_price: number | null;
+  categories: string[];
+  setup_type: string;
+  blocked_by: string | null;
+  invalidation_conditions: Record<string, unknown>;
+  source_run_id: string | null;
+  source_report_id: string | null;
+  rule_version: string;
+  feature_version: string;
+  data_version: string;
+  selection_market_regime_id: string | null;
+};
+
+export type ResearchOutcomeRecord = {
+  id: string;
+  prediction_id: string;
+  symbol: string;
+  horizon_days: number;
+  outcome_date: string | null;
+  evaluated_at: string;
+  outcome_status: string;
+  outcome_label: string;
+  return_pct: number | null;
+  daily_snapshot_path_complete: boolean;
+  daily_snapshot_coverage_pct: number;
+  data_quality_flags: string[];
+  selection_market_regime_id: string | null;
+  outcome_market_regime_id: string | null;
+  attribution_label: string | null;
+};
+
+export type ResearchOutcomeSummary = {
+  grouping: string;
+  group_value: string;
+  horizon_days: number;
+  prediction_count: number;
+  available_outcome_count: number;
+  data_quality_excluded_count: number;
+  positive_count: number;
+  negative_count: number;
+  average_return_pct: number | null;
+  rule_version: string;
+  feature_version: string;
+  data_version: string;
+};
+
+export type ResearchCohortReadiness = {
+  cohort: CandidateCohort;
+  coverage: {
+    cohort_id: string;
+    expected_followup_days: number;
+    complete_followup_days: number;
+    partial_followup_days: number;
+    missing_followup_days: number;
+    snapshot_coverage_pct: number;
+    missing_followup_dates: string[];
+    partial_followup_dates: string[];
+    duplicate_snapshot_dates: string[];
+    backfill_required: boolean;
+    backfill_dates: string[];
+    duplicate_repair_required: boolean;
+    status: string;
+    readiness_message: string;
+  };
+  prediction_count: number;
+  predictions: ResearchPredictionRecord[];
+  horizon_28d_available_count: number;
+  horizon_28d_pending_count: number;
+  data_quality_excluded_outcome_count: number;
+  horizon_28d_complete: boolean;
+  daily_path_review_complete: boolean;
+  outcomes: ResearchOutcomeRecord[];
+  outcome_summaries: ResearchOutcomeSummary[];
+};
+
+export type ResearchHypothesis = {
+  id: string;
+  title: string;
+  status: string;
+  generated_by: string;
+  submitted_by: string;
+  latest_validation_id: string | null;
+  reviewed_by: string | null;
+  review_notes: string | null;
+  rule_version: string;
+  feature_version: string;
+  data_version: string;
+};
+
+export type ResearchPattern = {
+  id: string;
+  pattern_key: string;
+  status: string;
+  market: string;
+  sample_size: number;
+  evaluable_case_count: number;
+  success_rate_pct: number | null;
+  approval_eligible: boolean;
+  reviewed_by: string | null;
+  review_notes: string | null;
+  rule_version: string;
+  feature_version: string;
+  data_version: string;
+};
+
+export type ResearchDashboardResponse = {
+  generated_at: string;
+  database_configured: boolean;
+  knowledge_graph: Record<string, unknown>;
+  cohorts: ResearchCohortReadiness[];
+  hypotheses: ResearchHypothesis[];
+  hypothesis_status_counts: Record<string, number>;
+  patterns: ResearchPattern[];
+  pattern_status_counts: Record<string, number>;
+  recent_pipeline_errors: PipelineDebugEvent[];
+  operational_messages: Array<{
+    code: string;
+    severity: string;
+    message: string;
+    cohort_id: string | null;
+  }>;
+};
+
+export type ResearchAuditExport = {
+  filename: string;
+  exported_at: string;
+  cohort_id: string | null;
+  payload: Record<string, unknown>;
+};
+
 export type LLMConnectionStatus = {
   connected: boolean;
   base_url: string;

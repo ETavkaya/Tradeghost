@@ -290,3 +290,136 @@ When updating this file, append a short dated entry:
   1. Add the P2A coverage-monitor alert for partial/duplicate state anomalies.
   2. Begin Phase 2B Postgres migrations for canonical OHLC, immutable Prediction records, and immutable fixed-horizon Outcome records.
   3. Project committed Phase 2B facts through the existing Neo4j outbox; LLM remains advisory only.
+
+## 16) Latest Entry (2026-08-16)
+
+- Request:
+  - Implement Phase 2B deterministic Prediction and Outcome persistence after completing the P2A coverage monitor.
+- Implemented changes:
+  - Added an idempotent Postgres migration for canonical OHLC bars, immutable prediction and outcome records, outcome summary snapshots, and data-quality events.
+  - Cohort creation now writes one deterministic Prediction per frozen candidate selection snapshot, using a stable UUID, payload hash, idempotency key, and rule/feature/data versions.
+  - Added an explicit legacy prediction backfill that reads only immutable historical cohort-candidate snapshots; it cannot use LLM output or current scanner results.
+  - Added exact-symbol canonical OHLC ingestion and deterministic 7D/14D/28D outcome evaluation. The selection session is day one, incomplete daily snapshots are reported separately, and source-symbol mismatches create data-quality-excluded outcomes.
+  - Added rebuildable summary snapshots by category, setup type, and blocker, plus read/evaluation APIs for cohort predictions and outcomes.
+  - Daily persisted follow-up reports now trigger deterministic outcome evaluation without involving an LLM.
+- Validation run:
+  - `python -m py_compile tradeghost/apps/api/main.py tradeghost/services/intelligence/service.py tradeghost/services/intelligence/research_record_store.py tradeghost/shared/models/schemas.py`
+  - `pytest -q` (`21 passed`; existing FastAPI/pandas warnings only).
+- Deployment follow-up:
+  1. Commit and deploy the P2B migration and API service to `192.168.0.233`.
+  2. Run the legacy prediction backfill and deterministic outcome evaluation for cohort `81711de2-ca32-4d00-9ce7-d960e316f671`.
+  3. Verify `7D`, `14D`, and `28D` records plus category/setup/blocker summaries, then begin P2C regime snapshots.
+
+## 17) Latest Entry (2026-08-16)
+
+- Request:
+  - Implement Phase 2C on top of the local Phase 2B foundation without changing scanner scoring, category logic, or LLM authority.
+- Implemented changes:
+  - Added replay-safe Postgres migration `002_phase2c_market_regimes.sql` for immutable `market_regime_snapshots`, Prediction selection-regime references, and Outcome benchmark-attribution fields.
+  - Selection-time Prediction persistence now records a deterministic regime snapshot. Outcome evaluation records a deterministic snapshot at each available 7D/14D/28D horizon.
+  - The benchmark-only V1 classifier uses persisted source versions, 1/7/14/28-session benchmark returns, and 20-session annualized volatility. US uses `SPY`, `QQQ`, and `IWM`; BIST uses `XU100.IS`.
+  - Outcomes now retain market/sector proxy returns, relative returns to `SPY`, `QQQ`, and the mapped sector proxy, plus `market_beta_move`, `sector_beta_move`, `stock_specific_move`, or `unattributed` attribution.
+  - Benchmark gaps are recorded as regime or attribution evidence and do not invalidate a valid exact-symbol Outcome. Outcome summary snapshots now also group by market regime.
+  - Added `GET /intelligence/cohorts/{cohort_id}/market-regimes` and a deterministic P2C test fixture; no LLM creates or changes predictions, outcomes, regimes, or rules.
+- Validation run:
+  - `git diff --check`
+  - `pytest -q` (`22 passed`; existing FastAPI/pandas warnings only).
+  - `python -m pip wheel --no-deps --wheel-dir .tmp-wheel .` with the packaged `002_phase2c_market_regimes.sql` verified in the wheel.
+- Deployment follow-up:
+  1. Review and commit the combined local P2B/P2C changes before deployment; they are not committed or deployed yet.
+  2. Deploy to `192.168.0.233`, then run legacy deterministic Prediction backfill and Outcome evaluation for cohort `81711de2-ca32-4d00-9ce7-d960e316f671`.
+  3. Verify 7D/14D/28D Outcome attribution, regime summaries, and the read-only market-regimes endpoint before starting P2D graph projection.
+
+## 18) Latest Entry (2026-08-16)
+
+- Request:
+  - Complete Phase 2D graph projection on top of the local Phase 2B/2C foundation.
+- Implemented changes:
+  - Extended the existing transactional `knowledge_graph_outbox` with typed committed-record events for market regimes, Predictions, and Outcomes while preserving the daily-report event contract.
+  - Research persistence now emits the relevant outbox payload in the same Postgres transaction as each immutable write. Existing committed research records can be queued without changing their source rows.
+  - Added idempotent Neo4j `MERGE` projection keyed by authoritative Postgres UUIDs for `MarketRegime`, `Prediction`, deterministic `Condition`, `Outcome`, and `Asset` nodes.
+  - Added deterministic provenance and lineage edges: `PREDICTS`, `VALID_IF`, `INVALIDATED_BY`, `PERFORMED_UNDER`, `RESULTED_IN`, `EVALUATES`, `SOURCE_REPORT`, and `SUPERSEDES`.
+  - Added `POST /intelligence/knowledge-graph/research-backfill`; graph status now returns counts split by event type. No LLM, graph query, or projector can create or mutate the Postgres source facts or scanner rules.
+- Validation run:
+  - `git diff --check`
+  - `pytest -q` (`24 passed`; existing FastAPI/pandas warnings only).
+  - Wheel build verified both research migrations are packaged.
+- Deployment follow-up:
+  1. Review and commit the combined local P2B/P2C/P2D changes before deployment; they are not committed or deployed yet.
+  2. Deploy to `192.168.0.233`, run deterministic Prediction/Outcome backfill, then call `POST /intelligence/knowledge-graph/research-backfill?limit=100` until all committed facts are queued and projected.
+  3. Verify the outbox status by event type and inspect Neo4j paths from `Prediction` through `RESULTED_IN` to `Outcome` and `PERFORMED_UNDER` to `MarketRegime` before starting P2E retrieval.
+
+## 19) Latest Entry (2026-08-19)
+
+- Request:
+  - Implement Phase 2E deterministic similar-case evidence retrieval after completing local P2D graph projection.
+- Implemented changes:
+  - Added `POST /intelligence/reasoning/similar-setups`, a read-only endpoint over authoritative Postgres Prediction and latest 28D Outcome records.
+  - Matching is deterministic: exact or weighted criteria cover symbol, category, setup, trend, extension, trigger, blocker, risk flags, selection regime, and coarse location buckets.
+  - Retrieval applies an explicit `as_of_date` cutoff to Prediction selection and observed Outcome dates, preventing future-outcome leakage while retaining newly backfilled historical measurements.
+  - Performance metrics exclude data-quality outcomes and are withheld until `RESEARCH_RETRIEVAL_MIN_SAMPLE_SIZE` is reached. Responses disclose exclusions, incomplete daily paths, source limits, concentration, and no-recommendation caveats.
+  - Returned evidence carries immutable Prediction/Outcome/regime IDs already projected by P2D. No LLM is invoked; a future LLM may only explain these returned cases without changing any facts or rules.
+- Validation run:
+  - `git diff --check`
+  - `pytest -q` (`27 passed`; existing FastAPI/pandas warnings only).
+  - Wheel build verified the P2E retrieval module and research migrations are packaged.
+- Deployment follow-up:
+  1. Review and commit the combined local P2B/P2C/P2D/P2E changes before deployment; they are not committed or deployed yet.
+  2. Deploy to `192.168.0.233`, run deterministic Prediction/Outcome backfill, then research graph backfill before querying historical evidence.
+  3. Call `POST /intelligence/reasoning/similar-setups` with a bounded selection snapshot and verify sample-size withholding, as-of cutoff, and data-quality caveats before beginning P2F hypotheses.
+
+## 20) Latest Entry (2026-08-20)
+
+- Request:
+  - Finish P2F without changing scanner scoring, category logic, trade decisions, or LLM authority.
+- Implemented changes:
+  - Added replay-safe migration `003_phase2f_rule_hypotheses.sql` with persisted hypotheses, immutable validation runs, and append-only human review events.
+  - `POST /intelligence/hypotheses` resolves immutable Prediction/Outcome evidence, requires one common rule/feature/data version, records deterministic failure-cluster counts, rejects LLM-originated writes, and derives a candidate-only rule version.
+  - `POST /intelligence/hypotheses/{id}/backtest` freezes symbols, versions, candidate sandbox parameters, criteria, and train/validation/out-of-sample dates. It runs baseline and candidate comparisons without writing scanner settings, then qualifies only complete multi-split results that meet trade, expectancy, and drawdown thresholds.
+  - Human `accept` and `reject` endpoints create auditable review events. Acceptance changes only the hypothesis state to `approved_for_release`; a separately controlled release must create and activate any production scanner rule version.
+  - Added date-bounded execution to the existing backtest runner solely for the P2F sandbox; scoring and category logic are unchanged.
+- Validation run:
+  - `python -m compileall tradeghost`
+  - `git diff --check`
+  - `pytest -q tradeghost/tests/test_hypothesis_workflow.py` (`2 passed`).
+- Deployment follow-up:
+  1. Review and commit the combined local P2B-P2F work before deployment; it is still uncommitted and undeployed.
+  2. Deploy to `192.168.0.233` so migration `003_phase2f_rule_hypotheses.sql` is applied by the API service.
+  3. Create a human-submitted hypothesis from persisted 28D evidence, run the frozen three-split backtest, and inspect its review trail before considering a separate scanner-rule release.
+
+## 21) Latest Entry (2026-08-25)
+
+- Request:
+  - Finish P2G using the Phase 2 plan's Pattern Discovery scope without changing scanner scoring, category logic, trade decisions, or LLM authority.
+- Implemented changes:
+  - Added replay-safe migration `004_phase2g_pattern_candidates.sql` for deterministic pattern candidates and append-only human review events.
+  - `POST /intelligence/patterns/discover` groups immutable 28D Outcomes by a fixed low-dimensional condition vocabulary and separates populations by market, horizon, and rule/feature/data versions.
+  - Candidates require at least 30 observations, 80% evaluable coverage, three cohorts, diversified symbols, chronological train/validation samples, Wilson confidence intervals, a two-proportion test, and a holdout edge versus the independent non-matching population.
+  - Human approval changes only `candidate` to `approved_for_retrieval`; it cannot change scanner configuration, make a recommendation, mutate Predictions/Outcomes, or project a Neo4j Pattern node.
+- Validation run:
+  - `python -m compileall tradeghost`
+  - `git diff --check`
+  - `pytest -q tradeghost/tests/test_pattern_discovery.py` (`2 passed`).
+- Deployment follow-up:
+  1. Review and commit the combined local P2B-P2G work before deployment; it is still uncommitted and undeployed.
+  2. Deploy to `192.168.0.233` so migration `004_phase2g_pattern_candidates.sql` is applied by the API service.
+  3. Run discovery only after enough completed deterministic 28D outcomes exist; inspect candidate source IDs, exclusions, and review events before approving any retrieval status.
+
+## 22) Latest Entry (2026-08-25)
+
+- Request:
+  - Finish Phase 2H without changing scanner scoring, category logic, trade decisions, rule mutation controls, or LLM authority.
+- Implemented changes:
+  - Added `GET /intelligence/research/dashboard`, a read-only aggregate of cohort coverage, immutable Prediction/28D Outcome previews, category/setup/blocker summaries, graph status, review candidates, and recent pipeline failures.
+  - Added `GET /intelligence/research/audit-export` for an in-memory, downloadable JSON audit snapshot; it identifies Postgres as authoritative and Neo4j/LLM as non-authoritative layers.
+  - Added the Next.js `Research` workspace with separate 28D-outcome and daily-path readiness, missing/partial/backfill dates, provenance IDs, data-quality caveats, and explicit human reviewer-ID controls for existing hypothesis/Pattern transitions.
+  - Added `docs/phase2_operations_runbook.md`. The existing `Logs` workspace remains the only UI execution surface for daily follow-up and idempotent backfill.
+  - Dashboard polling suppresses the normal coverage-monitor pipeline event so read-only monitoring cannot manufacture operational activity.
+- Validation run:
+  - `pytest -q` (`32 passed`; existing FastAPI/pandas warnings only).
+  - `npx tsc --noEmit` and `npm run build` in `apps/web` (both passed; `/research` and its proxy routes are included in the production build).
+  - `git diff --check` and `python -m pip wheel --no-deps --wheel-dir .tmp-wheel .` (passed).
+- Deployment follow-up:
+  1. Review and commit the combined local P2B-P2H work before deployment; it remains uncommitted and undeployed.
+  2. Deploy to `192.168.0.233`, then verify `/intelligence/research/dashboard`, `Research`, and the JSON audit export against the configured Postgres/Neo4j services.
+  3. Use the runbook to clear actual coverage gaps and process the graph outbox; do not use P2H tooling to alter scanner rules.

@@ -32,6 +32,89 @@ class FakeDailyReportStore:
         return self.details.get(report_date)
 
 
+class FakeResearchRecordStore:
+    configured = True
+
+    def __init__(self) -> None:
+        self.predictions = {}
+        self.outcomes = {}
+        self.market_regimes = {}
+        self.canonical_bars = {}
+        self.summaries = []
+        self.data_quality_events = []
+
+    def create_predictions(self, records):
+        created_count = 0
+        persisted = []
+        for record in records:
+            existing = self.predictions.get(record.idempotency_key)
+            if existing is None:
+                self.predictions[record.idempotency_key] = record
+                existing = record
+                created_count += 1
+            persisted.append(existing)
+        return persisted, created_count
+
+    def list_predictions(self, cohort_id: str):
+        return [record for record in self.predictions.values() if record.cohort_id == cohort_id]
+
+    def create_market_regime_snapshot(self, record):
+        existing = self.market_regimes.get(record.idempotency_key)
+        if existing is not None:
+            return existing, False
+        self.market_regimes[record.idempotency_key] = record
+        return record, True
+
+    def get_market_regime_snapshot(self, snapshot_id: str):
+        return next((record for record in self.market_regimes.values() if record.id == snapshot_id), None)
+
+    def upsert_canonical_bars(self, bars):
+        for bar in bars:
+            key = (bar["market"], bar["symbol"], bar["data_version"])
+            self.canonical_bars.setdefault(key, {})[bar["bar_date"]] = bar
+
+    def list_canonical_bars(self, *, market: str, symbol: str, data_version: str, through_date=None):
+        rows = self.canonical_bars.get((market, symbol, data_version), {}).values()
+        return sorted(
+            [row for row in rows if through_date is None or row["bar_date"] <= through_date],
+            key=lambda row: row["bar_date"],
+        )
+
+    def latest_outcome_id(self, prediction_id: str, *, horizon_days: int, evaluator_version: str):
+        matches = [
+            record
+            for record in self.outcomes.values()
+            if record.prediction_id == prediction_id
+            and record.horizon_days == horizon_days
+            and record.evaluator_version == evaluator_version
+        ]
+        return max(matches, key=lambda record: (record.evaluated_at, record.created_at)).id if matches else None
+
+    def create_outcome(self, record):
+        existing = self.outcomes.get(record.idempotency_key)
+        if existing is not None:
+            return existing, False
+        self.outcomes[record.idempotency_key] = record
+        return record, True
+
+    def list_outcomes(self, cohort_id: str, horizon_days: int | None = None):
+        return [
+            record
+            for record in self.outcomes.values()
+            if record.cohort_id == cohort_id and (horizon_days is None or record.horizon_days == horizon_days)
+        ]
+
+    def upsert_outcome_summaries(self, records):
+        self.summaries = records
+        return records
+
+    def list_outcome_summaries(self, cohort_id: str):
+        return [record for record in self.summaries if record.cohort_id == cohort_id]
+
+    def record_data_quality_event(self, **event):
+        self.data_quality_events.append(event)
+
+
 class FakeDataService:
     def __init__(self, frames: dict[str, pd.DataFrame]) -> None:
         self.frames = frames
@@ -62,6 +145,194 @@ def _wire_temp_storage(service: IntelligenceService, tmp_path) -> None:
     service.scheduler_logs_dir = tmp_path / "scheduler"
     service.scheduler_logs_path = service.scheduler_logs_dir / "daily_followup.log"
     service.daily_report_store = FakeDailyReportStore()
+
+
+def _phase2b_cohort_and_candidate(cohort_id: str, symbol: str = "AAA") -> tuple[CandidateCohort, CohortCandidate]:
+    cohort = CandidateCohort(
+        id=cohort_id,
+        name="Phase 2B deterministic cohort",
+        start_date=date(2026, 5, 13),
+        market=MarketCode.US,
+        analysis_window=ScannerDuration.ONE_YEAR,
+        selected_categories=[ScannerCategory.TREND_MODE],
+        followup_enabled=True,
+        followup_start_date=date(2026, 5, 13),
+        followup_target_days=28,
+    )
+    candidate = CohortCandidate(
+        cohort_id=cohort_id,
+        symbol=symbol,
+        market=MarketCode.US,
+        selected_at=datetime(2026, 5, 13, tzinfo=UTC),
+        selected_price=100.0,
+        selected_rank=1,
+        selected_score=82.0,
+        selected_categories=[ScannerCategory.TREND_MODE],
+        selected_setup_type="momentum_continuation",
+        selected_candidate_type="watch_candidate",
+        selected_entry_readiness="watch",
+        selected_blocked_by="none",
+        selected_trend_state="bullish_trend",
+        selected_score_dynamics="improving",
+        selected_reason="Deterministic trend-mode selection.",
+        selected_sector="Technology",
+        selected_invalidation_condition="Invalidate if trend structure fails.",
+        selected_structure_snapshot={
+            "extension_state": "normal",
+            "trigger_state": "confirmed",
+            "trigger_score": 76.0,
+            "trigger_threshold": 55.0,
+        },
+    )
+    return cohort, candidate
+
+
+def test_phase2b_outcomes_are_deterministic_and_independent_of_snapshot_coverage(tmp_path) -> None:
+    cohort_id = "26262626-2626-4262-8262-262626262626"
+    cohort, candidate = _phase2b_cohort_and_candidate(cohort_id)
+    service = IntelligenceService(
+        analysis_engine=FakeAnalysisEngine({}),
+        scanner_engine=object(),
+        backtest_engine=object(),
+    )
+    _wire_temp_storage(service, tmp_path)
+    trading_dates = service._trading_days_between(cohort.start_date, date(2026, 7, 1))
+    prices = [100.0 + index for index in range(len(trading_dates))]
+    frame = pd.DataFrame(
+        {
+            "open": prices,
+            "high": [price + 1.0 for price in prices],
+            "low": [price - 1.0 for price in prices],
+            "close": prices,
+            "volume": [1_000_000] * len(prices),
+        },
+        index=pd.to_datetime(trading_dates),
+    )
+    service.analysis_engine = FakeAnalysisEngine({"AAA": frame})
+    service.research_record_store = FakeResearchRecordStore()
+    service._save_cohorts([cohort])
+    service._save_cohort_candidates([candidate])
+    prediction_one = service._prediction_record_from_candidate(cohort, candidate)
+    prediction_two = service._prediction_record_from_candidate(cohort, candidate)
+    assert prediction_one.idempotency_key == prediction_two.idempotency_key
+    assert prediction_one.id == prediction_two.id
+    assert prediction_one.payload_hash == prediction_two.payload_hash
+    prediction_backfill = service.backfill_cohort_prediction_records(cohort_id)
+    assert prediction_backfill.created_prediction_count == 1
+    assert prediction_backfill.existing_prediction_count == 0
+
+    first_evaluation = service.evaluate_cohort_outcomes(cohort_id, as_of_date=trading_dates[29])
+
+    assert first_evaluation.created_outcome_count == 3
+    assert first_evaluation.pending_horizon_count == 0
+    outcomes_by_horizon = {outcome.horizon_days: outcome for outcome in first_evaluation.outcomes}
+    assert sorted(outcomes_by_horizon) == [7, 14, 28]
+    assert outcomes_by_horizon[7].return_pct == 6.0
+    assert outcomes_by_horizon[14].return_pct == 13.0
+    assert outcomes_by_horizon[28].return_pct == 27.0
+    assert all(outcome.outcome_status == "available" for outcome in outcomes_by_horizon.values())
+    assert all(outcome.daily_snapshot_path_complete is False for outcome in outcomes_by_horizon.values())
+    assert all(outcome.price_path_complete is True for outcome in outcomes_by_horizon.values())
+    assert {summary.grouping for summary in first_evaluation.summaries} == {
+        "category",
+        "setup_type",
+        "blocked_by",
+        "market_regime",
+    }
+
+    second_evaluation = service.evaluate_cohort_outcomes(cohort_id, as_of_date=trading_dates[29])
+
+    assert second_evaluation.created_outcome_count == 0
+    assert second_evaluation.existing_outcome_count == 3
+
+
+def test_phase2c_outcomes_include_deterministic_regime_and_benchmark_attribution(tmp_path) -> None:
+    cohort_id = "28282828-2828-4282-8282-282828282828"
+    cohort, candidate = _phase2b_cohort_and_candidate(cohort_id)
+    service = IntelligenceService(
+        analysis_engine=FakeAnalysisEngine({}),
+        scanner_engine=object(),
+        backtest_engine=object(),
+    )
+    _wire_temp_storage(service, tmp_path)
+    selection_dates = service._trading_days_between(cohort.start_date, date(2026, 7, 1))
+    prior_dates = list(pd.bdate_range(end=pd.Timestamp(cohort.start_date) - pd.Timedelta(days=1), periods=30).date)
+    all_dates = prior_dates + selection_dates
+    selection_index = len(prior_dates)
+
+    def frame_for(step: float) -> pd.DataFrame:
+        prices = [100.0 + (index - selection_index) * step for index in range(len(all_dates))]
+        return pd.DataFrame(
+            {
+                "open": prices,
+                "high": [price + 1.0 for price in prices],
+                "low": [price - 1.0 for price in prices],
+                "close": prices,
+                "volume": [1_000_000] * len(prices),
+            },
+            index=pd.to_datetime(all_dates),
+        )
+
+    service.analysis_engine = FakeAnalysisEngine(
+        {
+            "AAA": frame_for(1.0),
+            "SPY": frame_for(0.5),
+            "QQQ": frame_for(0.25),
+            "IWM": frame_for(0.1),
+            "XLK": frame_for(0.75),
+        }
+    )
+    service.research_record_store = FakeResearchRecordStore()
+    service._save_cohorts([cohort])
+    service._save_cohort_candidates([candidate])
+
+    prediction = service.backfill_cohort_prediction_records(cohort_id).predictions[0]
+    evaluation = service.evaluate_cohort_outcomes(cohort_id, as_of_date=selection_dates[29])
+    outcome = next(record for record in evaluation.outcomes if record.horizon_days == 28)
+
+    assert prediction.selection_market_regime_id is not None
+    assert outcome.outcome_market_regime_id is not None
+    assert outcome.market_regime_label == "risk_on"
+    assert outcome.market_return_pct == 13.5
+    assert outcome.sector_proxy_symbol == "XLK"
+    assert outcome.sector_return_pct == 20.25
+    assert outcome.relative_to_spy == 13.5
+    assert outcome.relative_to_qqq == 20.25
+    assert outcome.relative_to_sector_proxy == 6.75
+    assert outcome.attribution_label == "stock_specific_move"
+    assert outcome.attribution_json["primary_benchmark_symbol"] == "SPY"
+    assert "market_regime" in {summary.grouping for summary in evaluation.summaries}
+
+
+def test_phase2b_symbol_mismatch_creates_data_quality_excluded_outcomes(tmp_path) -> None:
+    cohort_id = "27272727-2727-4272-8272-272727272727"
+    cohort, candidate = _phase2b_cohort_and_candidate(cohort_id)
+    service = IntelligenceService(
+        analysis_engine=FakeAnalysisEngine({}),
+        scanner_engine=object(),
+        backtest_engine=object(),
+    )
+    _wire_temp_storage(service, tmp_path)
+
+    class MismatchedDataService:
+        def get_market_data(self, symbol: str, market: str | None = None, period: str | None = None, use_cache: bool = True):
+            return SimpleNamespace(normalized_ticker="BBB", daily=pd.DataFrame())
+
+    service.analysis_engine = SimpleNamespace(data_service=MismatchedDataService())
+    service.research_record_store = FakeResearchRecordStore()
+    service._save_cohorts([cohort])
+    service._save_cohort_candidates([candidate])
+    prediction_backfill = service.backfill_cohort_prediction_records(cohort_id)
+    assert prediction_backfill.created_prediction_count == 1
+
+    evaluation = service.evaluate_cohort_outcomes(cohort_id, as_of_date=date(2026, 7, 1))
+
+    assert evaluation.created_outcome_count == 3
+    assert evaluation.pending_horizon_count == 0
+    assert evaluation.data_quality_excluded_count == 3
+    assert {outcome.horizon_days for outcome in evaluation.outcomes} == {7, 14, 28}
+    assert all(outcome.outcome_status == "data_quality_excluded" for outcome in evaluation.outcomes)
+    assert all("possible_symbol_price_mismatch" in outcome.data_quality_flags for outcome in evaluation.outcomes)
 
 
 def test_cohort_review_separates_elapsed_coverage_and_28d_horizon(tmp_path) -> None:

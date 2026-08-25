@@ -52,6 +52,8 @@ from tradeghost.shared.models.schemas import (
     CohortReviewRequest,
     CohortReviewResponse,
     CohortCoverageMonitorResponse,
+    CohortMarketRegimesResponse,
+    CohortOutcomesResponse,
     DiscoveryCreateCohortRequest,
     DailyBriefingRequest,
     DailyPipelineRequest,
@@ -60,6 +62,8 @@ from tradeghost.shared.models.schemas import (
     IntelligenceRunReport,
     IntelligenceRunReportExport,
     IntelligenceDashboardResponse,
+    ResearchAuditExport,
+    ResearchDashboardResponse,
     IntelligenceRunResponse,
     LLMConnectionStatus,
     LLMDebugLog,
@@ -69,6 +73,18 @@ from tradeghost.shared.models.schemas import (
     MonitoringRunRequest,
     MonitoringRunDueRequest,
     MonitoringRunSummary,
+    OutcomeEvaluationResponse,
+    PatternCandidate,
+    PatternCandidateReview,
+    PatternCandidateStatus,
+    PatternDiscoveryRequest,
+    PatternDiscoveryResponse,
+    PatternReviewRequest,
+    PredictionBackfillResponse,
+    PredictionRecord,
+    HypothesisBacktestRequest,
+    HypothesisReviewRequest,
+    HypothesisValidationRun,
     MonitoringSchedule,
     MonitoringScheduleCreateRequest,
     MonitoringScheduleUpdateRequest,
@@ -79,6 +95,12 @@ from tradeghost.shared.models.schemas import (
     ScannerLLMQChatRequest,
     ScannerLLMQChatResponse,
     ScoreResponse,
+    SimilarSetupRequest,
+    SimilarSetupRetrievalResponse,
+    RuleHypothesis,
+    RuleHypothesisCreateRequest,
+    RuleHypothesisReview,
+    RuleHypothesisStatus,
     SymbolContextBatchRequest,
     SymbolContextBatchResponse,
     StrategyMode,
@@ -831,6 +853,223 @@ def get_intelligence_cohort_coverage(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/intelligence/cohorts/{cohort_id}/predictions", response_model=list[PredictionRecord])
+def list_intelligence_cohort_predictions(cohort_id: str) -> list[PredictionRecord]:
+    try:
+        return intelligence_service.list_cohort_predictions(cohort_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/cohorts/{cohort_id}/predictions/backfill", response_model=PredictionBackfillResponse)
+def backfill_intelligence_cohort_predictions(cohort_id: str) -> PredictionBackfillResponse:
+    try:
+        return intelligence_service.backfill_cohort_prediction_records(cohort_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/cohorts/{cohort_id}/outcomes/evaluate", response_model=OutcomeEvaluationResponse)
+def evaluate_intelligence_cohort_outcomes(
+    cohort_id: str,
+    as_of_date: date | None = Query(default=None),
+) -> OutcomeEvaluationResponse:
+    try:
+        return intelligence_service.evaluate_cohort_outcomes(cohort_id, as_of_date=as_of_date)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/cohorts/{cohort_id}/outcomes", response_model=CohortOutcomesResponse)
+def list_intelligence_cohort_outcomes(
+    cohort_id: str,
+    horizon_days: int | None = Query(default=None, ge=1, le=365),
+) -> CohortOutcomesResponse:
+    try:
+        return intelligence_service.list_cohort_outcomes(cohort_id, horizon_days=horizon_days)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/cohorts/{cohort_id}/market-regimes", response_model=CohortMarketRegimesResponse)
+def list_intelligence_cohort_market_regimes(cohort_id: str) -> CohortMarketRegimesResponse:
+    try:
+        return intelligence_service.list_cohort_market_regimes(cohort_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/reasoning/similar-setups", response_model=SimilarSetupRetrievalResponse)
+def retrieve_intelligence_similar_setups(payload: SimilarSetupRequest) -> SimilarSetupRetrievalResponse:
+    try:
+        return intelligence_service.retrieve_similar_setups(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/patterns/discover", response_model=PatternDiscoveryResponse)
+def discover_intelligence_pattern_candidates(payload: PatternDiscoveryRequest) -> PatternDiscoveryResponse:
+    try:
+        return intelligence_service.discover_pattern_candidates(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/research/patterns", response_model=list[PatternCandidate])
+@app.get("/intelligence/patterns", response_model=list[PatternCandidate])
+def list_intelligence_pattern_candidates(
+    market: str | None = Query(default=None),
+    status: PatternCandidateStatus | None = Query(default=None),
+    as_of_date: date | None = Query(default=None),
+) -> list[PatternCandidate]:
+    try:
+        return intelligence_service.list_pattern_candidates(
+            market=market,
+            status=status,
+            as_of_date=as_of_date,
+        )
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/patterns/{pattern_candidate_id}", response_model=PatternCandidate)
+def get_intelligence_pattern_candidate(pattern_candidate_id: str) -> PatternCandidate:
+    try:
+        return intelligence_service.get_pattern_candidate(pattern_candidate_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get(
+    "/intelligence/patterns/{pattern_candidate_id}/reviews",
+    response_model=list[PatternCandidateReview],
+)
+def list_intelligence_pattern_candidate_reviews(
+    pattern_candidate_id: str,
+) -> list[PatternCandidateReview]:
+    try:
+        return intelligence_service.list_pattern_candidate_reviews(pattern_candidate_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/patterns/{pattern_candidate_id}/approve", response_model=PatternCandidate)
+def approve_intelligence_pattern_candidate(
+    pattern_candidate_id: str,
+    payload: PatternReviewRequest,
+) -> PatternCandidate:
+    try:
+        return intelligence_service.approve_pattern_candidate(pattern_candidate_id, payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/patterns/{pattern_candidate_id}/reject", response_model=PatternCandidate)
+def reject_intelligence_pattern_candidate(
+    pattern_candidate_id: str,
+    payload: PatternReviewRequest,
+) -> PatternCandidate:
+    try:
+        return intelligence_service.reject_pattern_candidate(pattern_candidate_id, payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/hypotheses", response_model=RuleHypothesis)
+def create_intelligence_rule_hypothesis(payload: RuleHypothesisCreateRequest) -> RuleHypothesis:
+    try:
+        return intelligence_service.create_rule_hypothesis(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/hypotheses", response_model=list[RuleHypothesis])
+def list_intelligence_rule_hypotheses(
+    status: RuleHypothesisStatus | None = Query(default=None),
+) -> list[RuleHypothesis]:
+    try:
+        return intelligence_service.list_rule_hypotheses(status=status)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/hypotheses/{hypothesis_id}", response_model=RuleHypothesis)
+def get_intelligence_rule_hypothesis(hypothesis_id: str) -> RuleHypothesis:
+    try:
+        return intelligence_service.get_rule_hypothesis(hypothesis_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/hypotheses/{hypothesis_id}/reviews", response_model=list[RuleHypothesisReview])
+def list_intelligence_rule_hypothesis_reviews(hypothesis_id: str) -> list[RuleHypothesisReview]:
+    try:
+        return intelligence_service.list_rule_hypothesis_reviews(hypothesis_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/hypotheses/{hypothesis_id}/backtest", response_model=HypothesisValidationRun)
+def backtest_intelligence_rule_hypothesis(
+    hypothesis_id: str,
+    payload: HypothesisBacktestRequest,
+) -> HypothesisValidationRun:
+    try:
+        return intelligence_service.run_rule_hypothesis_backtest(hypothesis_id, payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/hypotheses/{hypothesis_id}/accept", response_model=RuleHypothesis)
+def approve_intelligence_rule_hypothesis(
+    hypothesis_id: str,
+    payload: HypothesisReviewRequest,
+) -> RuleHypothesis:
+    try:
+        return intelligence_service.approve_rule_hypothesis(hypothesis_id, payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/hypotheses/{hypothesis_id}/reject", response_model=RuleHypothesis)
+def reject_intelligence_rule_hypothesis(
+    hypothesis_id: str,
+    payload: HypothesisReviewRequest,
+) -> RuleHypothesis:
+    try:
+        return intelligence_service.reject_rule_hypothesis(hypothesis_id, payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/intelligence/cohorts/{cohort_id}/export", response_model=IntelligenceRunReportExport)
 def export_intelligence_cohort_report(
     cohort_id: str,
@@ -963,6 +1202,26 @@ def get_intelligence_dashboard() -> IntelligenceDashboardResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/intelligence/research/dashboard", response_model=ResearchDashboardResponse)
+def get_intelligence_research_dashboard() -> ResearchDashboardResponse:
+    try:
+        return intelligence_service.get_research_dashboard()
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/research/audit-export", response_model=ResearchAuditExport)
+def export_intelligence_research_audit(
+    cohort_id: str | None = Query(default=None),
+) -> ResearchAuditExport:
+    try:
+        return intelligence_service.export_research_audit(cohort_id=cohort_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/intelligence/knowledge-graph/status")
 def get_intelligence_knowledge_graph_status() -> dict[str, Any]:
     try:
@@ -987,6 +1246,16 @@ def backfill_intelligence_knowledge_graph_reports(
 ) -> dict[str, Any]:
     try:
         return intelligence_service.backfill_knowledge_graph_reports(limit=limit)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/knowledge-graph/research-backfill")
+def backfill_intelligence_knowledge_graph_research_records(
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> dict[str, Any]:
+    try:
+        return intelligence_service.backfill_knowledge_graph_research_records(limit=limit)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

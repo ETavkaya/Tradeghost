@@ -186,6 +186,7 @@ export default function LogsPage() {
           <div>running: <span className="text-slate-100">{fmt(scheduler?.scheduler_running)}</span></div>
           <div>timezone: <span className="text-slate-100">{fmt(scheduler?.timezone)}</span></div>
           <div>configured_run_time: <span className="text-slate-100">{fmt(scheduler?.configured_run_time)}</span></div>
+          <div>last_tick_at: <span className="text-slate-100">{dt(scheduler?.last_tick_at)}</span></div>
           <div>last_run_at: <span className="text-slate-100">{dt(scheduler?.last_run_at)}</span></div>
           <div>last_success_at: <span className="text-slate-100">{dt(scheduler?.last_success_at)}</span></div>
           <div>last_failure_at: <span className="text-slate-100">{dt(scheduler?.last_failure_at)}</span></div>

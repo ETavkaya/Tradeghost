@@ -1300,6 +1300,7 @@ export type LogsSchedulerStatus = {
   timezone: string;
   configured_run_time: string;
   next_run_at: string | null;
+  last_tick_at: string | null;
   last_run_at: string | null;
   last_success_at: string | null;
   last_failure_at: string | null;

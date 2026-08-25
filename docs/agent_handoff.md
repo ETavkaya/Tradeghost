@@ -423,3 +423,12 @@ When updating this file, append a short dated entry:
   1. Review and commit the combined local P2B-P2H work before deployment; it remains uncommitted and undeployed.
   2. Deploy to `192.168.0.233`, then verify `/intelligence/research/dashboard`, `Research`, and the JSON audit export against the configured Postgres/Neo4j services.
   3. Use the runbook to clear actual coverage gaps and process the graph outbox; do not use P2H tooling to alter scanner rules.
+
+## 23) Latest Entry (2026-08-25)
+
+- Request:
+  - Deploy Phase 2 services and clarify empty scheduler status while verifying Neo4j.
+- Implemented local follow-up:
+  - Added `last_tick_at` to the Logs scheduler status so a healthy polling loop is visible even before a scheduled job has work to process. A blank `last_run_at` is expected while no active follow-up cohort is due.
+- Deployment status:
+  - Commit `14f0baa` contains the completed P2B-P2H release and was pushed to `Full-analysis-flow---new-backtest`. Host deployment and runtime verification are in progress.

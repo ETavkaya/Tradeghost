@@ -7374,6 +7374,7 @@ class IntelligenceService:
             (row for row in reversed(scheduler_entries) if row.get("event") in {"job_started", "job_completed", "job_failed"}),
             None,
         )
+        last_tick = next((row for row in reversed(scheduler_entries) if row.get("event") == "scheduler_tick"), None)
         last_success = next(
             (
                 row
@@ -7440,6 +7441,7 @@ class IntelligenceService:
                 "timezone": self.settings.daily_cohort_followup_timezone,
                 "configured_run_time": self.settings.daily_cohort_followup_schedule,
                 "next_run_at": next_run.isoformat() if next_run else None,
+                "last_tick_at": last_tick.get("timestamp") if last_tick else None,
                 "last_run_at": last_run.get("timestamp") if last_run else None,
                 "last_success_at": last_success.get("timestamp") if last_success else None,
                 "last_failure_at": last_failure.get("timestamp") if last_failure else None,

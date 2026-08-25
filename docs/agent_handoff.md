@@ -464,3 +464,14 @@ When updating this file, append a short dated entry:
   1. Commit and deploy this lifecycle release to `192.168.0.233`; the API startup applies `005_phase2i_multihorizon_lifecycle.sql`.
   2. Verify legacy 28D cohorts are `mature_tracking`, re-enable only cohorts that were automatically completed, and keep manually archived cohorts archived.
   3. Run a bounded Outcome evaluation and graph research backfill to project any newly available 56D+ records and `HAS_OUTCOME` edges.
+
+## 26) Latest Entry (2026-08-25)
+
+- Deployed and verified:
+  - Deployed commit `60361fc` to `192.168.0.233`; the rebuilt API and web containers are running, Postgres is available, and Neo4j remains healthy.
+  - Migration `005_phase2i_multihorizon_lifecycle.sql` is applied and `outcome_records.max_drawdown_pct` exists.
+  - Legacy `Milestone#Emre` is now enabled `mature_tracking` with `review_ready_28d_at=2026-06-23`; it remains part of scheduled follow-up. Scheduler status reports one mature cohort, two paused cohorts, and a current heartbeat.
+  - Live deterministic evaluation created 56D evidence for the cohort. Persisted counts are 54 each at 7D/14D/28D (including immutable correction lineage) and 20 at 56D; 90D is next due on 2026-09-21.
+  - Neo4j research replay completed without failures. The graph contains 20 Predictions with 80 `HAS_OUTCOME` links across 7D, 14D, 28D, and 56D horizons.
+- Next operational checkpoint:
+  - Let the scheduler continue daily mature tracking. After 2026-09-21, evaluate the cohort again for 90D outcomes and replay the research graph outbox; do not collapse those results into the 28D review.

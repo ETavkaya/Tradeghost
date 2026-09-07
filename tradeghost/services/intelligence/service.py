@@ -169,6 +169,52 @@ class IntelligenceService:
         value = (provider or "openai").strip().lower()
         return value if value in {"ollama", "openai"} else "openai"
 
+    @staticmethod
+    def _dedupe_models(models: list[str | None]) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for model in models:
+            value = (model or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            ordered.append(value)
+        return ordered
+
+    def _default_model_for_provider(self, provider: str) -> str:
+        if provider == "openai":
+            return self.settings.llmq_chat_model or self.settings.openai_model or "gpt-4o-mini"
+        return self.settings.ollama_model
+
+    def _openai_model_candidates(self, preferred_model: str | None = None) -> list[str]:
+        return self._dedupe_models(
+            [
+                preferred_model,
+                self.settings.llmq_chat_model,
+                self.settings.daily_report_llm_model,
+                self.settings.market_context_llm_model,
+                self.settings.final_28d_review_llm_model,
+                self.settings.openai_model,
+                "gpt-4o-mini",
+                "gpt-4.1-mini",
+                "gpt-5-mini",
+                "gpt-5-nano",
+                "gpt-4o",
+                "gpt-4.1",
+                "gpt-3.5-turbo-0125",
+            ]
+        )
+
+    def _resolve_openai_model(self, preferred_model: str | None, installed_models: list[str]) -> tuple[str, bool]:
+        installed = {str(model).strip() for model in installed_models if str(model).strip()}
+        candidates = self._openai_model_candidates(preferred_model)
+        for candidate in candidates:
+            if candidate in installed:
+                return candidate, True
+        if candidates:
+            return candidates[0], False
+        return preferred_model or self.settings.openai_model or "gpt-4o-mini", False
+
     def _ollama_generate_direct(
         self,
         *,
@@ -7867,7 +7913,7 @@ class IntelligenceService:
         rows = self._read_llm_logs()
         return sorted(rows, key=lambda row: row.timestamp, reverse=True)[: max(1, min(limit, 500))]
 
-    def get_llm_status(self, timeout_seconds: float = 2.0) -> LLMConnectionStatus:
+    def get_llm_status(self, timeout_seconds: float = 8.0) -> LLMConnectionStatus:
         checked_at = datetime.now(UTC)
         primary_provider = self._normalize_provider(self.settings.llm_provider)
         fallback_provider = self._normalize_provider(self.settings.llm_fallback_provider)
@@ -7876,17 +7922,21 @@ class IntelligenceService:
         primary_connected = False
         fallback_connected = False
         model_available: bool | None = None
-        model_used = self.settings.openai_model if primary_provider == "openai" else self.settings.ollama_model
-        primary_model = self.settings.openai_model if primary_provider == "openai" else self.settings.ollama_model
-        fallback_model = self.settings.openai_model if fallback_provider == "openai" else self.settings.ollama_model
+        primary_model = self._default_model_for_provider(primary_provider)
+        fallback_model = self._default_model_for_provider(fallback_provider)
         primary_health = self._providers[primary_provider].health_check(model=primary_model, timeout_seconds=timeout_seconds)
         fallback_health = self._providers[fallback_provider].health_check(model=fallback_model, timeout_seconds=timeout_seconds)
         primary_connected = primary_health.connected
         fallback_connected = fallback_health.connected
         installed = primary_health.installed_models
         model_available = primary_health.model_available
+        model_used = primary_model
         err = primary_health.error
         base_url = primary_health.endpoint
+        if primary_provider == "openai" and primary_connected:
+            model_used, model_available = self._resolve_openai_model(primary_model, installed)
+            if model_available:
+                err = None
 
         last_logs = self.get_llm_logs(limit=1)
         last_duration = last_logs[0].duration_ms if last_logs else None
@@ -7914,14 +7964,26 @@ class IntelligenceService:
         primary_provider = self._normalize_provider(self.settings.llm_provider)
         endpoint = self.settings.openai_base_url.rstrip("/") if primary_provider == "openai" else self.settings.ollama_base_url.rstrip("/")
         started = datetime.now(UTC)
-        model = req.model or self.settings.llmq_chat_model
+        model = req.model or self._default_model_for_provider(primary_provider)
         try:
-            text = self._ollama_generate(
-                prompt="Reply with exactly: OK",
-                model=model,
-                timeout_seconds=req.timeout_seconds,
-                call_type="health_probe",
-            )
+            if primary_provider == "openai":
+                result = self._providers["openai"].generate(
+                    prompt="Reply with exactly: OK",
+                    model=model,
+                    timeout_seconds=req.timeout_seconds,
+                    options={
+                        "temperature": 0.0,
+                        "num_predict": 16,
+                    },
+                )
+                text = result.raw_response
+            else:
+                text = self._ollama_generate(
+                    prompt="Reply with exactly: OK",
+                    model=model,
+                    timeout_seconds=req.timeout_seconds,
+                    call_type="health_probe",
+                )
             elapsed_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
             threshold_ms = int(req.threshold_seconds * 1000)
             return LLMResponseTestResult(

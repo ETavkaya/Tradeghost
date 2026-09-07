@@ -475,3 +475,24 @@ When updating this file, append a short dated entry:
   - Neo4j research replay completed without failures. The graph contains 20 Predictions with 80 `HAS_OUTCOME` links across 7D, 14D, 28D, and 56D horizons.
 - Next operational checkpoint:
   - Let the scheduler continue daily mature tracking. After 2026-09-21, evaluate the cohort again for 90D outcomes and replay the research graph outbox; do not collapse those results into the 28D review.
+
+## 27) Latest Entry (2026-09-08)
+
+- Request:
+  - Fix the intelligence layer OpenAI model error, avoid the `/v1/models` timeout false negative, and make the LLM test/status paths use the actual configured provider.
+- Implemented changes:
+  - Changed the default OpenAI chat/report/review model settings from `gpt-5-mini` / invalid `gpt-5.4-mini` to `gpt-4o-mini`.
+  - Added OpenAI model resolution helpers so the status check can prefer an installed model instead of reporting a hard failure when the configured model is missing.
+  - Increased the LLM status probe timeout and fixed the LLM test endpoint to call OpenAI when OpenAI is the primary provider.
+  - Added unit coverage for the model resolution behavior.
+- Files changed:
+  - `tradeghost/shared/config/settings.py`
+  - `.env.example`
+  - `tradeghost/services/intelligence/service.py`
+  - `tradeghost/tests/test_intelligence_llm_models.py`
+- Validation run:
+  - `python -m py_compile tradeghost/shared/config/settings.py tradeghost/services/intelligence/providers.py tradeghost/services/intelligence/service.py tradeghost/apps/api/main.py tradeghost/tests/test_intelligence_llm_models.py`
+  - `pytest -q tradeghost/tests/test_intelligence_llm_models.py` (`3 passed`)
+- Remaining risks / TODO:
+  - If the account still lacks OpenAI access or the network to `api.openai.com` is unavailable, the service will still fall back to the existing Ollama path for actual generation once the status probe fails.
+  - If a different OpenAI model is preferred later, update the defaults in `tradeghost/shared/config/settings.py` and `.env.example` together.

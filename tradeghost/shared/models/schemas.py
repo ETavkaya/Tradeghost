@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Any
 
@@ -1295,7 +1296,10 @@ class CohortCandidate(BaseModel):
     selected_risk_flags: list[str] = Field(default_factory=list)
     selected_data_quality_flags: list[str] = Field(default_factory=list)
     selected_data_quality_penalty: float = 0.0
-    selected_displayed_score: float = 0.0
+    selected_displayed_score: float = Field(
+        default=0.0,
+        description="Deprecated legacy display field; never authoritative for research features or statistics.",
+    )
     selected_company_name: str | None = None
     selected_sector: str | None = None
     selected_industry: str | None = None
@@ -1619,6 +1623,15 @@ class CohortCoverageMonitorResponse(BaseModel):
     partial_followup_days: int = 0
     missing_followup_days: int = 0
     snapshot_coverage_pct: float = 0.0
+    initial_28d_expected_days: int = 0
+    initial_28d_complete_days: int = 0
+    initial_28d_snapshot_coverage_pct: float = 0.0
+    tracking_latest_date: date | None = None
+    tracking_status: str = "paused"
+    tracking_continues: bool = False
+    post_28d_tracking_days: int = 0
+    post_28d_snapshot_days: int = 0
+    post_28d_snapshot_coverage_pct: float | None = None
     missing_followup_dates: list[date] = Field(default_factory=list)
     partial_followup_dates: list[date] = Field(default_factory=list)
     duplicate_snapshot_state_count: int = 0
@@ -1736,6 +1749,17 @@ class PredictionBackfillResponse(BaseModel):
     predictions: list[PredictionRecord] = Field(default_factory=list)
 
 
+class PredictionSemanticRepairResponse(BaseModel):
+    cohort_id: str
+    inspected_prediction_count: int = 0
+    canonical_prediction_count: int = 0
+    corrected_prediction_count: int = 0
+    existing_correction_count: int = 0
+    regenerated_outcome_count: int = 0
+    existing_outcome_count: int = 0
+    corrected_predictions: list[PredictionRecord] = Field(default_factory=list)
+
+
 class MarketRegimeSnapshot(BaseModel):
     id: str
     idempotency_key: str
@@ -1758,6 +1782,242 @@ class MarketRegimeSnapshot(BaseModel):
 class CohortMarketRegimesResponse(BaseModel):
     cohort_id: str
     snapshots: list[MarketRegimeSnapshot] = Field(default_factory=list)
+
+
+class MarketStateSnapshot(BaseModel):
+    id: str
+    idempotency_key: str
+    payload_hash: str
+    market: str
+    as_of_date: date
+    observed_at: datetime
+    source_market_regime_id: str | None = None
+    source_market_regime_payload_hash: str | None = None
+    state_version: str
+    data_version: str
+    availability_status: str
+    inputs_json: dict[str, Any] = Field(default_factory=dict)
+    state_json: dict[str, Any] = Field(default_factory=dict)
+    source_versions_json: dict[str, Any] = Field(default_factory=dict)
+    data_quality_flags: list[str] = Field(default_factory=list)
+    unavailable_inputs: list[str] = Field(default_factory=list)
+    created_at: datetime
+
+
+class MarketStateSnapshotsResponse(BaseModel):
+    market: str
+    as_of_date: date | None = None
+    snapshots: list[MarketStateSnapshot] = Field(default_factory=list)
+
+
+class OperationalReportType(str, Enum):
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
+
+
+class OperationalReport(BaseModel):
+    id: str
+    idempotency_key: str
+    payload_hash: str
+    report_type: OperationalReportType
+    report_version: str
+    market: str
+    period_start: date
+    period_end: date
+    as_of_date: date
+    generated_at: datetime
+    status: str
+    market_state_id: str | None = None
+    summary_json: dict[str, Any] = Field(default_factory=dict)
+    source_versions_json: dict[str, Any] = Field(default_factory=dict)
+    data_quality_flags: list[str] = Field(default_factory=list)
+    supersedes_report_id: str | None = None
+    created_at: datetime
+
+
+class StrategyLabExperimentStatus(str, Enum):
+    SCHEDULED = "scheduled"
+    ACTIVE = "active"
+    CLOSED = "closed"
+
+
+class StrategyLabSleeveKey(str, Enum):
+    TREND = "trend"
+    MOMENTUM = "momentum"
+    BREAKOUT = "breakout"
+    PULLBACK = "pullback"
+    OVEREXTENDED_AVOIDED = "overextended_avoided"
+
+
+class StrategyLabDecisionStatus(str, Enum):
+    REJECTED = "rejected"
+    RESERVED = "reserved"
+    AVOIDED = "avoided"
+
+
+class StrategyLabPositionStatus(str, Enum):
+    PENDING_ENTRY = "pending_entry"
+    OPEN = "open"
+    CLOSED = "closed"
+    DATA_QUALITY_HOLD = "data_quality_hold"
+
+
+class StrategyLabLedgerEventType(str, Enum):
+    INITIAL_CASH = "initial_cash"
+    ENTRY_RESERVED = "entry_reserved"
+    ENTRY_FILL = "entry_fill"
+    VALUATION = "valuation"
+    EXIT_FILL = "exit_fill"
+    DATA_QUALITY_EXCEPTION = "data_quality_exception"
+    REVERSAL = "reversal"
+
+
+class StrategyLabExperimentCreateRequest(BaseModel):
+    name: str = Field(min_length=3, max_length=160)
+    activation_at: datetime
+    market: MarketCode = MarketCode.US
+
+
+class StrategyLabDecisionCreateRequest(BaseModel):
+    source_run_id: str = Field(min_length=1, max_length=200)
+    symbol: str = Field(min_length=1, max_length=32)
+    category: ScannerCategory
+
+
+class StrategyLabExperiment(BaseModel):
+    id: str
+    idempotency_key: str
+    payload_hash: str
+    name: str
+    market: str
+    currency: str = "USD"
+    activation_at: datetime
+    status: StrategyLabExperimentStatus
+    policy_version: str
+    rule_version: str
+    feature_version: str
+    data_version: str
+    config_json: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class StrategyLabSleeve(BaseModel):
+    id: str
+    experiment_id: str
+    sleeve_key: StrategyLabSleeveKey
+    sleeve_type: str
+    initial_cash: Decimal
+    max_positions: int
+    allocation_per_slot: Decimal
+    created_at: datetime
+
+
+class StrategyLabDecision(BaseModel):
+    id: str
+    idempotency_key: str
+    payload_hash: str
+    experiment_id: str
+    sleeve_id: str | None = None
+    position_id: str | None = None
+    source_run_id: str
+    source_run_at: datetime
+    source_run_date: date
+    symbol: str
+    market: str
+    category: str
+    decision_status: StrategyLabDecisionStatus
+    reason_codes: list[str] = Field(default_factory=list)
+    final_entry_decision: bool
+    source_candidate_hash: str
+    source_candidate_json: dict[str, Any] = Field(default_factory=dict)
+    rule_version: str
+    feature_version: str
+    data_version: str
+    created_at: datetime
+
+
+class StrategyLabLedgerEvent(BaseModel):
+    id: str
+    idempotency_key: str
+    experiment_id: str
+    sleeve_id: str | None = None
+    position_id: str | None = None
+    decision_id: str | None = None
+    event_type: StrategyLabLedgerEventType
+    event_date: date
+    cash_delta: Decimal = Decimal("0")
+    quantity: Decimal | None = None
+    price: Decimal | None = None
+    source_bar_date: date | None = None
+    price_source: str | None = None
+    data_version: str
+    details_json: dict[str, Any] = Field(default_factory=dict)
+    reverses_event_id: str | None = None
+    created_at: datetime
+
+
+class StrategyLabPosition(BaseModel):
+    id: str
+    experiment_id: str
+    sleeve_id: str
+    decision_id: str
+    symbol: str
+    market: str
+    status: StrategyLabPositionStatus
+    allocated_cash: Decimal
+    quantity: Decimal | None = None
+    entry_date: date | None = None
+    entry_price: Decimal | None = None
+    entry_data_version: str | None = None
+    exit_date: date | None = None
+    exit_price: Decimal | None = None
+    exit_data_version: str | None = None
+    realised_pnl: Decimal | None = None
+    latest_valuation_date: date | None = None
+    latest_valuation_price: Decimal | None = None
+    scheduled_exit_sessions: int = 56
+    created_at: datetime
+    updated_at: datetime
+
+
+class StrategyLabAvoidedObservation(BaseModel):
+    id: str
+    idempotency_key: str
+    experiment_id: str
+    decision_id: str
+    symbol: str
+    market: str
+    source_run_date: date
+    planned_allocation: Decimal
+    status: str
+    entry_date: date | None = None
+    entry_price: Decimal | None = None
+    exit_date: date | None = None
+    exit_price: Decimal | None = None
+    return_pct: Decimal | None = None
+    data_version: str
+    details_json: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+class StrategyLabProcessResponse(BaseModel):
+    experiment_id: str
+    as_of_date: date
+    entry_fills_created: int = 0
+    valuations_created: int = 0
+    exits_created: int = 0
+    avoided_updates: int = 0
+    data_quality_holds: int = 0
+
+
+class StrategyLabExperimentDetail(BaseModel):
+    experiment: StrategyLabExperiment
+    sleeves: list[StrategyLabSleeve] = Field(default_factory=list)
+    decisions: list[StrategyLabDecision] = Field(default_factory=list)
+    positions: list[StrategyLabPosition] = Field(default_factory=list)
+    avoided_observations: list[StrategyLabAvoidedObservation] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
 
 
 class OutcomeSummaryRecord(BaseModel):

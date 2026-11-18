@@ -8,11 +8,16 @@ import { useEffect, useState } from "react";
 import { useAnalysisContext } from "@/components/analysis-context";
 import { api } from "@/lib/api";
 
-const tabs = [
+const workflowTabs = [
+  { label: "Discover", href: "/discover" },
+  { label: "Monitor", href: "/monitor" },
+  { label: "Portfolio", href: "/portfolio" },
+];
+
+const advancedTabs = [
   { label: "Scanner", href: "/scanner" },
   { label: "Analysis", href: "/analysis" },
   { label: "Backtest", href: "/backtest" },
-  { label: "Monitor", href: "/monitor" },
   { label: "Intelligence", href: "/intelligence" },
   { label: "Research", href: "/research" },
   { label: "Logic", href: "/logic" },
@@ -59,8 +64,26 @@ export function DashboardShell({ children }: { children: ReactNode }) {
               <span className="rounded-md border border-stroke bg-panel/70 px-2 py-1 text-slate-300">Active Rules: {activeRulesCount}</span>
             </div>
           </div>
-          <nav className="flex flex-wrap gap-2">
-            {tabs.map((tab) => (
+          <nav className="space-y-2">
+            <div className="flex flex-wrap gap-2">
+              {workflowTabs.map((tab) => (
+                <Link
+                  key={tab.href}
+                  href={tab.href}
+                  className={clsx(
+                    "rounded-lg border px-4 py-2 text-sm font-medium transition",
+                    pathname === tab.href
+                      ? "border-cyan/50 bg-cyan/15 text-cyan"
+                      : "border-stroke bg-panel/80 text-slate-300 hover:border-cyan/30 hover:text-cyan"
+                  )}
+                >
+                  {tab.label}
+                </Link>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="mr-1 text-xs font-medium uppercase tracking-wide text-slate-500">Advanced</span>
+              {advancedTabs.map((tab) => (
               tab.href === "/backtest" && !analysis ? (
                 <span
                   key={tab.href}
@@ -83,7 +106,8 @@ export function DashboardShell({ children }: { children: ReactNode }) {
                   {tab.label}
                 </Link>
               )
-            ))}
+              ))}
+            </div>
           </nav>
         </header>
         {children}

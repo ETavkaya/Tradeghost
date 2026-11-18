@@ -28,7 +28,8 @@ export async function proxyGet(request: NextRequest, path: string): Promise<Next
 }
 
 export async function proxyPost(request: NextRequest, path: string): Promise<NextResponse> {
-  const url = `${backendUrl}${path}`;
+  const query = request.nextUrl.searchParams.toString();
+  const url = `${backendUrl}${path}${query ? `?${query}` : ""}`;
 
   try {
     const body = await request.text();

@@ -77,6 +77,8 @@ from tradeghost.shared.models.schemas import (
     LLMResponseTestRequest,
     LLMResponseTestResult,
     MarketRegimeSnapshot,
+    MarketStateSnapshot,
+    MarketStateSnapshotsResponse,
     LatestCohortState,
     LLMConnectionStatus,
     LLMDebugLog,
@@ -84,6 +86,8 @@ from tradeghost.shared.models.schemas import (
     OutcomeEvaluationResponse,
     OutcomeRecord,
     OutcomeSummaryRecord,
+    OperationalReport,
+    OperationalReportType,
     PatternCandidate,
     PatternCandidateReview,
     PatternCandidateStatus,
@@ -91,6 +95,7 @@ from tradeghost.shared.models.schemas import (
     PatternDiscoveryResponse,
     PatternReviewRequest,
     PredictionBackfillResponse,
+    PredictionSemanticRepairResponse,
     PredictionRecord,
     HypothesisBacktestRequest,
     HypothesisGeneratedBy,
@@ -122,6 +127,21 @@ SYMBOL_CONTEXT_PROMPT_VERSION = "symbol_context_v1"
 DAILY_FOLLOWUP_JOB_NAME = "daily_cohort_followup_job"
 OUTCOME_HORIZONS = (7, 14, 28, 56, 90, 180, 365)
 FIRST_REVIEW_HORIZON_DAYS = 28
+VERIFIED_SELECTION_GATE_CORRECTION_VERSION = "verified_selection_gate_blocker_correction_v1"
+DEPRECATED_SELECTION_SNAPSHOT_FIELDS = frozenset({"selected_displayed_score"})
+MARKET_STATE_SECTOR_PROXIES: tuple[tuple[str, str], ...] = (
+    ("technology", "XLK"),
+    ("financials", "XLF"),
+    ("healthcare", "XLV"),
+    ("energy", "XLE"),
+    ("consumer_discretionary", "XLY"),
+    ("consumer_staples", "XLP"),
+    ("industrials", "XLI"),
+    ("materials", "XLB"),
+    ("utilities", "XLU"),
+    ("real_estate", "XLRE"),
+    ("communications", "XLC"),
+)
 
 
 class IntelligenceService:
@@ -168,6 +188,13 @@ class IntelligenceService:
     def _normalize_provider(self, provider: str | None) -> str:
         value = (provider or "openai").strip().lower()
         return value if value in {"ollama", "openai"} else "openai"
+
+    def _require_product_v2_feature(self, *, setting_name: str, feature_name: str) -> None:
+        if not self.settings.product_v2_enabled or not bool(getattr(self.settings, setting_name, False)):
+            raise RuntimeError(
+                f"{feature_name} is disabled. Set PRODUCT_V2_ENABLED=true and "
+                f"{setting_name.upper()}=true before using its manual API."
+            )
 
     @staticmethod
     def _dedupe_models(models: list[str | None]) -> list[str]:
@@ -1008,6 +1035,11 @@ class IntelligenceService:
             }
         )
         snapshot = candidate.selected_structure_snapshot or {}
+        selection_snapshot = candidate.model_dump(mode="json")
+        canonical_blocked_by = self._canonical_selection_blocker(
+            selection_snapshot=selection_snapshot,
+            fallback_blocked_by=candidate.selected_blocked_by,
+        )
         prediction_type, expected_direction = self._prediction_type_for_candidate(candidate, categories)
         selected_at = candidate.selected_at.astimezone(UTC) if candidate.selected_at.tzinfo else candidate.selected_at.replace(tzinfo=UTC)
         idempotency_key = ":".join(
@@ -1041,7 +1073,7 @@ class IntelligenceService:
             "score": candidate.selected_score,
             "candidate_type": candidate.selected_candidate_type,
             "entry_readiness": candidate.selected_entry_readiness,
-            "blocked_by": candidate.selected_blocked_by,
+            "blocked_by": canonical_blocked_by,
             "risk_flags": sorted(set(candidate.selected_risk_flags)),
             "data_quality_flags": sorted(set(candidate.selected_data_quality_flags)),
             "expected_horizon_days": 28,
@@ -1049,7 +1081,7 @@ class IntelligenceService:
             "prediction_type": prediction_type,
             "invalidation_conditions": invalidation_conditions,
             "deterministic_reason": candidate.selected_reason,
-            "selection_snapshot_json": candidate.model_dump(mode="json"),
+            "selection_snapshot_json": selection_snapshot,
             "rule_version": versions["rule_version"],
             "feature_version": versions["feature_version"],
             "data_version": versions["data_version"],
@@ -1061,6 +1093,149 @@ class IntelligenceService:
             selected_date=selected_at.date(),
             created_at=datetime.now(UTC),
             **body,
+        )
+
+    @staticmethod
+    def _selection_snapshot_source(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+        source = snapshot if isinstance(snapshot, dict) else {}
+        while isinstance(source.get("selection_snapshot"), dict):
+            source = source["selection_snapshot"]
+        return source
+
+    @classmethod
+    def _canonical_selection_blocker(
+        cls,
+        *,
+        selection_snapshot: dict[str, Any] | None,
+        fallback_blocked_by: str | None = None,
+    ) -> str:
+        source = cls._selection_snapshot_source(selection_snapshot)
+        selected_blocked_by = source.get("selected_blocked_by")
+        if selected_blocked_by is not None:
+            return cls._blocked_by_from_risk_flags([], fallback=str(selected_blocked_by))
+        structure = source.get("selected_structure_snapshot")
+        if isinstance(structure, dict) and structure.get("blocked_by") is not None:
+            return cls._blocked_by_from_risk_flags([], fallback=str(structure["blocked_by"]))
+        source_blocked_by = source.get("blocked_by")
+        fallback = source_blocked_by if source_blocked_by is not None else fallback_blocked_by
+        return cls._blocked_by_from_risk_flags([], fallback=str(fallback or "none"))
+
+    @classmethod
+    def _verified_selection_gate_blocker(cls, selection_snapshot: dict[str, Any] | None) -> str | None:
+        source = cls._selection_snapshot_source(selection_snapshot)
+        structure = source.get("selected_structure_snapshot")
+        if not isinstance(structure, dict) or structure.get("final_entry_decision") is not False:
+            return None
+        blocker = structure.get("blocked_by")
+        if blocker is None:
+            return None
+        normalized = cls._blocked_by_from_risk_flags([], fallback=str(blocker))
+        return normalized if normalized != "none" else None
+
+    @staticmethod
+    def _canonical_prediction_records(predictions: list[PredictionRecord]) -> list[PredictionRecord]:
+        superseded_ids = {
+            prediction.supersedes_prediction_id
+            for prediction in predictions
+            if prediction.supersedes_prediction_id
+        }
+        return [prediction for prediction in predictions if prediction.id not in superseded_ids]
+
+    def _superseding_blocker_correction(
+        self,
+        prediction: PredictionRecord,
+        *,
+        canonical_blocked_by: str,
+    ) -> PredictionRecord:
+        source_snapshot = prediction.selection_snapshot_json
+        correction_reason = (
+            f"{VERIFIED_SELECTION_GATE_CORRECTION_VERSION}: "
+            f"blocked_by={prediction.blocked_by or 'none'}->{canonical_blocked_by}"
+        )
+        correction_snapshot = {
+            "selection_snapshot": source_snapshot,
+            "semantic_correction": {
+                "algorithm_version": VERIFIED_SELECTION_GATE_CORRECTION_VERSION,
+                "source_prediction_id": prediction.id,
+                "source_snapshot_hash": self._stable_payload_hash(source_snapshot),
+                "source_blocked_by": prediction.blocked_by or "none",
+                "canonical_blocked_by": canonical_blocked_by,
+            },
+        }
+        idempotency_key = (
+            f"{prediction.idempotency_key}:semantic:{VERIFIED_SELECTION_GATE_CORRECTION_VERSION}:"
+            f"{canonical_blocked_by}"
+        )
+        now = datetime.now(UTC)
+        payload = prediction.model_dump(mode="json")
+        payload.update(
+            {
+                "id": str(uuid5(NAMESPACE_URL, f"tradeghost:prediction:{idempotency_key}")),
+                "idempotency_key": idempotency_key,
+                "blocked_by": canonical_blocked_by,
+                "selection_snapshot_json": correction_snapshot,
+                "supersedes_prediction_id": prediction.id,
+                "correction_reason": correction_reason,
+                "created_at": now.isoformat(),
+            }
+        )
+        payload_body = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"id", "payload_hash", "created_at"}
+        }
+        payload["payload_hash"] = self._stable_payload_hash(payload_body)
+        return PredictionRecord.model_validate(payload)
+
+    def repair_cohort_prediction_semantics(
+        self,
+        cohort_id: str,
+        *,
+        as_of_date: date | None = None,
+    ) -> PredictionSemanticRepairResponse:
+        detail = self.get_cohort_detail(cohort_id)
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; Prediction semantic repair requires Postgres.")
+        all_predictions = self.research_record_store.list_predictions(cohort_id)
+        canonical_predictions = self._canonical_prediction_records(all_predictions)
+        corrections: list[PredictionRecord] = []
+        for prediction in canonical_predictions:
+            canonical_blocked_by = self._verified_selection_gate_blocker(prediction.selection_snapshot_json)
+            if canonical_blocked_by is None:
+                continue
+            if canonical_blocked_by == str(prediction.blocked_by or "none").strip().lower():
+                continue
+            corrections.append(
+                self._superseding_blocker_correction(prediction, canonical_blocked_by=canonical_blocked_by)
+            )
+        persisted, created_count = self.research_record_store.create_predictions(corrections)
+        outcome_evaluation: OutcomeEvaluationResponse | None = None
+        if persisted:
+            outcome_evaluation = self.evaluate_cohort_outcomes(
+                cohort_id,
+                as_of_date=as_of_date,
+                prediction_ids={prediction.id for prediction in persisted},
+            )
+        self._append_pipeline_event(
+            step_name="cohort_prediction_semantics_repaired",
+            status="success",
+            cohort_id=detail.cohort.id,
+            cohort_name=detail.cohort.name,
+            message=(
+                f"inspected={len(all_predictions)} canonical={len(canonical_predictions)} "
+                f"created_corrections={created_count} existing_corrections={len(persisted) - created_count} "
+                f"algorithm={VERIFIED_SELECTION_GATE_CORRECTION_VERSION}"
+            ),
+        )
+        return PredictionSemanticRepairResponse(
+            cohort_id=cohort_id,
+            inspected_prediction_count=len(all_predictions),
+            canonical_prediction_count=len(canonical_predictions),
+            corrected_prediction_count=created_count,
+            existing_correction_count=len(persisted) - created_count,
+            regenerated_outcome_count=outcome_evaluation.created_outcome_count if outcome_evaluation else 0,
+            existing_outcome_count=outcome_evaluation.existing_outcome_count if outcome_evaluation else 0,
+            corrected_predictions=persisted,
         )
 
     def _persist_selection_predictions(
@@ -1136,10 +1311,17 @@ class IntelligenceService:
         _ = self.get_cohort_detail(cohort_id)
         if not self.research_record_store.configured:
             raise RuntimeError("DATABASE_URL is not configured; Phase 2B outcome records are unavailable.")
+        predictions = self._canonical_prediction_records(self.research_record_store.list_predictions(cohort_id))
+        prediction_ids = {prediction.id for prediction in predictions}
+        outcomes = [
+            outcome
+            for outcome in self.research_record_store.list_outcomes(cohort_id, horizon_days=horizon_days)
+            if outcome.prediction_id in prediction_ids
+        ]
         return CohortOutcomesResponse(
             cohort_id=cohort_id,
-            outcomes=self.research_record_store.list_outcomes(cohort_id, horizon_days=horizon_days),
-            summaries=self.research_record_store.list_outcome_summaries(cohort_id),
+            outcomes=outcomes,
+            summaries=self._build_outcome_summaries(cohort_id, outcomes, calculated_at=datetime.now(UTC)),
         )
 
     def list_cohort_market_regimes(self, cohort_id: str) -> CohortMarketRegimesResponse:
@@ -1278,6 +1460,10 @@ class IntelligenceService:
             raise ValueError("One or more evidence_outcome_ids do not reference persisted Outcome records.")
         if any(outcome.prediction_id not in set(prediction_ids) for outcome in outcomes):
             raise ValueError("Each evidence Outcome must be linked to one of the supplied evidence Predictions.")
+        if any(outcome.outcome_status != "available" or outcome.return_pct is None for outcome in outcomes):
+            raise ValueError("Hypothesis performance evidence must exclude unavailable and data-quality-excluded Outcomes.")
+        if len({outcome.horizon_days for outcome in outcomes}) != 1:
+            raise ValueError("Hypothesis performance evidence must use one separately labeled Outcome horizon.")
 
         version_sets = {
             "rule_version": {record.rule_version for record in [*predictions, *outcomes]},
@@ -1556,8 +1742,12 @@ class IntelligenceService:
                     "outcome_status": record.outcome_status,
                     "outcome_label": record.outcome_label,
                     "return_pct": record.return_pct,
+                    "directional_return_pct": record.directional_return_pct,
+                    "followed_through": record.followed_through,
                     "false_positive": record.false_positive,
                     "missed_follow_through": record.missed_follow_through,
+                    "invalidated_quickly": record.invalidated_quickly,
+                    "stayed_valid": record.stayed_valid,
                     "data_quality_flags": record.data_quality_flags,
                 }
                 for record in sorted(outcomes, key=lambda value: value.id)
@@ -1960,6 +2150,339 @@ class IntelligenceService:
     def _selection_market_regime_for_cohort(self, cohort: CandidateCohort) -> MarketRegimeSnapshot:
         return self._get_or_create_market_regime_snapshot(market=cohort.market.value, as_of_date=cohort.start_date)
 
+    def _market_state_instrument(
+        self,
+        *,
+        symbol: str,
+        market: str,
+        as_of_date: date,
+    ) -> tuple[dict[str, Any], list[str]]:
+        bars, source_data_version, flags = self._load_canonical_bars_for_symbol(
+            symbol,
+            market=market,
+            as_of_date=as_of_date,
+            base_data_version=self.settings.research_data_version,
+        )
+        latest = bars[-1] if bars else None
+        values = {
+            "symbol": symbol,
+            "source_data_version": source_data_version,
+            "latest_bar_date": latest["bar_date"].isoformat() if latest else None,
+            "latest_close": latest["close"] if latest else None,
+            "returns_pct": {
+                f"{sessions}d": self._return_over_sessions(bars, sessions)
+                for sessions in (1, 5, 20)
+            },
+        }
+        return values, sorted(set(flags))
+
+    @staticmethod
+    def _market_state_volatility_label(vix_close: float | None) -> str:
+        if vix_close is None:
+            return "unknown"
+        if vix_close >= 30.0:
+            return "elevated"
+        if vix_close >= 20.0:
+            return "high"
+        return "normal"
+
+    @staticmethod
+    def _market_state_risk_posture(regime_label: str, volatility_label: str) -> str:
+        if regime_label == "risk_off" or volatility_label == "elevated":
+            return "defensive"
+        if regime_label in {"risk_on", "tech_led"} and volatility_label == "normal":
+            return "constructive"
+        if regime_label == "unavailable" or volatility_label == "unknown":
+            return "unknown"
+        return "mixed"
+
+    @staticmethod
+    def _market_state_sector_leadership(sectors: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+        ranked = [
+            (name, values.get("returns_pct", {}).get("20d"))
+            for name, values in sectors.items()
+            if values.get("returns_pct", {}).get("20d") is not None
+        ]
+        ranked.sort(key=lambda item: (-float(item[1]), item[0]))
+        if not ranked:
+            return {"leaders": [], "laggards": []}
+        return {
+            "leaders": [name for name, _ in ranked[:2]],
+            "laggards": [name for name, _ in ranked[-2:]],
+        }
+
+    def capture_market_state(
+        self,
+        *,
+        market: str = "us",
+        as_of_date: date | None = None,
+    ) -> MarketStateSnapshot:
+        """Persist one manual, versioned Market State from canonical inputs only."""
+        self._require_product_v2_feature(setting_name="market_state_enabled", feature_name="Market State")
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; Market State persistence requires Postgres.")
+        normalized_market = (market or "us").strip().lower()
+        if normalized_market not in {"us", "bist"}:
+            raise ValueError(f"Unsupported Market State market: {market}")
+        state_as_of_date = as_of_date or date.today()
+        if state_as_of_date > date.today():
+            raise ValueError("Market State cannot be captured for a future as_of_date.")
+
+        regime = self._get_or_create_market_regime_snapshot(
+            market=normalized_market,
+            as_of_date=state_as_of_date,
+        )
+        quality_flags = [f"market_regime:{flag}" for flag in regime.data_quality_flags]
+        unavailable_inputs: list[str] = []
+        inputs: dict[str, Any] = {
+            "market_regime": {
+                "snapshot_id": regime.id,
+                "payload_hash": regime.payload_hash,
+                "label": regime.regime_label,
+                "as_of_date": regime.as_of_date.isoformat(),
+                "benchmark_returns": regime.benchmark_returns_json,
+                "volatility_20d_pct": regime.volatility_20d_pct,
+            },
+            "macro_proxies": {},
+            "sector_proxies": {},
+        }
+        source_versions: dict[str, Any] = {
+            "market_state_version": self.settings.market_state_version,
+            "market_regime_classifier_version": regime.classifier_version,
+            "market_regime_data_version": regime.data_version,
+            "market_regime_rule_version": regime.rule_version,
+            "market_regime_feature_version": regime.feature_version,
+            "instrument_data_versions": {},
+        }
+
+        macro_inputs: dict[str, dict[str, Any]] = {}
+        sector_inputs: dict[str, dict[str, Any]] = {}
+        if normalized_market == "us":
+            for input_name, symbol in (("vix", "^VIX"), ("dxy", "DX-Y.NYB"), ("us_10y_yield", "^TNX")):
+                values, flags = self._market_state_instrument(
+                    symbol=symbol,
+                    market=normalized_market,
+                    as_of_date=state_as_of_date,
+                )
+                macro_inputs[input_name] = values
+                source_versions["instrument_data_versions"][input_name] = values["source_data_version"]
+                quality_flags.extend(f"{input_name}:{flag}" for flag in flags)
+                if values["latest_close"] is None:
+                    unavailable_inputs.append(input_name)
+            unavailable_inputs.append("us_2y_yield")
+            for sector_name, symbol in MARKET_STATE_SECTOR_PROXIES[: self.settings.market_state_sector_proxy_limit]:
+                values, flags = self._market_state_instrument(
+                    symbol=symbol,
+                    market=normalized_market,
+                    as_of_date=state_as_of_date,
+                )
+                sector_inputs[sector_name] = values
+                source_versions["instrument_data_versions"][f"sector:{sector_name}"] = values["source_data_version"]
+                quality_flags.extend(f"sector:{sector_name}:{flag}" for flag in flags)
+                if values["latest_close"] is None:
+                    unavailable_inputs.append(f"sector:{sector_name}")
+        else:
+            unavailable_inputs.extend(["macro_proxies", "sector_proxies", "us_2y_yield"])
+
+        inputs["macro_proxies"] = macro_inputs
+        inputs["sector_proxies"] = sector_inputs
+        vix_close = self._optional_float(macro_inputs.get("vix", {}).get("latest_close"))
+        volatility_state = self._market_state_volatility_label(vix_close)
+        state_json = {
+            "market_regime": regime.regime_label,
+            "risk_posture": self._market_state_risk_posture(regime.regime_label, volatility_state),
+            "volatility_state": volatility_state,
+            "sector_leadership": self._market_state_sector_leadership(sector_inputs),
+            "economic_event_context": "unavailable",
+        }
+        availability_status = "available" if not quality_flags and not unavailable_inputs else "partial"
+        data_version = (
+            f"{self.settings.research_data_version}:market-state:"
+            f"{self._stable_payload_hash({'inputs': inputs, 'versions': source_versions})[:16]}"
+        )
+        idempotency_key = ":".join(
+            (
+                normalized_market,
+                state_as_of_date.isoformat(),
+                self.settings.market_state_version,
+                data_version,
+            )
+        )
+        body = {
+            "idempotency_key": idempotency_key,
+            "market": normalized_market,
+            "as_of_date": state_as_of_date,
+            "source_market_regime_id": regime.id,
+            "source_market_regime_payload_hash": regime.payload_hash,
+            "state_version": self.settings.market_state_version,
+            "data_version": data_version,
+            "availability_status": availability_status,
+            "inputs_json": inputs,
+            "state_json": state_json,
+            "source_versions_json": source_versions,
+            "data_quality_flags": sorted(set(quality_flags)),
+            "unavailable_inputs": sorted(set(unavailable_inputs)),
+        }
+        snapshot = MarketStateSnapshot(
+            id=str(uuid5(NAMESPACE_URL, f"tradeghost:market-state:{idempotency_key}")),
+            payload_hash=self._stable_payload_hash(body),
+            observed_at=datetime.now(UTC),
+            created_at=datetime.now(UTC),
+            **body,
+        )
+        persisted, _ = self.research_record_store.create_market_state_snapshot(snapshot)
+        return persisted
+
+    def list_market_states(
+        self,
+        *,
+        market: str = "us",
+        as_of_date: date | None = None,
+        limit: int = 30,
+    ) -> MarketStateSnapshotsResponse:
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; Market State persistence requires Postgres.")
+        normalized_market = (market or "us").strip().lower()
+        return MarketStateSnapshotsResponse(
+            market=normalized_market,
+            as_of_date=as_of_date,
+            snapshots=self.research_record_store.list_market_state_snapshots(
+                market=normalized_market,
+                as_of_date=as_of_date,
+                limit=limit,
+            ),
+        )
+
+    @staticmethod
+    def _operational_report_period(
+        report_type: OperationalReportType,
+        period_end: date,
+    ) -> tuple[date, date]:
+        if report_type == OperationalReportType.WEEKLY:
+            return period_end - timedelta(days=6), period_end
+        return period_end.replace(day=1), period_end
+
+    def generate_operational_report(
+        self,
+        *,
+        report_type: OperationalReportType,
+        market: str = "us",
+        period_end: date | None = None,
+    ) -> OperationalReport:
+        """Create an idempotent, manual weekly/monthly report from compact SQL aggregates."""
+        self._require_product_v2_feature(
+            setting_name="operational_reporting_enabled",
+            feature_name="Operational reporting",
+        )
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; operational reporting requires Postgres.")
+        normalized_market = (market or "us").strip().lower()
+        if normalized_market not in {"us", "bist"}:
+            raise ValueError(f"Unsupported operational report market: {market}")
+        report_period_end = period_end or date.today()
+        if report_period_end > date.today():
+            raise ValueError("Operational reports cannot use a future period_end.")
+        report_period_start, report_as_of_date = self._operational_report_period(report_type, report_period_end)
+        market_state = self.capture_market_state(market=normalized_market, as_of_date=report_as_of_date)
+        metrics = self.research_record_store.operational_report_metrics(
+            market=normalized_market,
+            period_start=report_period_start,
+            period_end=report_period_end,
+            as_of_date=report_as_of_date,
+        )
+        source_versions = {
+            "operational_reporting_version": self.settings.operational_reporting_version,
+            "market_state_id": market_state.id,
+            "market_state_payload_hash": market_state.payload_hash,
+            "market_state_version": market_state.state_version,
+            "market_state_data_version": market_state.data_version,
+            "market_state_source_versions": market_state.source_versions_json,
+            "outcome_version_groups": metrics["outcome_version_groups"],
+            "point_in_time_filter": metrics["point_in_time_filter"],
+        }
+        summary = {
+            "market_state": {
+                "availability_status": market_state.availability_status,
+                "market_regime": market_state.state_json.get("market_regime"),
+                "risk_posture": market_state.state_json.get("risk_posture"),
+                "volatility_state": market_state.state_json.get("volatility_state"),
+            },
+            "predictions": metrics["predictions"],
+            "outcomes": metrics["outcomes"],
+        }
+        data_quality_flags = list(market_state.data_quality_flags)
+        if market_state.unavailable_inputs:
+            data_quality_flags.append("market_state:partial_inputs")
+        if metrics["outcomes"]["data_quality_excluded_count"]:
+            data_quality_flags.append("outcomes:data_quality_excluded")
+        status = "ready" if not data_quality_flags else "partial"
+        identity_basis = {
+            "report_type": report_type.value,
+            "report_version": self.settings.operational_reporting_version,
+            "market": normalized_market,
+            "period_start": report_period_start.isoformat(),
+            "period_end": report_period_end.isoformat(),
+            "as_of_date": report_as_of_date.isoformat(),
+            "market_state_id": market_state.id,
+            "summary": summary,
+            "source_versions": source_versions,
+            "data_quality_flags": sorted(set(data_quality_flags)),
+        }
+        identity_hash = self._stable_payload_hash(identity_basis)
+        idempotency_key = (
+            f"{report_type.value}:{normalized_market}:{report_period_start.isoformat()}:"
+            f"{report_period_end.isoformat()}:{self.settings.operational_reporting_version}:{identity_hash[:16]}"
+        )
+        existing = self.research_record_store.get_operational_report_by_idempotency_key(idempotency_key)
+        if existing is not None:
+            return existing
+        previous = self.research_record_store.latest_operational_report(
+            report_type=report_type,
+            market=normalized_market,
+            period_start=report_period_start,
+            period_end=report_period_end,
+        )
+        now = datetime.now(UTC)
+        body = {
+            "idempotency_key": idempotency_key,
+            "report_type": report_type,
+            "report_version": self.settings.operational_reporting_version,
+            "market": normalized_market,
+            "period_start": report_period_start,
+            "period_end": report_period_end,
+            "as_of_date": report_as_of_date,
+            "status": status,
+            "market_state_id": market_state.id,
+            "summary_json": summary,
+            "source_versions_json": source_versions,
+            "data_quality_flags": sorted(set(data_quality_flags)),
+            "supersedes_report_id": previous.id if previous is not None else None,
+        }
+        report = OperationalReport(
+            id=str(uuid5(NAMESPACE_URL, f"tradeghost:operational-report:{idempotency_key}")),
+            payload_hash=self._stable_payload_hash(body),
+            generated_at=now,
+            created_at=now,
+            **body,
+        )
+        persisted, _ = self.research_record_store.create_operational_report(report)
+        return persisted
+
+    def list_operational_reports(
+        self,
+        *,
+        market: str | None = None,
+        report_type: OperationalReportType | None = None,
+        limit: int = 20,
+    ) -> list[OperationalReport]:
+        if not self.research_record_store.configured:
+            raise RuntimeError("DATABASE_URL is not configured; operational reports require Postgres.")
+        return self.research_record_store.list_operational_reports(
+            market=market.lower() if market else None,
+            report_type=report_type,
+            limit=limit,
+        )
+
     @staticmethod
     def _sector_proxy_for_prediction(prediction: PredictionRecord) -> str | None:
         if prediction.market.lower() != "us":
@@ -2264,18 +2787,40 @@ class IntelligenceService:
             )
         return summaries
 
+    def _persist_canonical_outcome_summaries(
+        self,
+        cohort_id: str,
+        *,
+        calculated_at: datetime,
+    ) -> list[OutcomeSummaryRecord]:
+        predictions = self._canonical_prediction_records(self.research_record_store.list_predictions(cohort_id))
+        prediction_ids = {prediction.id for prediction in predictions}
+        outcomes = [
+            outcome
+            for outcome in self.research_record_store.list_outcomes(cohort_id)
+            if outcome.prediction_id in prediction_ids
+        ]
+        summaries = self._build_outcome_summaries(cohort_id, outcomes, calculated_at=calculated_at)
+        replace_summaries = getattr(self.research_record_store, "replace_outcome_summaries", None)
+        if callable(replace_summaries):
+            return replace_summaries(cohort_id, summaries)
+        return self.research_record_store.upsert_outcome_summaries(summaries)
+
     def evaluate_cohort_outcomes(
         self,
         cohort_id: str,
         *,
         as_of_date: date | None = None,
+        prediction_ids: set[str] | None = None,
     ) -> OutcomeEvaluationResponse:
         detail = self.get_cohort_detail(cohort_id)
         if not self.research_record_store.configured:
             raise RuntimeError("DATABASE_URL is not configured; Phase 2B outcome evaluation requires Postgres.")
         evaluated_at = datetime.now(UTC)
         evaluation_date = as_of_date or date.today()
-        predictions = self.research_record_store.list_predictions(cohort_id)
+        predictions = self._canonical_prediction_records(self.research_record_store.list_predictions(cohort_id))
+        if prediction_ids is not None:
+            predictions = [prediction for prediction in predictions if prediction.id in prediction_ids]
         persisted_outcomes: list[OutcomeRecord] = []
         created_count = 0
         existing_count = 0
@@ -2553,10 +3098,7 @@ class IntelligenceService:
                 persisted_outcomes.append(persisted)
                 created_count += int(created)
                 existing_count += int(not created)
-        all_outcomes = self.research_record_store.list_outcomes(cohort_id)
-        summaries = self.research_record_store.upsert_outcome_summaries(
-            self._build_outcome_summaries(cohort_id, all_outcomes, calculated_at=evaluated_at)
-        )
+        summaries = self._persist_canonical_outcome_summaries(cohort_id, calculated_at=evaluated_at)
         self._refresh_followup_lifecycle(cohort_id, as_of_date=evaluation_date)
         self._append_pipeline_event(
             step_name="cohort_outcomes_evaluated",
@@ -2684,8 +3226,6 @@ class IntelligenceService:
         selected_candidates: list[CohortCandidate] = []
         for row in discovery.symbol_results:
             selected_blocked_by = row.blocked_by
-            if selected_blocked_by == "none":
-                selected_blocked_by = self._blocked_by_from_risk_flags(row.risk_flags, fallback="none")
             selected_candidate = CohortCandidate(
                     cohort_id=cohort.id,
                     symbol=row.symbol,
@@ -2715,7 +3255,6 @@ class IntelligenceService:
                     selected_risk_flags=row.risk_flags,
                     selected_data_quality_flags=row.data_quality_flags,
                     selected_data_quality_penalty=row.data_quality_penalty,
-                    selected_displayed_score=(row.score if row.score is not None else row.base_score),
                     selected_company_name=row.company_name,
                     selected_sector=row.sector,
                     selected_industry=row.industry,
@@ -3175,7 +3714,8 @@ class IntelligenceService:
             return "score_threshold"
         if "weak_volume_confirmation" in lowered:
             return "weak_volume_confirmation"
-        return fallback
+        normalized_fallback = str(fallback or "none").strip().lower()
+        return normalized_fallback if normalized_fallback and normalized_fallback != "null" else "none"
 
     @staticmethod
     def _build_confirm_entry_text(trigger_state: str | None, trigger_score: float | None, trigger_threshold: float | None, blocked_by: str | None) -> str:
@@ -3392,6 +3932,12 @@ class IntelligenceService:
             "reclaim_attempt_count": setup.reclaim_attempt_count,
             "breakout_level": setup.breakout_level,
             "evidence_score": setup.evidence_score,
+            "final_entry_decision": analysis.entry_gate.final_entry_decision,
+            "entry_gate_skip_reason": analysis.entry_gate.skip_reason,
+            "score_threshold_passed": analysis.entry_gate.score_threshold_passed,
+            "regime_valid": analysis.entry_gate.regime_valid,
+            "location_valid": analysis.entry_gate.location_valid,
+            "trigger_valid": analysis.entry_gate.trigger_valid,
         }
         risk_flags = self._build_risk_flags(analysis)
         classification = self._classify_candidate_type(analysis, category_tags, risk_flags, data_quality_flags, setup_type)
@@ -4264,7 +4810,7 @@ class IntelligenceService:
                     data_quality_penalty=cand.selected_data_quality_penalty,
                     final_score_raw=cand.selected_final_score_raw,
                     final_score_capped=cand.selected_final_score_capped,
-                    score=cand.selected_displayed_score if cand.selected_displayed_score else cand.selected_score,
+                    score=cand.selected_score,
                     trend=cand.selected_trend_state,
                     ema_distances={},
                     setup_type=cand.selected_setup_type,
@@ -4999,6 +5545,11 @@ class IntelligenceService:
         complete_snapshot_state_count = len(state_coverage["expected_symbols"]) * valid_snapshot_days
         partial_snapshot_state_count = max(0, actual_snapshot_state_count - complete_snapshot_state_count)
         partial_dates = sorted(set(coverage_days).intersection(state_coverage["partial_dates"]))
+        initial_28d_dates = elapsed_trading_days[: min(FIRST_REVIEW_HORIZON_DAYS, len(elapsed_trading_days))]
+        initial_28d_complete_days = len(set(initial_28d_dates).intersection(state_coverage["complete_dates"]))
+        initial_28d_expected_days = len(initial_28d_dates)
+        post_28d_dates = elapsed_trading_days[FIRST_REVIEW_HORIZON_DAYS:]
+        post_28d_snapshot_days = len(set(post_28d_dates).intersection(state_coverage["complete_dates"]))
         return {
             "start_date": start_date,
             "latest_followup_date": latest_followup_date,
@@ -5016,6 +5567,20 @@ class IntelligenceService:
             "expected_followup_snapshot_count": expected_snapshot_state_count,
             "partial_followup_dates": partial_dates,
             "daily_path_review_complete": expected_days > 0 and valid_snapshot_days >= expected_days,
+            "initial_28d_expected_days": initial_28d_expected_days,
+            "initial_28d_complete_days": initial_28d_complete_days,
+            "initial_28d_snapshot_coverage_pct": (
+                round(initial_28d_complete_days / initial_28d_expected_days * 100.0, 1)
+                if initial_28d_expected_days
+                else 0.0
+            ),
+            "post_28d_tracking_days": len(post_28d_dates),
+            "post_28d_snapshot_days": post_28d_snapshot_days,
+            "post_28d_snapshot_coverage_pct": (
+                round(post_28d_snapshot_days / len(post_28d_dates) * 100.0, 1)
+                if post_28d_dates
+                else None
+            ),
         }
 
     def get_cohort_coverage(
@@ -5157,6 +5722,19 @@ class IntelligenceService:
             partial_followup_days=len(partial_dates),
             missing_followup_days=len(missing_dates),
             snapshot_coverage_pct=coverage["snapshot_coverage_pct"],
+            initial_28d_expected_days=coverage["initial_28d_expected_days"],
+            initial_28d_complete_days=coverage["initial_28d_complete_days"],
+            initial_28d_snapshot_coverage_pct=coverage["initial_28d_snapshot_coverage_pct"],
+            tracking_latest_date=coverage["latest_followup_date"],
+            tracking_status=detail.cohort.followup_status.value,
+            tracking_continues=(
+                detail.cohort.followup_enabled
+                and detail.cohort.followup_status
+                in {CohortFollowupStatus.ACTIVE_TRACKING, CohortFollowupStatus.MATURE_TRACKING}
+            ),
+            post_28d_tracking_days=coverage["post_28d_tracking_days"],
+            post_28d_snapshot_days=coverage["post_28d_snapshot_days"],
+            post_28d_snapshot_coverage_pct=coverage["post_28d_snapshot_coverage_pct"],
             missing_followup_dates=missing_dates,
             partial_followup_dates=partial_dates,
             duplicate_snapshot_state_count=duplicate_state_count,
@@ -5651,9 +6229,20 @@ class IntelligenceService:
             summaries: list[OutcomeSummaryRecord] = []
             if database_configured:
                 try:
-                    predictions = self.research_record_store.list_predictions(cohort.id)
-                    outcomes = self.research_record_store.list_outcomes(cohort.id)
-                    summaries = self.research_record_store.list_outcome_summaries(cohort.id)
+                    predictions = self._canonical_prediction_records(
+                        self.research_record_store.list_predictions(cohort.id)
+                    )
+                    prediction_ids = {prediction.id for prediction in predictions}
+                    outcomes = [
+                        outcome
+                        for outcome in self.research_record_store.list_outcomes(cohort.id)
+                        if outcome.prediction_id in prediction_ids
+                    ]
+                    summaries = self._build_outcome_summaries(
+                        cohort.id,
+                        outcomes,
+                        calculated_at=datetime.now(UTC),
+                    )
                 except Exception as exc:  # pragma: no cover - database/runtime boundary
                     messages.append(
                         ResearchOperationalMessage(
@@ -5823,8 +6412,73 @@ class IntelligenceService:
                 "graph": "Neo4j projection only; not the source of price or rule truth",
                 "llm": "advisory only; cannot create or mutate these records",
             },
+            "selection_feature_policy": {
+                "deprecated_fields": sorted(DEPRECATED_SELECTION_SNAPSHOT_FIELDS),
+                "deprecated_field_use": "Excluded from similarity, Pattern discovery, hypothesis evidence, and statistics.",
+                "authoritative_score_field": "selected_score",
+            },
             "dashboard": dashboard.model_dump(mode="json"),
         }
+        if self.research_record_store.configured:
+            audit_cohorts = [selected] if selected is not None else dashboard.cohorts
+            lineage: dict[str, Any] = {}
+            outcome_semantics: dict[str, list[dict[str, Any]]] = {}
+            outcome_records: dict[str, list[dict[str, Any]]] = {}
+            for readiness in audit_cohorts:
+                all_predictions = self.research_record_store.list_predictions(readiness.cohort.id)
+                canonical_predictions = self._canonical_prediction_records(all_predictions)
+                canonical_ids = {prediction.id for prediction in canonical_predictions}
+                canonical_outcomes = [
+                    outcome
+                    for outcome in self.research_record_store.list_outcomes(readiness.cohort.id)
+                    if outcome.prediction_id in canonical_ids
+                ]
+                lineage[readiness.cohort.id] = {
+                    "canonical_prediction_ids": sorted(canonical_ids),
+                    "superseded_prediction_ids": sorted(
+                        prediction.id for prediction in all_predictions if prediction.id not in canonical_ids
+                    ),
+                    "prediction_records": [
+                        prediction.model_dump(mode="json")
+                        for prediction in all_predictions
+                    ],
+                    "corrections": [
+                        prediction.model_dump(mode="json")
+                        for prediction in canonical_predictions
+                        if prediction.supersedes_prediction_id
+                    ],
+                }
+                outcome_semantics[readiness.cohort.id] = [
+                    {
+                        "outcome_id": outcome.id,
+                        "prediction_id": outcome.prediction_id,
+                        "horizon_days": outcome.horizon_days,
+                        "price_outcome": {
+                            "outcome_label": outcome.outcome_label,
+                            "followed_through": outcome.followed_through,
+                            "directional_return_pct": outcome.directional_return_pct,
+                        },
+                        "setup_path": {
+                            "label": (
+                                "invalidated_early"
+                                if outcome.invalidated_quickly
+                                else "stayed_valid"
+                                if outcome.stayed_valid
+                                else "not_observed"
+                            ),
+                            "invalidated_quickly": outcome.invalidated_quickly,
+                            "stayed_valid": outcome.stayed_valid,
+                        },
+                    }
+                    for outcome in canonical_outcomes
+                ]
+                outcome_records[readiness.cohort.id] = [
+                    outcome.model_dump(mode="json")
+                    for outcome in self.research_record_store.list_outcomes(readiness.cohort.id)
+                ]
+            payload["prediction_lineage"] = lineage
+            payload["outcome_semantics"] = outcome_semantics
+            payload["outcome_records"] = outcome_records
         if selected is not None:
             payload["selected_cohort"] = selected.model_dump(mode="json")
             payload["daily_reports"] = [
@@ -6071,14 +6725,11 @@ class IntelligenceService:
                 selected_trigger_state = snapshot.get("trigger_state")
                 selected_trigger_score = snapshot.get("trigger_score")
                 selected_trigger_threshold = snapshot.get("trigger_threshold")
-                selected_blocked_by = row.selected_blocked_by
-                if selected_blocked_by == "none":
-                    selected_blocked_by = self._blocked_by_from_risk_flags(row.selected_risk_flags, fallback="none")
-                selected_displayed_score = (
-                    row.selected_displayed_score
-                    if row.selected_displayed_score and row.selected_displayed_score > 0
-                    else (row.selected_score if row.selected_score > 0 else row.selected_final_score_capped)
+                selected_blocked_by = self._canonical_selection_blocker(
+                    selection_snapshot=row.model_dump(mode="json"),
+                    fallback_blocked_by=row.selected_blocked_by,
                 )
+                selected_score = row.selected_score
                 selected_confirm_text = self._build_confirm_entry_text(
                     trigger_state=str(selected_trigger_state) if selected_trigger_state is not None else None,
                     trigger_score=float(selected_trigger_score) if isinstance(selected_trigger_score, (int, float)) else None,
@@ -6091,7 +6742,7 @@ class IntelligenceService:
                 lines.append(f"- Original why selected: {row.selected_reason}")
                 score_formula = (
                     f"{row.selected_base_score:.2f} base + {row.selected_category_boost:.2f} boost + "
-                    f"{row.selected_data_quality_penalty:.2f} data_quality_penalty => {selected_displayed_score:.2f} displayed"
+                    f"{row.selected_data_quality_penalty:.2f} data_quality_penalty => {selected_score:.2f} selected score"
                 )
                 lines.append(f"- Score Breakdown: `{score_formula}`")
                 lines.append(f"- Candidate Type: `{row.selected_candidate_type}`")

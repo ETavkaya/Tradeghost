@@ -17,6 +17,7 @@ from tradeghost.shared.models.schemas import (
 
 
 MIN_WEIGHTED_SIMILARITY = 0.5
+DEPRECATED_SELECTION_SNAPSHOT_FEATURES = frozenset({"selected_displayed_score"})
 
 
 class SimilarSetupEvidenceService:
@@ -328,10 +329,15 @@ def _frequency_rows(values: list[tuple[str, str]], *, denominator: int) -> list[
 
 
 def _selection_snapshot_value(snapshot: dict[str, Any], field_name: str) -> float | None:
-    structure = snapshot.get("selected_structure_snapshot") if isinstance(snapshot, dict) else None
+    if field_name in DEPRECATED_SELECTION_SNAPSHOT_FEATURES:
+        return None
+    source = snapshot if isinstance(snapshot, dict) else {}
+    while isinstance(source.get("selection_snapshot"), dict):
+        source = source["selection_snapshot"]
+    structure = source.get("selected_structure_snapshot") if isinstance(source, dict) else None
     values = [
         structure.get(field_name) if isinstance(structure, dict) else None,
-        snapshot.get(field_name) if isinstance(snapshot, dict) else None,
+        source.get(field_name) if isinstance(source, dict) else None,
     ]
     for value in values:
         if value is None:

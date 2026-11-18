@@ -33,7 +33,7 @@ Implemented in Phase 2B:
 1. A deterministic cohort selection creates exactly one immutable prediction record per selected symbol and selection event.
 2. The record captures selection timestamp and price, cohort ID, symbol and market, categories, normalized setup, blockers, invalidation condition, source run/report, and rule/feature/data versions.
 3. The record includes a deterministic payload hash and idempotency key such as `cohort_id + normalized_symbol + selected_at + rule_version`.
-4. Corrections create a superseding record with a reason and lineage; the original remains queryable.
+4. Corrections create a superseding record with a reason and lineage; the original remains queryable. A historical blocker correction requires immutable evidence that the deterministic selection gate failed and records an explicit blocker. Risk flags alone are not proof that entry was blocked. Corrections preserve all rule/feature/data versions. Superseded Predictions and their Outcomes remain audit evidence but are excluded from learning and summary statistics.
 5. Phase 2C attaches the deterministic selection-time `market_regime_snapshots` record ID. The scanner remains the source of the prediction; an LLM can describe its evidence but cannot create or modify it.
 
 Existing cohorts may use an explicit deterministic backfill that reads only their frozen `CohortCandidate` selection snapshots. It records the backfill in the pipeline log and uses the same idempotency key as selection-time creation.
@@ -100,8 +100,8 @@ Implemented in Phase 2H: the `/research` workspace exposes a read-only operation
 
 - cohort follow-up readiness: elapsed days, complete daily coverage, missing dates, partial-state counts, and backfill status;
 - prediction cards with immutable selection facts and lineage;
-- horizon outcome cards showing availability separately from daily-path completeness;
-- lifecycle states (`active_tracking`, `mature_tracking`, `paused`, `archived_manual`) with 28D checkpoint readiness, later-horizon due dates, and audited human pause/resume/archive controls;
+- horizon outcome cards showing availability separately from daily-path completeness and showing price outcome separately from setup-path validity;
+- lifecycle states (`active_tracking`, `mature_tracking`, `paused`, `archived_manual`) with initial-28D coverage, post-28D tracking coverage, checkpoint readiness, later-horizon due dates, and audited human pause/resume/archive controls;
 - category/setup/blocker summaries with sample size and data-quality caveats;
 - evidence and graph links that expose source report, signal, regime, and outcome records;
 - hypothesis and Pattern review controls that require a reviewer ID and append-only human approval actions. A hypothesis acceptance remains a release-review state only; Pattern approval remains read-only retrieval only.

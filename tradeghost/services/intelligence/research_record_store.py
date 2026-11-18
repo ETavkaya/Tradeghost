@@ -9,7 +9,10 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from tradeghost.services.knowledge_graph.outbox import KnowledgeGraphOutboxStore
 from tradeghost.shared.models.schemas import (
     HypothesisValidationRun,
+    MarketStateSnapshot,
     MarketRegimeSnapshot,
+    OperationalReport,
+    OperationalReportType,
     OutcomeRecord,
     OutcomeSummaryRecord,
     PatternCandidate,
@@ -19,6 +22,17 @@ from tradeghost.shared.models.schemas import (
     RuleHypothesis,
     RuleHypothesisReview,
     RuleHypothesisStatus,
+    StrategyLabAvoidedObservation,
+    StrategyLabDecision,
+    StrategyLabDecisionStatus,
+    StrategyLabExperiment,
+    StrategyLabExperimentStatus,
+    StrategyLabLedgerEvent,
+    StrategyLabLedgerEventType,
+    StrategyLabPosition,
+    StrategyLabPositionStatus,
+    StrategyLabSleeve,
+    StrategyLabSleeveKey,
 )
 
 
@@ -199,6 +213,620 @@ class ResearchRecordStore:
                 (snapshot_id,),
             ).fetchone()
         return self._market_regime_from_row(row) if row else None
+
+    def create_market_state_snapshot(self, record: MarketStateSnapshot) -> tuple[MarketStateSnapshot, bool]:
+        self.ensure_schema()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO market_state_snapshots (
+                    id, idempotency_key, payload_hash, market, as_of_date, observed_at,
+                    source_market_regime_id, source_market_regime_payload_hash,
+                    state_version, data_version, availability_status, inputs_json,
+                    state_json, source_versions_json, data_quality_flags_json,
+                    unavailable_inputs_json, created_at
+                )
+                VALUES (
+                    %(id)s::uuid, %(idempotency_key)s, %(payload_hash)s, %(market)s,
+                    %(as_of_date)s, %(observed_at)s, %(source_market_regime_id)s::uuid,
+                    %(source_market_regime_payload_hash)s, %(state_version)s, %(data_version)s,
+                    %(availability_status)s, %(inputs_json)s::jsonb, %(state_json)s::jsonb,
+                    %(source_versions_json)s::jsonb, %(data_quality_flags_json)s::jsonb,
+                    %(unavailable_inputs_json)s::jsonb, %(created_at)s
+                )
+                ON CONFLICT (idempotency_key) DO NOTHING
+                RETURNING *
+                """,
+                self._market_state_payload(record),
+            ).fetchone()
+            created = row is not None
+            if row is None:
+                row = conn.execute(
+                    "SELECT * FROM market_state_snapshots WHERE idempotency_key = %s",
+                    (record.idempotency_key,),
+                ).fetchone()
+            if row is None:  # pragma: no cover - database consistency guard
+                raise RuntimeError(f"Market State snapshot was not persisted for key={record.idempotency_key}")
+            conn.commit()
+        return self._market_state_from_row(row), created
+
+    def get_market_state_snapshot(self, snapshot_id: str) -> MarketStateSnapshot | None:
+        self.ensure_schema()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM market_state_snapshots WHERE id = %s::uuid",
+                (snapshot_id,),
+            ).fetchone()
+        return self._market_state_from_row(row) if row else None
+
+    def list_market_state_snapshots(
+        self,
+        *,
+        market: str,
+        as_of_date: date | None = None,
+        limit: int = 30,
+    ) -> list[MarketStateSnapshot]:
+        self.ensure_schema()
+        query = """
+            SELECT *
+            FROM market_state_snapshots
+            WHERE market = %s
+        """
+        params: list[Any] = [market]
+        if as_of_date is not None:
+            query += " AND as_of_date = %s"
+            params.append(as_of_date)
+        query += " ORDER BY as_of_date DESC, created_at DESC LIMIT %s"
+        params.append(max(1, min(int(limit), 100)))
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._market_state_from_row(row) for row in rows]
+
+    def get_operational_report_by_idempotency_key(self, idempotency_key: str) -> OperationalReport | None:
+        self.ensure_schema()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM operational_reports WHERE idempotency_key = %s",
+                (idempotency_key,),
+            ).fetchone()
+        return self._operational_report_from_row(row) if row else None
+
+    def latest_operational_report(
+        self,
+        *,
+        report_type: OperationalReportType,
+        market: str,
+        period_start: date,
+        period_end: date,
+    ) -> OperationalReport | None:
+        self.ensure_schema()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM operational_reports
+                WHERE report_type = %s
+                  AND market = %s
+                  AND period_start = %s
+                  AND period_end = %s
+                ORDER BY generated_at DESC, created_at DESC
+                LIMIT 1
+                """,
+                (report_type.value, market, period_start, period_end),
+            ).fetchone()
+        return self._operational_report_from_row(row) if row else None
+
+    def create_operational_report(self, record: OperationalReport) -> tuple[OperationalReport, bool]:
+        self.ensure_schema()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO operational_reports (
+                    id, idempotency_key, payload_hash, report_type, report_version,
+                    market, period_start, period_end, as_of_date, generated_at, status,
+                    market_state_id, summary_json, source_versions_json,
+                    data_quality_flags_json, supersedes_report_id, created_at
+                )
+                VALUES (
+                    %(id)s::uuid, %(idempotency_key)s, %(payload_hash)s, %(report_type)s,
+                    %(report_version)s, %(market)s, %(period_start)s, %(period_end)s,
+                    %(as_of_date)s, %(generated_at)s, %(status)s, %(market_state_id)s::uuid,
+                    %(summary_json)s::jsonb, %(source_versions_json)s::jsonb,
+                    %(data_quality_flags_json)s::jsonb, %(supersedes_report_id)s::uuid,
+                    %(created_at)s
+                )
+                ON CONFLICT (idempotency_key) DO NOTHING
+                RETURNING *
+                """,
+                self._operational_report_payload(record),
+            ).fetchone()
+            created = row is not None
+            if row is None:
+                row = conn.execute(
+                    "SELECT * FROM operational_reports WHERE idempotency_key = %s",
+                    (record.idempotency_key,),
+                ).fetchone()
+            if row is None:  # pragma: no cover - database consistency guard
+                raise RuntimeError(f"Operational report was not persisted for key={record.idempotency_key}")
+            conn.commit()
+        return self._operational_report_from_row(row), created
+
+    def list_operational_reports(
+        self,
+        *,
+        market: str | None = None,
+        report_type: OperationalReportType | None = None,
+        limit: int = 20,
+    ) -> list[OperationalReport]:
+        self.ensure_schema()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if market:
+            clauses.append("market = %s")
+            params.append(market)
+        if report_type:
+            clauses.append("report_type = %s")
+            params.append(report_type.value)
+        where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(int(limit), 100)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM operational_reports
+                {where_clause}
+                ORDER BY period_end DESC, generated_at DESC, created_at DESC
+                LIMIT %s
+                """,
+                params,
+            ).fetchall()
+        return [self._operational_report_from_row(row) for row in rows]
+
+    def operational_report_metrics(
+        self,
+        *,
+        market: str,
+        period_start: date,
+        period_end: date,
+        as_of_date: date,
+    ) -> dict[str, Any]:
+        """Return bounded, point-in-time aggregates without materialising source records."""
+        self.ensure_schema()
+        point_in_time_params = [market, period_start, period_end, as_of_date]
+        with self._connect() as conn:
+            prediction_row = conn.execute(
+                """
+                WITH canonical_predictions AS (
+                    SELECT prediction.*
+                    FROM prediction_records AS prediction
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM prediction_records AS successor
+                        WHERE successor.supersedes_prediction_id = prediction.id
+                    )
+                )
+                SELECT
+                    COUNT(*) AS prediction_count,
+                    COUNT(DISTINCT cohort_id) AS cohort_count,
+                    COUNT(*) FILTER (WHERE entry_readiness = 'ready') AS ready_count,
+                    COUNT(*) FILTER (WHERE blocked_by IS NOT NULL AND blocked_by <> 'none') AS blocked_count
+                FROM canonical_predictions
+                WHERE market = %s
+                  AND selected_date BETWEEN %s AND %s
+                  AND created_at < (%s::date + INTERVAL '1 day')
+                """,
+                point_in_time_params,
+            ).fetchone()
+            outcome_row = conn.execute(
+                """
+                WITH canonical_predictions AS (
+                    SELECT prediction.*
+                    FROM prediction_records AS prediction
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM prediction_records AS successor
+                        WHERE successor.supersedes_prediction_id = prediction.id
+                    )
+                ), canonical_outcomes AS (
+                    SELECT outcome.*
+                    FROM outcome_records AS outcome
+                    INNER JOIN canonical_predictions AS prediction ON prediction.id = outcome.prediction_id
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM outcome_records AS successor
+                        WHERE successor.supersedes_outcome_id = outcome.id
+                    )
+                )
+                SELECT
+                    COUNT(*) AS outcome_count,
+                    COUNT(*) FILTER (WHERE outcome_status = 'available') AS available_count,
+                    COUNT(*) FILTER (WHERE outcome_status = 'data_quality_excluded') AS data_quality_excluded_count,
+                    COUNT(*) FILTER (WHERE outcome_status = 'available' AND directional_return_pct > 0) AS positive_count,
+                    COUNT(*) FILTER (WHERE outcome_status = 'available' AND directional_return_pct < 0) AS negative_count,
+                    AVG(directional_return_pct) FILTER (WHERE outcome_status = 'available') AS average_directional_return_pct
+                FROM canonical_outcomes
+                WHERE market = %s
+                  AND outcome_date BETWEEN %s AND %s
+                  AND evaluated_at < (%s::date + INTERVAL '1 day')
+                  AND created_at < (%s::date + INTERVAL '1 day')
+                """,
+                [market, period_start, period_end, as_of_date, as_of_date],
+            ).fetchone()
+            version_rows = conn.execute(
+                """
+                WITH canonical_predictions AS (
+                    SELECT prediction.*
+                    FROM prediction_records AS prediction
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM prediction_records AS successor
+                        WHERE successor.supersedes_prediction_id = prediction.id
+                    )
+                ), canonical_outcomes AS (
+                    SELECT outcome.*
+                    FROM outcome_records AS outcome
+                    INNER JOIN canonical_predictions AS prediction ON prediction.id = outcome.prediction_id
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM outcome_records AS successor
+                        WHERE successor.supersedes_outcome_id = outcome.id
+                    )
+                )
+                SELECT rule_version, feature_version, data_version, evaluator_version, COUNT(*) AS outcome_count
+                FROM canonical_outcomes
+                WHERE market = %s
+                  AND outcome_date BETWEEN %s AND %s
+                  AND evaluated_at < (%s::date + INTERVAL '1 day')
+                  AND created_at < (%s::date + INTERVAL '1 day')
+                GROUP BY rule_version, feature_version, data_version, evaluator_version
+                ORDER BY outcome_count DESC, rule_version, feature_version, data_version, evaluator_version
+                LIMIT 12
+                """,
+                [market, period_start, period_end, as_of_date, as_of_date],
+            ).fetchall()
+        return {
+            "predictions": {
+                "count": int(prediction_row["prediction_count"] or 0),
+                "cohort_count": int(prediction_row["cohort_count"] or 0),
+                "ready_count": int(prediction_row["ready_count"] or 0),
+                "blocked_count": int(prediction_row["blocked_count"] or 0),
+            },
+            "outcomes": {
+                "count": int(outcome_row["outcome_count"] or 0),
+                "available_count": int(outcome_row["available_count"] or 0),
+                "data_quality_excluded_count": int(outcome_row["data_quality_excluded_count"] or 0),
+                "positive_count": int(outcome_row["positive_count"] or 0),
+                "negative_count": int(outcome_row["negative_count"] or 0),
+                "average_directional_return_pct": (
+                    float(outcome_row["average_directional_return_pct"])
+                    if outcome_row["average_directional_return_pct"] is not None
+                    else None
+                ),
+            },
+            "outcome_version_groups": [
+                {
+                    "rule_version": str(row["rule_version"]),
+                    "feature_version": str(row["feature_version"]),
+                    "data_version": str(row["data_version"]),
+                    "evaluator_version": str(row["evaluator_version"]),
+                    "outcome_count": int(row["outcome_count"]),
+                }
+                for row in version_rows
+            ],
+            "point_in_time_filter": {
+                "as_of_date": as_of_date.isoformat(),
+                "source_created_before_next_day": True,
+                "outcomes_evaluated_before_next_day": True,
+            },
+        }
+
+    def create_strategy_lab_experiment(
+        self,
+        experiment: StrategyLabExperiment,
+        sleeves: list[StrategyLabSleeve],
+        initial_events: list[StrategyLabLedgerEvent],
+    ) -> tuple[StrategyLabExperiment, list[StrategyLabSleeve], bool]:
+        self.ensure_schema()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO strategy_lab_experiments (
+                    id, idempotency_key, payload_hash, name, market, currency, activation_at,
+                    status, policy_version, rule_version, feature_version, data_version,
+                    config_json, created_at
+                ) VALUES (
+                    %(id)s::uuid, %(idempotency_key)s, %(payload_hash)s, %(name)s, %(market)s,
+                    %(currency)s, %(activation_at)s, %(status)s, %(policy_version)s,
+                    %(rule_version)s, %(feature_version)s, %(data_version)s,
+                    %(config_json)s::jsonb, %(created_at)s
+                )
+                ON CONFLICT (idempotency_key) DO NOTHING
+                RETURNING *
+                """,
+                self._strategy_lab_experiment_payload(experiment),
+            ).fetchone()
+            created = row is not None
+            if row is None:
+                row = conn.execute(
+                    "SELECT * FROM strategy_lab_experiments WHERE idempotency_key = %s",
+                    (experiment.idempotency_key,),
+                ).fetchone()
+            else:
+                for sleeve in sleeves:
+                    conn.execute(
+                        """
+                        INSERT INTO strategy_lab_sleeves (
+                            id, experiment_id, sleeve_key, sleeve_type, initial_cash,
+                            max_positions, allocation_per_slot, created_at
+                        ) VALUES (
+                            %(id)s::uuid, %(experiment_id)s::uuid, %(sleeve_key)s, %(sleeve_type)s,
+                            %(initial_cash)s, %(max_positions)s, %(allocation_per_slot)s, %(created_at)s
+                        )
+                        ON CONFLICT (experiment_id, sleeve_key) DO NOTHING
+                        """,
+                        self._strategy_lab_sleeve_payload(sleeve),
+                    )
+                for event in initial_events:
+                    self._insert_strategy_lab_ledger_event(conn, event)
+            if row is None:  # pragma: no cover - database consistency guard
+                raise RuntimeError(f"Strategy Lab experiment was not persisted for key={experiment.idempotency_key}")
+            sleeve_rows = conn.execute(
+                "SELECT * FROM strategy_lab_sleeves WHERE experiment_id = %s::uuid ORDER BY sleeve_key",
+                (str(row["id"]),),
+            ).fetchall()
+            conn.commit()
+        return self._strategy_lab_experiment_from_row(row), [self._strategy_lab_sleeve_from_row(item) for item in sleeve_rows], created
+
+    def get_strategy_lab_experiment(self, experiment_id: str) -> StrategyLabExperiment | None:
+        self.ensure_schema()
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM strategy_lab_experiments WHERE id = %s::uuid", (experiment_id,)).fetchone()
+        return self._strategy_lab_experiment_from_row(row) if row else None
+
+    def activate_strategy_lab_experiment(self, experiment_id: str) -> StrategyLabExperiment:
+        self.ensure_schema()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                UPDATE strategy_lab_experiments
+                SET status = 'active'
+                WHERE id = %s::uuid
+                  AND status = 'scheduled'
+                  AND activation_at <= now()
+                RETURNING *
+                """,
+                (experiment_id,),
+            ).fetchone()
+            if row is None:
+                existing = conn.execute("SELECT * FROM strategy_lab_experiments WHERE id = %s::uuid", (experiment_id,)).fetchone()
+                if existing is None:
+                    raise FileNotFoundError(f"Strategy Lab experiment was not found: {experiment_id}")
+                if str(existing["status"]) != "active":
+                    raise ValueError("Strategy Lab experiment cannot activate before its explicit activation time.")
+                row = existing
+            conn.commit()
+        return self._strategy_lab_experiment_from_row(row)
+
+    def list_strategy_lab_experiments(self, limit: int = 30) -> list[StrategyLabExperiment]:
+        self.ensure_schema()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM strategy_lab_experiments ORDER BY activation_at DESC, created_at DESC LIMIT %s",
+                (max(1, min(int(limit), 100)),),
+            ).fetchall()
+        return [self._strategy_lab_experiment_from_row(row) for row in rows]
+
+    def list_strategy_lab_sleeves(self, experiment_id: str) -> list[StrategyLabSleeve]:
+        self.ensure_schema()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM strategy_lab_sleeves WHERE experiment_id = %s::uuid ORDER BY sleeve_key",
+                (experiment_id,),
+            ).fetchall()
+        return [self._strategy_lab_sleeve_from_row(row) for row in rows]
+
+    def create_strategy_lab_decision(
+        self,
+        decision: StrategyLabDecision,
+        *,
+        position: StrategyLabPosition | None = None,
+        ledger_events: list[StrategyLabLedgerEvent] | None = None,
+        avoided_observation: StrategyLabAvoidedObservation | None = None,
+    ) -> tuple[StrategyLabDecision, bool]:
+        self.ensure_schema()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO strategy_lab_decisions (
+                    id, idempotency_key, payload_hash, experiment_id, sleeve_id, position_id,
+                    source_run_id, source_run_at, source_run_date, symbol, market, category,
+                    decision_status, reason_codes_json, final_entry_decision,
+                    source_candidate_hash, source_candidate_json, rule_version, feature_version,
+                    data_version, created_at
+                ) VALUES (
+                    %(id)s::uuid, %(idempotency_key)s, %(payload_hash)s, %(experiment_id)s::uuid,
+                    %(sleeve_id)s::uuid, NULL, %(source_run_id)s, %(source_run_at)s,
+                    %(source_run_date)s, %(symbol)s, %(market)s, %(category)s,
+                    %(decision_status)s, %(reason_codes_json)s::jsonb, %(final_entry_decision)s,
+                    %(source_candidate_hash)s, %(source_candidate_json)s::jsonb, %(rule_version)s,
+                    %(feature_version)s, %(data_version)s, %(created_at)s
+                )
+                ON CONFLICT (idempotency_key) DO NOTHING
+                RETURNING *
+                """,
+                self._strategy_lab_decision_payload(decision),
+            ).fetchone()
+            created = row is not None
+            if row is None:
+                row = conn.execute(
+                    "SELECT * FROM strategy_lab_decisions WHERE idempotency_key = %s",
+                    (decision.idempotency_key,),
+                ).fetchone()
+            else:
+                if position is not None:
+                    conn.execute(
+                        """
+                        INSERT INTO strategy_lab_positions (
+                            id, experiment_id, sleeve_id, decision_id, symbol, market, status,
+                            allocated_cash, quantity, entry_date, entry_price, entry_data_version,
+                            exit_date, exit_price, exit_data_version, realised_pnl,
+                            latest_valuation_date, latest_valuation_price, scheduled_exit_sessions,
+                            created_at, updated_at
+                        ) VALUES (
+                            %(id)s::uuid, %(experiment_id)s::uuid, %(sleeve_id)s::uuid,
+                            %(decision_id)s::uuid, %(symbol)s, %(market)s, %(status)s,
+                            %(allocated_cash)s, %(quantity)s, %(entry_date)s, %(entry_price)s,
+                            %(entry_data_version)s, %(exit_date)s, %(exit_price)s,
+                            %(exit_data_version)s, %(realised_pnl)s, %(latest_valuation_date)s,
+                            %(latest_valuation_price)s, %(scheduled_exit_sessions)s,
+                            %(created_at)s, %(updated_at)s
+                        )
+                        """,
+                        self._strategy_lab_position_payload(position),
+                    )
+                    row = conn.execute(
+                        "UPDATE strategy_lab_decisions SET position_id = %s::uuid WHERE id = %s::uuid RETURNING *",
+                        (position.id, decision.id),
+                    ).fetchone()
+                for event in ledger_events or []:
+                    self._insert_strategy_lab_ledger_event(conn, event)
+                if avoided_observation is not None:
+                    conn.execute(
+                        """
+                        INSERT INTO strategy_lab_avoided_observations (
+                            id, idempotency_key, experiment_id, decision_id, symbol, market,
+                            source_run_date, planned_allocation, status, entry_date, entry_price,
+                            exit_date, exit_price, return_pct, data_version, details_json,
+                            created_at, updated_at
+                        ) VALUES (
+                            %(id)s::uuid, %(idempotency_key)s, %(experiment_id)s::uuid,
+                            %(decision_id)s::uuid, %(symbol)s, %(market)s, %(source_run_date)s,
+                            %(planned_allocation)s, %(status)s, %(entry_date)s, %(entry_price)s,
+                            %(exit_date)s, %(exit_price)s, %(return_pct)s, %(data_version)s,
+                            %(details_json)s::jsonb, %(created_at)s, %(updated_at)s
+                        ) ON CONFLICT (idempotency_key) DO NOTHING
+                        """,
+                        self._strategy_lab_avoided_payload(avoided_observation),
+                    )
+            if row is None:  # pragma: no cover - database consistency guard
+                raise RuntimeError(f"Strategy Lab decision was not persisted for key={decision.idempotency_key}")
+            conn.commit()
+        return self._strategy_lab_decision_from_row(row), created
+
+    def list_strategy_lab_decisions(self, experiment_id: str) -> list[StrategyLabDecision]:
+        self.ensure_schema()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM strategy_lab_decisions WHERE experiment_id = %s::uuid ORDER BY source_run_at, symbol, category",
+                (experiment_id,),
+            ).fetchall()
+        return [self._strategy_lab_decision_from_row(row) for row in rows]
+
+    def list_strategy_lab_positions(self, experiment_id: str) -> list[StrategyLabPosition]:
+        self.ensure_schema()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM strategy_lab_positions WHERE experiment_id = %s::uuid ORDER BY created_at, symbol",
+                (experiment_id,),
+            ).fetchall()
+        return [self._strategy_lab_position_from_row(row) for row in rows]
+
+    def update_strategy_lab_position(self, record: StrategyLabPosition) -> StrategyLabPosition:
+        self.ensure_schema()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                UPDATE strategy_lab_positions SET
+                    status = %(status)s, quantity = %(quantity)s, entry_date = %(entry_date)s,
+                    entry_price = %(entry_price)s, entry_data_version = %(entry_data_version)s,
+                    exit_date = %(exit_date)s, exit_price = %(exit_price)s,
+                    exit_data_version = %(exit_data_version)s, realised_pnl = %(realised_pnl)s,
+                    latest_valuation_date = %(latest_valuation_date)s,
+                    latest_valuation_price = %(latest_valuation_price)s, updated_at = %(updated_at)s
+                WHERE id = %(id)s::uuid
+                RETURNING *
+                """,
+                self._strategy_lab_position_payload(record),
+            ).fetchone()
+            if row is None:
+                raise FileNotFoundError(f"Strategy Lab position was not found: {record.id}")
+            conn.commit()
+        return self._strategy_lab_position_from_row(row)
+
+    def create_strategy_lab_ledger_event(self, event: StrategyLabLedgerEvent) -> tuple[StrategyLabLedgerEvent, bool]:
+        self.ensure_schema()
+        with self._connect() as conn:
+            row, created = self._insert_strategy_lab_ledger_event(conn, event)
+            conn.commit()
+        return self._strategy_lab_ledger_event_from_row(row), created
+
+    def _insert_strategy_lab_ledger_event(self, conn: Any, event: StrategyLabLedgerEvent) -> tuple[dict[str, Any], bool]:
+        row = conn.execute(
+            """
+            INSERT INTO strategy_lab_ledger_events (
+                id, idempotency_key, experiment_id, sleeve_id, position_id, decision_id,
+                event_type, event_date, cash_delta, quantity, price, source_bar_date,
+                price_source, data_version, details_json, reverses_event_id, created_at
+            ) VALUES (
+                %(id)s::uuid, %(idempotency_key)s, %(experiment_id)s::uuid, %(sleeve_id)s::uuid,
+                %(position_id)s::uuid, %(decision_id)s::uuid, %(event_type)s, %(event_date)s,
+                %(cash_delta)s, %(quantity)s, %(price)s, %(source_bar_date)s, %(price_source)s,
+                %(data_version)s, %(details_json)s::jsonb, %(reverses_event_id)s::uuid, %(created_at)s
+            ) ON CONFLICT (idempotency_key) DO NOTHING
+            RETURNING *
+            """,
+            self._strategy_lab_ledger_event_payload(event),
+        ).fetchone()
+        created = row is not None
+        if row is None:
+            row = conn.execute(
+                "SELECT * FROM strategy_lab_ledger_events WHERE idempotency_key = %s",
+                (event.idempotency_key,),
+            ).fetchone()
+        if row is None:  # pragma: no cover - database consistency guard
+            raise RuntimeError(f"Strategy Lab ledger event was not persisted for key={event.idempotency_key}")
+        return row, created
+
+    def list_strategy_lab_ledger_events(self, experiment_id: str) -> list[StrategyLabLedgerEvent]:
+        self.ensure_schema()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM strategy_lab_ledger_events WHERE experiment_id = %s::uuid ORDER BY event_date, created_at, id",
+                (experiment_id,),
+            ).fetchall()
+        return [self._strategy_lab_ledger_event_from_row(row) for row in rows]
+
+    def list_strategy_lab_avoided_observations(self, experiment_id: str) -> list[StrategyLabAvoidedObservation]:
+        self.ensure_schema()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM strategy_lab_avoided_observations WHERE experiment_id = %s::uuid ORDER BY source_run_date, symbol",
+                (experiment_id,),
+            ).fetchall()
+        return [self._strategy_lab_avoided_from_row(row) for row in rows]
+
+    def update_strategy_lab_avoided_observation(
+        self,
+        record: StrategyLabAvoidedObservation,
+    ) -> StrategyLabAvoidedObservation:
+        self.ensure_schema()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                UPDATE strategy_lab_avoided_observations SET
+                    status = %(status)s, entry_date = %(entry_date)s, entry_price = %(entry_price)s,
+                    exit_date = %(exit_date)s, exit_price = %(exit_price)s, return_pct = %(return_pct)s,
+                    data_version = %(data_version)s, details_json = %(details_json)s::jsonb,
+                    updated_at = %(updated_at)s
+                WHERE id = %(id)s::uuid
+                RETURNING *
+                """,
+                self._strategy_lab_avoided_payload(record),
+            ).fetchone()
+            if row is None:
+                raise FileNotFoundError(f"Strategy Lab avoided observation was not found: {record.id}")
+            conn.commit()
+        return self._strategy_lab_avoided_from_row(row)
 
     def enqueue_existing_records_for_graph(self, limit: int = 100) -> dict[str, int]:
         self.ensure_schema()
@@ -384,6 +1012,11 @@ class ResearchRecordStore:
                 INNER JOIN prediction_records AS prediction ON prediction.id = outcome.prediction_id
                 LEFT JOIN market_regime_snapshots AS selection_regime ON selection_regime.id = prediction.selection_market_regime_id
                 WHERE prediction.market = %s
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM prediction_records AS successor
+                    WHERE successor.supersedes_prediction_id = prediction.id
+                  )
                   AND (%s::date IS NULL OR prediction.selected_date < %s::date)
                 ORDER BY outcome.evaluated_at DESC, outcome.created_at DESC
                 LIMIT %s
@@ -416,7 +1049,16 @@ class ResearchRecordStore:
         placeholders = ", ".join("%s::uuid" for _ in prediction_ids)
         with self._connect() as conn:
             rows = conn.execute(
-                f"SELECT * FROM prediction_records WHERE id IN ({placeholders})",
+                f"""
+                SELECT *
+                FROM prediction_records AS prediction
+                WHERE prediction.id IN ({placeholders})
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM prediction_records AS successor
+                    WHERE successor.supersedes_prediction_id = prediction.id
+                  )
+                """,
                 prediction_ids,
             ).fetchall()
         return [self._prediction_from_row(row) for row in rows]
@@ -885,6 +1527,20 @@ class ResearchRecordStore:
                 persisted.append(self._summary_from_row(row))
             conn.commit()
         return persisted
+
+    def replace_outcome_summaries(
+        self,
+        cohort_id: str,
+        records: list[OutcomeSummaryRecord],
+    ) -> list[OutcomeSummaryRecord]:
+        self.ensure_schema()
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM outcome_summary_snapshots WHERE cohort_id = %s::uuid",
+                (cohort_id,),
+            )
+            conn.commit()
+        return self.upsert_outcome_summaries(records)
 
     def list_outcome_summaries(self, cohort_id: str) -> list[OutcomeSummaryRecord]:
         self.ensure_schema()
@@ -1413,6 +2069,239 @@ class ResearchRecordStore:
         for key in ("benchmark_returns_json", "raw_inputs_json", "data_quality_flags"):
             target_key = "data_quality_flags_json" if key == "data_quality_flags" else key
             payload[target_key] = json.dumps(payload.pop(key), sort_keys=True)
+        return payload
+
+    @classmethod
+    def _market_state_from_row(cls, row: dict[str, Any]) -> MarketStateSnapshot:
+        return MarketStateSnapshot(
+            id=str(row["id"]),
+            idempotency_key=str(row["idempotency_key"]),
+            payload_hash=str(row["payload_hash"]),
+            market=str(row["market"]),
+            as_of_date=row["as_of_date"],
+            observed_at=row["observed_at"],
+            source_market_regime_id=(
+                str(row["source_market_regime_id"]) if row.get("source_market_regime_id") else None
+            ),
+            source_market_regime_payload_hash=row.get("source_market_regime_payload_hash"),
+            state_version=str(row["state_version"]),
+            data_version=str(row["data_version"]),
+            availability_status=str(row["availability_status"]),
+            inputs_json=cls._json(row.get("inputs_json"), {}),
+            state_json=cls._json(row.get("state_json"), {}),
+            source_versions_json=cls._json(row.get("source_versions_json"), {}),
+            data_quality_flags=cls._json(row.get("data_quality_flags_json"), []),
+            unavailable_inputs=cls._json(row.get("unavailable_inputs_json"), []),
+            created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _market_state_payload(record: MarketStateSnapshot) -> dict[str, Any]:
+        payload = record.model_dump(mode="json")
+        for key in (
+            "inputs_json",
+            "state_json",
+            "source_versions_json",
+            "data_quality_flags",
+            "unavailable_inputs",
+        ):
+            target_key = {
+                "data_quality_flags": "data_quality_flags_json",
+                "unavailable_inputs": "unavailable_inputs_json",
+            }.get(key, key)
+            payload[target_key] = json.dumps(payload.pop(key), default=str, sort_keys=True)
+        return payload
+
+    @classmethod
+    def _operational_report_from_row(cls, row: dict[str, Any]) -> OperationalReport:
+        return OperationalReport(
+            id=str(row["id"]),
+            idempotency_key=str(row["idempotency_key"]),
+            payload_hash=str(row["payload_hash"]),
+            report_type=OperationalReportType(str(row["report_type"])),
+            report_version=str(row["report_version"]),
+            market=str(row["market"]),
+            period_start=row["period_start"],
+            period_end=row["period_end"],
+            as_of_date=row["as_of_date"],
+            generated_at=row["generated_at"],
+            status=str(row["status"]),
+            market_state_id=str(row["market_state_id"]) if row.get("market_state_id") else None,
+            summary_json=cls._json(row.get("summary_json"), {}),
+            source_versions_json=cls._json(row.get("source_versions_json"), {}),
+            data_quality_flags=cls._json(row.get("data_quality_flags_json"), []),
+            supersedes_report_id=str(row["supersedes_report_id"]) if row.get("supersedes_report_id") else None,
+            created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _operational_report_payload(record: OperationalReport) -> dict[str, Any]:
+        payload = record.model_dump(mode="json")
+        for key in ("summary_json", "source_versions_json", "data_quality_flags"):
+            target_key = "data_quality_flags_json" if key == "data_quality_flags" else key
+            payload[target_key] = json.dumps(payload.pop(key), default=str, sort_keys=True)
+        return payload
+
+    @classmethod
+    def _strategy_lab_experiment_from_row(cls, row: dict[str, Any]) -> StrategyLabExperiment:
+        return StrategyLabExperiment(
+            id=str(row["id"]),
+            idempotency_key=str(row["idempotency_key"]),
+            payload_hash=str(row["payload_hash"]),
+            name=str(row["name"]),
+            market=str(row["market"]),
+            currency=str(row["currency"]),
+            activation_at=row["activation_at"],
+            status=StrategyLabExperimentStatus(str(row["status"])),
+            policy_version=str(row["policy_version"]),
+            rule_version=str(row["rule_version"]),
+            feature_version=str(row["feature_version"]),
+            data_version=str(row["data_version"]),
+            config_json=cls._json(row.get("config_json"), {}),
+            created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _strategy_lab_experiment_payload(record: StrategyLabExperiment) -> dict[str, Any]:
+        payload = record.model_dump(mode="json")
+        payload["config_json"] = json.dumps(payload["config_json"], default=str, sort_keys=True)
+        return payload
+
+    @classmethod
+    def _strategy_lab_sleeve_from_row(cls, row: dict[str, Any]) -> StrategyLabSleeve:
+        return StrategyLabSleeve(
+            id=str(row["id"]),
+            experiment_id=str(row["experiment_id"]),
+            sleeve_key=StrategyLabSleeveKey(str(row["sleeve_key"])),
+            sleeve_type=str(row["sleeve_type"]),
+            initial_cash=row["initial_cash"],
+            max_positions=int(row["max_positions"]),
+            allocation_per_slot=row["allocation_per_slot"],
+            created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _strategy_lab_sleeve_payload(record: StrategyLabSleeve) -> dict[str, Any]:
+        return record.model_dump(mode="json")
+
+    @classmethod
+    def _strategy_lab_decision_from_row(cls, row: dict[str, Any]) -> StrategyLabDecision:
+        return StrategyLabDecision(
+            id=str(row["id"]),
+            idempotency_key=str(row["idempotency_key"]),
+            payload_hash=str(row["payload_hash"]),
+            experiment_id=str(row["experiment_id"]),
+            sleeve_id=str(row["sleeve_id"]) if row.get("sleeve_id") else None,
+            position_id=str(row["position_id"]) if row.get("position_id") else None,
+            source_run_id=str(row["source_run_id"]),
+            source_run_at=row["source_run_at"],
+            source_run_date=row["source_run_date"],
+            symbol=str(row["symbol"]),
+            market=str(row["market"]),
+            category=str(row["category"]),
+            decision_status=StrategyLabDecisionStatus(str(row["decision_status"])),
+            reason_codes=cls._json(row.get("reason_codes_json"), []),
+            final_entry_decision=bool(row["final_entry_decision"]),
+            source_candidate_hash=str(row["source_candidate_hash"]),
+            source_candidate_json=cls._json(row.get("source_candidate_json"), {}),
+            rule_version=str(row["rule_version"]),
+            feature_version=str(row["feature_version"]),
+            data_version=str(row["data_version"]),
+            created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _strategy_lab_decision_payload(record: StrategyLabDecision) -> dict[str, Any]:
+        payload = record.model_dump(mode="json")
+        payload["reason_codes_json"] = json.dumps(payload.pop("reason_codes"), default=str, sort_keys=True)
+        payload["source_candidate_json"] = json.dumps(payload["source_candidate_json"], default=str, sort_keys=True)
+        return payload
+
+    @classmethod
+    def _strategy_lab_position_from_row(cls, row: dict[str, Any]) -> StrategyLabPosition:
+        return StrategyLabPosition(
+            id=str(row["id"]),
+            experiment_id=str(row["experiment_id"]),
+            sleeve_id=str(row["sleeve_id"]),
+            decision_id=str(row["decision_id"]),
+            symbol=str(row["symbol"]),
+            market=str(row["market"]),
+            status=StrategyLabPositionStatus(str(row["status"])),
+            allocated_cash=row["allocated_cash"],
+            quantity=row.get("quantity"),
+            entry_date=row.get("entry_date"),
+            entry_price=row.get("entry_price"),
+            entry_data_version=row.get("entry_data_version"),
+            exit_date=row.get("exit_date"),
+            exit_price=row.get("exit_price"),
+            exit_data_version=row.get("exit_data_version"),
+            realised_pnl=row.get("realised_pnl"),
+            latest_valuation_date=row.get("latest_valuation_date"),
+            latest_valuation_price=row.get("latest_valuation_price"),
+            scheduled_exit_sessions=int(row["scheduled_exit_sessions"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _strategy_lab_position_payload(record: StrategyLabPosition) -> dict[str, Any]:
+        return record.model_dump(mode="json")
+
+    @classmethod
+    def _strategy_lab_ledger_event_from_row(cls, row: dict[str, Any]) -> StrategyLabLedgerEvent:
+        return StrategyLabLedgerEvent(
+            id=str(row["id"]),
+            idempotency_key=str(row["idempotency_key"]),
+            experiment_id=str(row["experiment_id"]),
+            sleeve_id=str(row["sleeve_id"]) if row.get("sleeve_id") else None,
+            position_id=str(row["position_id"]) if row.get("position_id") else None,
+            decision_id=str(row["decision_id"]) if row.get("decision_id") else None,
+            event_type=StrategyLabLedgerEventType(str(row["event_type"])),
+            event_date=row["event_date"],
+            cash_delta=row["cash_delta"],
+            quantity=row.get("quantity"),
+            price=row.get("price"),
+            source_bar_date=row.get("source_bar_date"),
+            price_source=row.get("price_source"),
+            data_version=str(row["data_version"]),
+            details_json=cls._json(row.get("details_json"), {}),
+            reverses_event_id=str(row["reverses_event_id"]) if row.get("reverses_event_id") else None,
+            created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _strategy_lab_ledger_event_payload(record: StrategyLabLedgerEvent) -> dict[str, Any]:
+        payload = record.model_dump(mode="json")
+        payload["details_json"] = json.dumps(payload["details_json"], default=str, sort_keys=True)
+        return payload
+
+    @classmethod
+    def _strategy_lab_avoided_from_row(cls, row: dict[str, Any]) -> StrategyLabAvoidedObservation:
+        return StrategyLabAvoidedObservation(
+            id=str(row["id"]),
+            idempotency_key=str(row["idempotency_key"]),
+            experiment_id=str(row["experiment_id"]),
+            decision_id=str(row["decision_id"]),
+            symbol=str(row["symbol"]),
+            market=str(row["market"]),
+            source_run_date=row["source_run_date"],
+            planned_allocation=row["planned_allocation"],
+            status=str(row["status"]),
+            entry_date=row.get("entry_date"),
+            entry_price=row.get("entry_price"),
+            exit_date=row.get("exit_date"),
+            exit_price=row.get("exit_price"),
+            return_pct=row.get("return_pct"),
+            data_version=str(row["data_version"]),
+            details_json=cls._json(row.get("details_json"), {}),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _strategy_lab_avoided_payload(record: StrategyLabAvoidedObservation) -> dict[str, Any]:
+        payload = record.model_dump(mode="json")
+        payload["details_json"] = json.dumps(payload["details_json"], default=str, sort_keys=True)
         return payload
 
     @staticmethod

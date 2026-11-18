@@ -1019,6 +1019,131 @@ export type IntelligenceRunResponse = {
   symbol_results: SymbolResult[];
 };
 
+export type DailyPipelineRequest = {
+  market: MarketCode;
+  duration: ScannerDuration;
+  categories: ScannerCategory[];
+  max_candidates: number;
+  top_n_per_category: number;
+  max_universe_symbols: number;
+  scanner_max_results: number;
+  scanner_universe_scope: ScannerUniverseScope;
+  scanner_max_runtime_seconds: number;
+};
+
+export type StrategyLabExperimentStatus = "scheduled" | "active" | "closed";
+export type StrategyLabDecisionStatus = "rejected" | "reserved" | "avoided";
+export type StrategyLabPositionStatus = "pending_entry" | "open" | "closed" | "data_quality_hold";
+export type StrategyLabNumeric = number | string;
+
+export type StrategyLabExperiment = {
+  id: string;
+  idempotency_key: string;
+  payload_hash: string;
+  name: string;
+  market: MarketCode;
+  currency: string;
+  activation_at: string;
+  status: StrategyLabExperimentStatus;
+  policy_version: string;
+  rule_version: string;
+  feature_version: string;
+  data_version: string;
+  config_json: Record<string, unknown>;
+  created_at: string;
+};
+
+export type StrategyLabSleeve = {
+  id: string;
+  experiment_id: string;
+  sleeve_key: string;
+  sleeve_type: string;
+  initial_cash: StrategyLabNumeric;
+  max_positions: number;
+  allocation_per_slot: StrategyLabNumeric;
+  created_at: string;
+};
+
+export type StrategyLabDecision = {
+  id: string;
+  experiment_id: string;
+  sleeve_id: string | null;
+  position_id: string | null;
+  source_run_id: string;
+  source_run_at: string;
+  source_run_date: string;
+  symbol: string;
+  market: MarketCode;
+  category: ScannerCategory;
+  decision_status: StrategyLabDecisionStatus;
+  reason_codes: string[];
+  final_entry_decision: boolean;
+  rule_version: string;
+  feature_version: string;
+  data_version: string;
+  created_at: string;
+};
+
+export type StrategyLabPosition = {
+  id: string;
+  experiment_id: string;
+  sleeve_id: string;
+  decision_id: string;
+  symbol: string;
+  market: MarketCode;
+  status: StrategyLabPositionStatus;
+  allocated_cash: StrategyLabNumeric;
+  quantity: StrategyLabNumeric | null;
+  entry_date: string | null;
+  entry_price: StrategyLabNumeric | null;
+  exit_date: string | null;
+  exit_price: StrategyLabNumeric | null;
+  realised_pnl: StrategyLabNumeric | null;
+  latest_valuation_date: string | null;
+  latest_valuation_price: StrategyLabNumeric | null;
+  scheduled_exit_sessions: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StrategyLabAvoidedObservation = {
+  id: string;
+  experiment_id: string;
+  decision_id: string;
+  symbol: string;
+  market: MarketCode;
+  source_run_date: string;
+  planned_allocation: StrategyLabNumeric;
+  status: string;
+  entry_date: string | null;
+  entry_price: StrategyLabNumeric | null;
+  exit_date: string | null;
+  exit_price: StrategyLabNumeric | null;
+  return_pct: StrategyLabNumeric | null;
+  data_version: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StrategyLabExperimentDetail = {
+  experiment: StrategyLabExperiment;
+  sleeves: StrategyLabSleeve[];
+  decisions: StrategyLabDecision[];
+  positions: StrategyLabPosition[];
+  avoided_observations: StrategyLabAvoidedObservation[];
+  metrics: Record<string, unknown>;
+};
+
+export type StrategyLabProcessResponse = {
+  experiment_id: string;
+  as_of_date: string;
+  entry_fills_created: number;
+  valuations_created: number;
+  exits_created: number;
+  avoided_updates: number;
+  data_quality_holds: number;
+};
+
 export type CandidateCohortStatus = "active" | "completed" | "archived";
 
 export type CandidateCohort = {
@@ -1437,6 +1562,8 @@ export type ResearchPredictionRecord = {
   feature_version: string;
   data_version: string;
   selection_market_regime_id: string | null;
+  supersedes_prediction_id: string | null;
+  correction_reason: string | null;
 };
 
 export type ResearchOutcomeRecord = {
@@ -1449,6 +1576,10 @@ export type ResearchOutcomeRecord = {
   outcome_status: string;
   outcome_label: string;
   return_pct: number | null;
+  directional_return_pct: number | null;
+  followed_through: boolean | null;
+  invalidated_quickly: boolean | null;
+  stayed_valid: boolean | null;
   daily_snapshot_path_complete: boolean;
   daily_snapshot_coverage_pct: number;
   data_quality_flags: string[];
@@ -1481,6 +1612,15 @@ export type ResearchCohortReadiness = {
     partial_followup_days: number;
     missing_followup_days: number;
     snapshot_coverage_pct: number;
+    initial_28d_expected_days: number;
+    initial_28d_complete_days: number;
+    initial_28d_snapshot_coverage_pct: number;
+    tracking_latest_date: string | null;
+    tracking_status: string;
+    tracking_continues: boolean;
+    post_28d_tracking_days: number;
+    post_28d_snapshot_days: number;
+    post_28d_snapshot_coverage_pct: number | null;
     missing_followup_dates: string[];
     partial_followup_dates: string[];
     duplicate_snapshot_dates: string[];

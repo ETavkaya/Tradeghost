@@ -13,6 +13,7 @@ from tradeghost.services.backtest.review_log import BacktestReviewLogService
 from tradeghost.services.intelligence.service import IntelligenceService
 from tradeghost.services.monitoring.service import MonitoringService
 from tradeghost.services.scanner.engine import ScannerEngine
+from tradeghost.services.strategy_lab.service import StrategyLabService
 from tradeghost.shared.config.settings import get_settings
 from tradeghost.shared.models.schemas import (
     AlertEvent,
@@ -70,11 +71,15 @@ from tradeghost.shared.models.schemas import (
     LLMDebugLog,
     LLMResponseTestRequest,
     LLMResponseTestResult,
+    MarketStateSnapshot,
+    MarketStateSnapshotsResponse,
     PipelineDebugEvent,
     MonitoringRunRequest,
     MonitoringRunDueRequest,
     MonitoringRunSummary,
     OutcomeEvaluationResponse,
+    OperationalReport,
+    OperationalReportType,
     PatternCandidate,
     PatternCandidateReview,
     PatternCandidateStatus,
@@ -82,6 +87,7 @@ from tradeghost.shared.models.schemas import (
     PatternDiscoveryResponse,
     PatternReviewRequest,
     PredictionBackfillResponse,
+    PredictionSemanticRepairResponse,
     PredictionRecord,
     HypothesisBacktestRequest,
     HypothesisReviewRequest,
@@ -105,6 +111,12 @@ from tradeghost.shared.models.schemas import (
     SymbolContextBatchRequest,
     SymbolContextBatchResponse,
     StrategyMode,
+    StrategyLabDecision,
+    StrategyLabDecisionCreateRequest,
+    StrategyLabExperiment,
+    StrategyLabExperimentCreateRequest,
+    StrategyLabExperimentDetail,
+    StrategyLabProcessResponse,
     SystemReview,
     SystemReviewRequest,
     TradePlanResponse,
@@ -128,6 +140,7 @@ intelligence_service = IntelligenceService(
     scanner_engine=scanner_engine,
     backtest_engine=backtest_engine,
 )
+strategy_lab_service = StrategyLabService(intelligence_service)
 _monitor_stop_event = threading.Event()
 _monitor_thread: threading.Thread | None = None
 _cohort_followup_stop_event = threading.Event()
@@ -913,6 +926,22 @@ def backfill_intelligence_cohort_predictions(cohort_id: str) -> PredictionBackfi
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post(
+    "/intelligence/cohorts/{cohort_id}/predictions/repair-semantics",
+    response_model=PredictionSemanticRepairResponse,
+)
+def repair_intelligence_cohort_prediction_semantics(
+    cohort_id: str,
+    as_of_date: date | None = Query(default=None),
+) -> PredictionSemanticRepairResponse:
+    try:
+        return intelligence_service.repair_cohort_prediction_semantics(cohort_id, as_of_date=as_of_date)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/intelligence/cohorts/{cohort_id}/outcomes/evaluate", response_model=OutcomeEvaluationResponse)
 def evaluate_intelligence_cohort_outcomes(
     cohort_id: str,
@@ -943,6 +972,129 @@ def list_intelligence_cohort_outcomes(
 def list_intelligence_cohort_market_regimes(cohort_id: str) -> CohortMarketRegimesResponse:
     try:
         return intelligence_service.list_cohort_market_regimes(cohort_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/market-states/capture", response_model=MarketStateSnapshot)
+def capture_intelligence_market_state(
+    market: str = Query(default="us", min_length=2, max_length=12),
+    as_of_date: date | None = Query(default=None),
+) -> MarketStateSnapshot:
+    try:
+        return intelligence_service.capture_market_state(market=market, as_of_date=as_of_date)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/market-states", response_model=MarketStateSnapshotsResponse)
+def list_intelligence_market_states(
+    market: str = Query(default="us", min_length=2, max_length=12),
+    as_of_date: date | None = Query(default=None),
+    limit: int = Query(default=30, ge=1, le=100),
+) -> MarketStateSnapshotsResponse:
+    try:
+        return intelligence_service.list_market_states(market=market, as_of_date=as_of_date, limit=limit)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/operational-reports/{report_type}", response_model=OperationalReport)
+def generate_intelligence_operational_report(
+    report_type: OperationalReportType,
+    market: str = Query(default="us", min_length=2, max_length=12),
+    period_end: date | None = Query(default=None),
+) -> OperationalReport:
+    try:
+        return intelligence_service.generate_operational_report(
+            report_type=report_type,
+            market=market,
+            period_end=period_end,
+        )
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/operational-reports", response_model=list[OperationalReport])
+def list_intelligence_operational_reports(
+    market: str | None = Query(default=None, min_length=2, max_length=12),
+    report_type: OperationalReportType | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> list[OperationalReport]:
+    try:
+        return intelligence_service.list_operational_reports(
+            market=market,
+            report_type=report_type,
+            limit=limit,
+        )
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/strategy-lab/experiments", response_model=StrategyLabExperimentDetail)
+def create_strategy_lab_experiment(payload: StrategyLabExperimentCreateRequest) -> StrategyLabExperimentDetail:
+    try:
+        return strategy_lab_service.create_experiment(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/strategy-lab/experiments", response_model=list[StrategyLabExperiment])
+def list_strategy_lab_experiments(limit: int = Query(default=30, ge=1, le=100)) -> list[StrategyLabExperiment]:
+    try:
+        return strategy_lab_service.list_experiments(limit=limit)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/intelligence/strategy-lab/experiments/{experiment_id}", response_model=StrategyLabExperimentDetail)
+def get_strategy_lab_experiment(experiment_id: str) -> StrategyLabExperimentDetail:
+    try:
+        return strategy_lab_service.get_experiment_detail(experiment_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/intelligence/strategy-lab/experiments/{experiment_id}/activate", response_model=StrategyLabExperimentDetail)
+def activate_strategy_lab_experiment(experiment_id: str) -> StrategyLabExperimentDetail:
+    try:
+        return strategy_lab_service.activate_experiment(experiment_id)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post(
+    "/intelligence/strategy-lab/experiments/{experiment_id}/decisions",
+    response_model=StrategyLabDecision,
+)
+def create_strategy_lab_decision(
+    experiment_id: str,
+    payload: StrategyLabDecisionCreateRequest,
+) -> StrategyLabDecision:
+    try:
+        return strategy_lab_service.record_decision(experiment_id, payload)
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post(
+    "/intelligence/strategy-lab/experiments/{experiment_id}/process",
+    response_model=StrategyLabProcessResponse,
+)
+def process_strategy_lab_experiment(
+    experiment_id: str,
+    as_of_date: date | None = Query(default=None),
+) -> StrategyLabProcessResponse:
+    try:
+        return strategy_lab_service.process_experiment(experiment_id, as_of_date=as_of_date)
     except FileNotFoundError as exc:  # pragma: no cover
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover

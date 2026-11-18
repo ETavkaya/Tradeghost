@@ -1,5 +1,7 @@
 # TradeGhost Agent Handoff Memory
 
+> **Current infrastructure host:** use `emrebee@192.168.0.230` for all future SSH, deployment, and runtime verification. Historical entries below may reference the former `192.168.0.233` address and are retained only as past deployment records.
+
 Last updated: 2026-05-13
 
 ## 1) Active Mission
@@ -496,3 +498,83 @@ When updating this file, append a short dated entry:
 - Remaining risks / TODO:
   - If the account still lacks OpenAI access or the network to `api.openai.com` is unavailable, the service will still fall back to the existing Ollama path for actual generation once the status probe fails.
   - If a different OpenAI model is preferred later, update the defaults in `tradeghost/shared/config/settings.py` and `.env.example` together.
+
+## 28) Latest Entry (2026-11-15)
+
+- Request:
+  - Begin the Product V2 simplification and Strategy Lab work incrementally while preserving deterministic scanner and Phase 2 research behavior.
+- Implemented Phase A:
+  - Added Product V2 architecture, Strategy Lab V1, operational-reporting, and Trading 212 read-only design contracts. The target workflow is `Discover -> Monitor -> Portfolio`; current navigation and existing advanced `Research`, `Logic`, and `Logs` workspaces are unchanged.
+  - Added disabled-by-default settings for Product V2, Market State, Strategy Lab, operational reporting, and Trading 212 read-only integration. No flag is wired to a new scheduler, database writer, broker client, or UI yet.
+  - Preserved historical Prediction semantics: selection-time `blocked_by` is read from frozen deterministic selection evidence, never inferred from `risk_flags`. A superseding correction now requires an explicitly recorded failed deterministic entry gate and blocker.
+  - Added regression coverage for Product V2 default-off compatibility and the no-risk-flag blocker-correction guard.
+  - No migration, deployment, broker call, Strategy Lab position, or new report was created in this phase.
+- Runtime note:
+  - Local migration/Compose inventory was reviewed. Direct runtime verification was not completed; use the current host `emrebee@192.168.0.230` for any future check. No remote configuration was changed.
+- Validation run:
+  - `python -m py_compile tradeghost/shared/config/settings.py tradeghost/services/intelligence/service.py tradeghost/tests/test_cohort_review.py tradeghost/tests/test_product_v2_phase_a.py`
+  - `pytest -q -p no:cacheprovider --basetemp .tmp-product-phase-a-full` (`46 passed`; existing FastAPI/pandas deprecation warnings only).
+  - `git diff --check` passed.
+- Next steps:
+  1. Implement Phase B: evolve the deterministic regime snapshot into a versioned Market State record and compact Postgres reporting read models.
+  2. Implement Phase C: add the future-only, append-only Strategy Lab ledger and deterministic 56-session lifecycle.
+  3. Implement Phase D: introduce Discover, Monitor, and Portfolio UI views only after their Phase B/C APIs and tests exist.
+
+## 29) Latest Entry (2026-11-15)
+
+- Request:
+  - Implement Product V2 Phase B with database-first operational reporting and versioned Market State foundations, without activating schedules, Strategy Lab, or broker execution.
+- Implemented:
+  - Added additive migration `006_phase2b_market_state_reporting.sql` with indexed Postgres `market_state_snapshots` and `operational_reports` tables. It does not alter cohort, Prediction, Outcome, regime, scanner, or graph tables.
+  - Added manual feature-gated Market State capture. It links an existing immutable deterministic regime snapshot, uses canonical bars only through the requested as-of date, records source data versions, unavailable inputs, and data-quality flags, and limits V1 sector proxy collection for Beelink-friendly resource use.
+  - Added manual, idempotent weekly/monthly report generation and retrieval APIs. Reports contain compact SQL aggregates, terminal-lineage/version evidence, strict as-of source-created/evaluated filters, and superseding report provenance instead of raw cohort/research JSON.
+  - Added `test_phase_b_reporting.py` coverage for state provenance, report idempotency/supersession, feature gates, and additive migration constraints.
+  - Updated active deployment/documentation references to use `emrebee@192.168.0.230`; no service, network, or runtime configuration was changed.
+- Validation run:
+  - `python -m py_compile tradeghost/shared/models/schemas.py tradeghost/shared/config/settings.py tradeghost/services/intelligence/research_record_store.py tradeghost/services/intelligence/service.py tradeghost/apps/api/main.py tradeghost/tests/test_phase_b_reporting.py`
+  - `pytest -q -p no:cacheprovider --basetemp .tmp-phase-b-full` (`50 passed`; existing FastAPI/pandas deprecation warnings only).
+  - `python -m pip wheel --no-deps --wheel-dir .tmp-wheel-phase-b .` passed with packaged intelligence migrations.
+  - `git diff --check` passed.
+- Compatibility / operations:
+  - Product V2, Market State, and operational reporting flags remain disabled by default. Phase B adds no thread, cron task, polling loop, UI page, LLM writer, Neo4j writer, Strategy Lab ledger, or broker call.
+  - V1 explicitly reports unavailable US 2Y, breadth, and economic-event context instead of inferring them. Market State/report `partial` status is expected until those deterministic providers are added.
+- Next steps:
+  1. Review and, if desired, deploy the additive migration and manual APIs to `emrebee@192.168.0.230` without enabling the feature flags.
+  2. Begin Phase C only after that review: create the future-only Strategy Lab experiment configuration and append-only Postgres ledger.
+
+## 30) Latest Entry (2026-11-17)
+
+- Request:
+  - Finish Product V2 Phase C as a future-only Strategy Lab while preserving scanner, historical research, Postgres authority, and manual operational control.
+- Implemented:
+  - Added additive migration `007_phase2c_strategy_lab.sql` for Strategy Lab experiments, sleeves, immutable decisions, positions, append-only ledger events, and separate avoided observations.
+  - Added a manual, feature-gated Strategy Lab service and API. It can create/activate a future-only experiment, freeze an eligible deterministic daily-run candidate, reserve a sleeve slot, and manually process canonical next-session fills, valuations, and exact 56-session exits.
+  - Fixed V1 experiment contract in code: five `$100` sleeves; four long sleeves each limited to five `$20` slots; global duplicate-open-exposure prevention; and an overextended sleeve that remains cash with a separate hypothetical avoided basket.
+  - Source runs before experiment activation, false frozen entry gates, source data-quality flags, missing category evidence, duplicate exposure, and exhausted sleeve capacity are persisted as deterministic rejected decisions. Existing cohorts/Predictions are never used as virtual positions.
+  - Added append-only cash/mark-to-market metric calculation including realised P&L, hit rate, win/loss, drawdown, capacity, holding-period distribution, rejection reasons, data-quality holds, and separate avoided-basket metrics.
+- Validation run:
+  - `python -m py_compile tradeghost/shared/models/schemas.py tradeghost/services/intelligence/research_record_store.py tradeghost/services/strategy_lab/service.py tradeghost/apps/api/main.py tradeghost/tests/test_strategy_lab.py`
+  - `pytest -q -p no:cacheprovider --basetemp .tmp-phase-c-full-retry` (`55 passed`; existing FastAPI/pandas deprecation warnings only).
+  - Packaged wheel verified `007_phase2c_strategy_lab.sql`; `git diff --check` passed.
+- Compatibility / operations:
+  - No scanner scoring/category/gate change, no historical cohort conversion, no LLM/Neo4j writer, no broker capability, no background processor, and no Portfolio UI were added.
+  - `PRODUCT_V2_ENABLED` and `STRATEGY_LAB_ENABLED` remain disabled by default. No migration was applied remotely and no service was deployed or restarted.
+- Next steps:
+  1. Review and, if desired, deploy migrations `006` and `007` to `emrebee@192.168.0.230` while keeping Product V2 feature flags disabled.
+  2. Begin Phase D: add Discover, Monitor, and Portfolio UI work only on top of these established manual APIs and read models.
+
+## 31) Latest Entry (2026-11-18)
+
+- Request:
+  - Complete Product V2 Phase D without changing scanner scoring/category logic, historical research, scheduling, broker boundaries, or LLM authority.
+- Implemented:
+  - Added `Discover` as the default primary workspace. It invokes the established deterministic daily pipeline with fixed bounded US/default settings and displays persisted candidate evidence without score or gate controls.
+  - Promoted `Discover -> Monitor -> Portfolio` to the primary navigation and retained Scanner, Analysis, Backtest, Intelligence, Research, Logic, and Logs as advanced workspaces. Monitor continues to use its existing watchlist/alert implementation.
+  - Added feature-gated Strategy Lab proxy routes and a manual `Portfolio` workspace. It displays experiments, sleeves, positions, decisions, and the avoided basket separately from realised P&L; it supports explicit manual creation, activation, decision submission, and canonical-bar processing only when the backend permits it.
+  - Portfolio reports a disabled runtime state instead of changing environment flags, creating a schedule, submitting an order, or fabricating a virtual trade. The proxy now preserves POST query strings so the existing `as_of_date` processor contract reaches FastAPI.
+- Compatibility / operations:
+  - No migration, backend rule change, scanner/category change, scheduler, broker request, LLM ledger writer, remote deployment, or service restart was made in Phase D.
+  - `PRODUCT_V2_ENABLED` and `STRATEGY_LAB_ENABLED` remain disabled by default. Use `emrebee@192.168.0.230` for any later explicit deployment or runtime verification.
+- Next steps:
+  1. Run local frontend/backend validation and review the combined uncommitted Product V2 changes.
+  2. If approved, deploy migrations `006` and `007` with the feature flags still disabled; explicitly enable and verify only when an operator is ready to run a future-only virtual experiment.

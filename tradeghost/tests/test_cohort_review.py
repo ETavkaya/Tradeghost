@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pandas as pd
 
 from tradeghost.services.intelligence.service import IntelligenceService
+from tradeghost.services.intelligence.retrieval import _selection_snapshot_value
+from tradeghost.services.intelligence.pattern_discovery import PatternDiscoveryService
 from tradeghost.shared.models.schemas import (
     CandidateCohort,
     CohortCandidate,
@@ -13,6 +15,7 @@ from tradeghost.shared.models.schemas import (
     CohortDailySnapshot,
     CohortFollowupLifecycleRequest,
     CohortFollowupStatus,
+    OutcomeEvaluationResponse,
     CohortReviewRequest,
     MarketCode,
     ScannerCategory,
@@ -287,6 +290,241 @@ def test_outcome_validity_reads_prediction_selected_date(tmp_path) -> None:
 
     assert invalidated_quickly is False
     assert stayed_valid is True
+
+
+def test_prediction_creation_preserves_explicit_selection_blocker(tmp_path) -> None:
+    cohort_id = "29292929-2929-4292-8292-292929292929"
+    cohort, candidate = _phase2b_cohort_and_candidate(cohort_id)
+    candidate = candidate.model_copy(
+        update={
+            "selected_blocked_by": "location_filter",
+            "selected_risk_flags": ["score_threshold", "location_filter"],
+        }
+    )
+    service = IntelligenceService(
+        analysis_engine=FakeAnalysisEngine({}),
+        scanner_engine=object(),
+        backtest_engine=object(),
+    )
+    _wire_temp_storage(service, tmp_path)
+    service.research_record_store = FakeResearchRecordStore()
+    service._save_cohorts([cohort])
+    service._save_cohort_candidates([candidate])
+
+    prediction = service._prediction_record_from_candidate(cohort, candidate)
+    backfill = service.backfill_cohort_prediction_records(cohort_id)
+
+    assert prediction.blocked_by == "location_filter"
+    assert backfill.created_prediction_count == 1
+    assert backfill.predictions[0].blocked_by == "location_filter"
+
+
+def test_blocker_repair_creates_superseding_prediction_with_provenance(tmp_path) -> None:
+    cohort_id = "30303030-3030-4303-8303-303030303030"
+    cohort, candidate = _phase2b_cohort_and_candidate(cohort_id)
+    candidate = candidate.model_copy(
+        update={
+            "selected_blocked_by": "none",
+            "selected_risk_flags": ["overextended_filter"],
+            "selected_structure_snapshot": {
+                "final_entry_decision": False,
+                "entry_gate_skip_reason": "location_filter",
+                "blocked_by": "overextended_filter",
+            },
+        }
+    )
+    service = IntelligenceService(
+        analysis_engine=FakeAnalysisEngine({}),
+        scanner_engine=object(),
+        backtest_engine=object(),
+    )
+    _wire_temp_storage(service, tmp_path)
+    store = FakeResearchRecordStore()
+    service.research_record_store = store
+    service._save_cohorts([cohort])
+    service._save_cohort_candidates([candidate])
+    legacy_prediction = service._prediction_record_from_candidate(cohort, candidate).model_copy(
+        update={"blocked_by": "none"}
+    )
+    store.predictions[legacy_prediction.idempotency_key] = legacy_prediction
+    evaluation_calls = []
+
+    def evaluate(*args, **kwargs):
+        evaluation_calls.append(kwargs)
+        return OutcomeEvaluationResponse(
+            cohort_id=cohort_id,
+            evaluated_at=datetime(2026, 9, 16, tzinfo=UTC),
+            created_outcome_count=3,
+        )
+
+    service.evaluate_cohort_outcomes = evaluate  # type: ignore[method-assign]
+
+    repaired = service.repair_cohort_prediction_semantics(cohort_id, as_of_date=date(2026, 9, 16))
+    correction = repaired.corrected_predictions[0]
+
+    assert repaired.corrected_prediction_count == 1
+    assert repaired.regenerated_outcome_count == 3
+    assert len(store.predictions) == 2
+    assert legacy_prediction.blocked_by == "none"
+    assert correction.blocked_by == "overextended_filter"
+    assert correction.supersedes_prediction_id == legacy_prediction.id
+    assert correction.correction_reason and "verified_selection_gate_blocker_correction_v1" in correction.correction_reason
+    assert correction.rule_version == legacy_prediction.rule_version
+    assert correction.feature_version == legacy_prediction.feature_version
+    assert correction.data_version == legacy_prediction.data_version
+    assert correction.selection_snapshot_json["selection_snapshot"] == legacy_prediction.selection_snapshot_json
+    assert correction.selection_snapshot_json["semantic_correction"]["source_prediction_id"] == legacy_prediction.id
+    assert evaluation_calls[0]["prediction_ids"] == {correction.id}
+
+    replay = service.repair_cohort_prediction_semantics(cohort_id, as_of_date=date(2026, 9, 16))
+    assert replay.corrected_prediction_count == 0
+    assert len(store.predictions) == 2
+
+
+def test_blocker_repair_does_not_infer_historical_blocker_from_risk_flags(tmp_path) -> None:
+    cohort_id = "33333333-3333-4333-8333-333333333333"
+    cohort, candidate = _phase2b_cohort_and_candidate(cohort_id)
+    candidate = candidate.model_copy(
+        update={"selected_blocked_by": "none", "selected_risk_flags": ["location_filter"]}
+    )
+    service = IntelligenceService(
+        analysis_engine=FakeAnalysisEngine({}),
+        scanner_engine=object(),
+        backtest_engine=object(),
+    )
+    _wire_temp_storage(service, tmp_path)
+    store = FakeResearchRecordStore()
+    service.research_record_store = store
+    service._save_cohorts([cohort])
+    service._save_cohort_candidates([candidate])
+    legacy_prediction = service._prediction_record_from_candidate(cohort, candidate)
+    store.predictions[legacy_prediction.idempotency_key] = legacy_prediction
+
+    repaired = service.repair_cohort_prediction_semantics(cohort_id)
+
+    assert legacy_prediction.blocked_by == "none"
+    assert repaired.corrected_prediction_count == 0
+    assert repaired.corrected_predictions == []
+    assert len(store.predictions) == 1
+
+
+def test_deprecated_displayed_score_is_not_a_research_feature(tmp_path) -> None:
+    snapshot = {
+        "selected_displayed_score": 0.0,
+        "selected_score": 82.0,
+        "selected_structure_snapshot": {"trigger_score": 75.0},
+    }
+
+    assert _selection_snapshot_value(snapshot, "selected_displayed_score") is None
+    assert _selection_snapshot_value(snapshot, "trigger_score") == 75.0
+    pattern_case = SimpleNamespace(
+        prediction=SimpleNamespace(
+            setup_type="momentum_continuation",
+            trend_state="bullish_trend",
+            trigger_state="confirmed",
+            blocked_by="none",
+            categories=["trend_mode"],
+            selection_snapshot_json=snapshot,
+        ),
+        selection_market_regime="risk_on",
+    )
+    condition_sets = PatternDiscoveryService._condition_sets(pattern_case)
+    assert all("selected_displayed_score" not in condition_set for condition_set in condition_sets)
+
+
+def test_coverage_distinguishes_initial_28d_from_mature_tracking(tmp_path) -> None:
+    cohort_id = "31313131-3131-4313-8313-313131313131"
+    start_date = date(2026, 5, 13)
+    service = IntelligenceService(
+        analysis_engine=FakeAnalysisEngine({}),
+        scanner_engine=object(),
+        backtest_engine=object(),
+    )
+    _wire_temp_storage(service, tmp_path)
+    trading_dates = service._trading_days_between(start_date, date(2026, 7, 20))
+    cohort, candidate = _phase2b_cohort_and_candidate(cohort_id)
+    cohort = cohort.model_copy(
+        update={
+            "followup_status": CohortFollowupStatus.MATURE_TRACKING,
+            "followup_enabled": True,
+            "followup_start_date": start_date,
+        }
+    )
+    service._save_cohorts([cohort])
+    service._save_cohort_candidates([candidate])
+    service._save_cohort_snapshots(
+        [
+            CohortDailySnapshot(
+                cohort_id=cohort_id,
+                symbol=candidate.symbol,
+                snapshot_date=snapshot_date,
+                still_valid_candidate=True,
+            )
+            for snapshot_date in trading_dates
+        ]
+    )
+
+    monitor = service.get_cohort_coverage(cohort_id, as_of_date=trading_dates[-1])
+
+    assert monitor.initial_28d_expected_days == 28
+    assert monitor.initial_28d_complete_days == 28
+    assert monitor.initial_28d_snapshot_coverage_pct == 100.0
+    assert monitor.tracking_status == "mature_tracking"
+    assert monitor.tracking_continues is True
+    assert monitor.tracking_latest_date == trading_dates[-1]
+    assert monitor.post_28d_tracking_days == len(trading_dates) - 28
+    assert monitor.post_28d_snapshot_days == len(trading_dates) - 28
+    assert monitor.post_28d_snapshot_coverage_pct == 100.0
+
+
+def test_price_success_can_be_invalidated_early(tmp_path) -> None:
+    cohort_id = "32323232-3232-4323-8323-323232323232"
+    cohort, candidate = _phase2b_cohort_and_candidate(cohort_id)
+    service = IntelligenceService(
+        analysis_engine=FakeAnalysisEngine({}),
+        scanner_engine=object(),
+        backtest_engine=object(),
+    )
+    _wire_temp_storage(service, tmp_path)
+    trading_dates = service._trading_days_between(cohort.start_date, date(2026, 7, 1))
+    prices = [100.0 + index for index in range(len(trading_dates))]
+    service.analysis_engine = FakeAnalysisEngine(
+        {
+            "AAA": pd.DataFrame(
+                {
+                    "open": prices,
+                    "high": [price + 1.0 for price in prices],
+                    "low": [price - 1.0 for price in prices],
+                    "close": prices,
+                    "volume": [1_000_000] * len(prices),
+                },
+                index=pd.to_datetime(trading_dates),
+            )
+        }
+    )
+    service.research_record_store = FakeResearchRecordStore()
+    service._save_cohorts([cohort])
+    service._save_cohort_candidates([candidate])
+    service._save_cohort_snapshots(
+        [
+            CohortDailySnapshot(
+                cohort_id=cohort_id,
+                symbol=candidate.symbol,
+                snapshot_date=trading_dates[1],
+                still_valid_candidate=False,
+                validity_state="invalid",
+            )
+        ]
+    )
+    service.backfill_cohort_prediction_records(cohort_id)
+
+    evaluation = service.evaluate_cohort_outcomes(cohort_id, as_of_date=trading_dates[29])
+    outcome = next(row for row in evaluation.outcomes if row.horizon_days == 28)
+
+    assert outcome.outcome_label == "success"
+    assert outcome.followed_through is True
+    assert outcome.invalidated_quickly is True
+    assert outcome.stayed_valid is False
 
 
 def test_phase2c_outcomes_include_deterministic_regime_and_benchmark_attribution(tmp_path) -> None:

@@ -188,6 +188,15 @@ Default threshold:
   - `GET /intelligence/cohorts/{cohort_id}/outcomes`
   - `POST /intelligence/cohorts/{cohort_id}/outcomes/evaluate`
   - `GET /intelligence/cohorts/{cohort_id}/market-regimes`
+  - `POST /intelligence/market-states/capture` (manual, Product V2 feature-gated)
+  - `GET /intelligence/market-states`
+  - `POST /intelligence/operational-reports/{weekly|monthly}` (manual, Product V2 feature-gated)
+  - `GET /intelligence/operational-reports`
+  - `POST /intelligence/strategy-lab/experiments` (manual, Product V2 feature-gated)
+  - `GET /intelligence/strategy-lab/experiments`
+  - `POST /intelligence/strategy-lab/experiments/{experiment_id}/activate`
+  - `POST /intelligence/strategy-lab/experiments/{experiment_id}/decisions`
+  - `POST /intelligence/strategy-lab/experiments/{experiment_id}/process`
   - `GET /intelligence/research/dashboard`
   - `GET /intelligence/research/audit-export?cohort_id={cohort_id}`
   - `GET /intelligence/cohorts/{cohort_id}/export`
@@ -375,11 +384,11 @@ The Compose bootstrap uses Neo4j's required initial `neo4j` account and then cre
 
 ## Deploy To Your Linux Docker Host
 
-Example host: `emrebee@192.168.1.72`
+Example host: `emrebee@192.168.0.230`
 
 1. SSH into server:
 ```bash
-ssh emrebee@192.168.1.72
+ssh emrebee@192.168.0.230
 ```
 
 2. Clone and enter repo:
@@ -406,9 +415,9 @@ docker compose logs -f tradeghost-web
 ```
 
 6. Access from your LAN:
-- `http://192.168.1.72:3000`
-- `http://192.168.1.72:8000/health`
-- `http://192.168.1.72:8000/docs`
+- `http://192.168.0.230:3000`
+- `http://192.168.0.230:8000/health`
+- `http://192.168.0.230:8000/docs`
 
 ### Update Existing Deployment (recommended routine)
 
@@ -474,6 +483,25 @@ npm run dev
 - Frontend backtest date-range controls are UI-ready; backend still uses default backtest history window.
 - Data provider abstraction is ready for migration to institutional feeds.
 
+## Product V2 Roadmap
+
+TradeGhost is incrementally evolving toward a self-hosted daily intelligence and portfolio-management workflow: `Discover -> Monitor -> Portfolio`. Phase D now makes that workflow the primary navigation: Discover runs the existing deterministic daily pipeline, Monitor retains watchlists and alerts, and Portfolio reads the manual Strategy Lab virtual ledger. `Scanner`, `Analysis`, `Backtest`, `Intelligence`, `Research`, `Logic`, and `Logs` remain available as advanced workspaces. Product V2 Phases A-C remain the compatibility, Market State/reporting, and future-only Strategy Lab foundations; scanner scoring, category logic, follow-up scheduling, cohorts, and research database behavior are unchanged.
+
+The reserved feature flags are all disabled by default:
+- `PRODUCT_V2_ENABLED`
+- `MARKET_STATE_ENABLED`
+- `STRATEGY_LAB_ENABLED`
+- `OPERATIONAL_REPORTING_ENABLED`
+- `TRADING212_READ_ONLY_ENABLED`
+
+Design contracts and phased delivery plan:
+- `docs/product_architecture_v2.md`
+- `docs/strategy_lab_v1.md`
+- `docs/operational_reporting_v2.md`
+- `docs/trading212_integration_plan.md`
+
+Strategy Lab is a future-only, deterministic virtual experiment with an auditable Postgres ledger. The Portfolio UI is a manual feature-gated client of that ledger: it cannot enable runtime flags, start scheduled processing, convert historical cohorts into trades, or submit orders. Any future Trading 212 adapter is read-only by design and cannot place orders. LLMs remain advisory only.
+
 ## Production Notes
 
 - Designed for self-hosted Linux deployment with Docker.
@@ -484,7 +512,7 @@ npm run dev
 
 TradeGhost Phase 2 turns cohort reports into a closed-loop research system.
 
-The staged implementation plan, guardrails, data-truth contract, and ticket checklist are in `docs/phase2_learning_reasoning_plan.md`. Phase 2A provides deterministic follow-up coverage and backfill. Phase 2B persists immutable Predictions and Outcomes in Postgres, using versioned canonical OHLC inputs. Phase 2C persists versioned market-regime snapshots and deterministic benchmark-relative attribution. Phase 2D projects only those committed facts through the transactional outbox. Phase 2E retrieves read-only historical evidence. Phase 2F stores human-gated hypotheses and sandbox-only backtest comparisons. Phase 2G mines conservative, statistically tested Pattern candidates. Phase 2H adds the read-only Research workspace, JSON audit exports, operational readiness/error status, and the runbook at `docs/phase2_operations_runbook.md`. Phase 2I makes `28D` the first review checkpoint while daily tracking continues through deterministic `56D`, `90D`, `180D`, and optional `365D` outcomes until a human pauses or archives the cohort; none of these phases change scanner decisions.
+The staged implementation plan, guardrails, data-truth contract, and ticket checklist are in `docs/phase2_learning_reasoning_plan.md`. Phase 2A provides deterministic follow-up coverage and backfill. Phase 2B persists immutable Predictions and Outcomes in Postgres, using versioned canonical OHLC inputs. Phase 2C persists versioned market-regime snapshots and deterministic benchmark-relative attribution. Phase 2D projects only those committed facts through the transactional outbox. Phase 2E retrieves read-only historical evidence. Phase 2F stores human-gated hypotheses and sandbox-only backtest comparisons. Phase 2G mines conservative, statistically tested Pattern candidates. Phase 2H adds the read-only Research workspace, JSON audit exports, operational readiness/error status, and the runbook at `docs/phase2_operations_runbook.md`. Phase 2I makes `28D` the first review checkpoint while daily tracking continues through deterministic `56D`, `90D`, `180D`, and optional `365D` outcomes until a human pauses or archives the cohort. Semantic corrections create superseding Predictions with preserved source snapshots and dependent Outcomes; research uses only the terminal canonical lineage. Initial `28D` coverage and post-checkpoint mature tracking are reported separately. None of these phases change scanner decisions.
 
 The system learns by:
 1. Recording deterministic predictions at selection time.
@@ -508,6 +536,7 @@ Phase 2G discovers Pattern candidates only from persisted, exact-market Outcomes
 Phase 2B-2F research endpoints:
 - `GET /intelligence/cohorts/{cohort_id}/predictions`
 - `POST /intelligence/cohorts/{cohort_id}/predictions/backfill` (legacy immutable selection snapshots only)
+- `POST /intelligence/cohorts/{cohort_id}/predictions/repair-semantics` (deterministic superseding blocker corrections only)
 - `GET /intelligence/cohorts/{cohort_id}/outcomes`
 - `POST /intelligence/cohorts/{cohort_id}/outcomes/evaluate`
 - `POST /intelligence/cohorts/{cohort_id}/pause-followup`

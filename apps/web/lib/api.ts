@@ -29,6 +29,11 @@ import {
   ResearchAuditExport,
   ResearchDashboardResponse,
   IntelligenceRunResponse,
+  DailyPipelineRequest,
+  StrategyLabDecision,
+  StrategyLabExperiment,
+  StrategyLabExperimentDetail,
+  StrategyLabProcessResponse,
   LLMConnectionStatus,
   LLMDebugLog,
   LLMResponseTestResult,
@@ -278,11 +283,39 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ reviewer_id: reviewerId, reviewer_notes: reviewerNotes })
     }),
-  runDailyPipeline: (payload: Record<string, unknown>) =>
+  runDailyPipeline: (payload: DailyPipelineRequest) =>
     fetchJson<IntelligenceRunResponse>("/api/intelligence/daily-pipeline", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)
+    }),
+  listStrategyLabExperiments: () =>
+    fetchJson<StrategyLabExperiment[]>("/api/intelligence/strategy-lab/experiments"),
+  getStrategyLabExperiment: (experimentId: string) =>
+    fetchJson<StrategyLabExperimentDetail>(`/api/intelligence/strategy-lab/experiments/${encodeURIComponent(experimentId)}`),
+  createStrategyLabExperiment: (payload: { name: string; activation_at: string; market: MarketCode }) =>
+    fetchJson<StrategyLabExperimentDetail>("/api/intelligence/strategy-lab/experiments", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  activateStrategyLabExperiment: (experimentId: string) =>
+    fetchJson<StrategyLabExperimentDetail>(`/api/intelligence/strategy-lab/experiments/${encodeURIComponent(experimentId)}/activate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    }),
+  createStrategyLabDecision: (experimentId: string, payload: { source_run_id: string; symbol: string; category: ScannerCategory }) =>
+    fetchJson<StrategyLabDecision>(`/api/intelligence/strategy-lab/experiments/${encodeURIComponent(experimentId)}/decisions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  processStrategyLabExperiment: (experimentId: string, asOfDate: string) =>
+    fetchJson<StrategyLabProcessResponse>(`/api/intelligence/strategy-lab/experiments/${encodeURIComponent(experimentId)}/process?as_of_date=${encodeURIComponent(asOfDate)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
     }),
   createDiscoveryCohort: (payload: Record<string, unknown>) =>
     fetchJson<CohortDetail>("/api/intelligence/discovery/create-cohort", {

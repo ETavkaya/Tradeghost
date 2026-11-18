@@ -375,9 +375,9 @@ docker compose up --build
 ```
 
 3. Open:
-- Web UI: `http://localhost:3000`
-- API docs: `http://localhost:8000/docs`
-- Health: `http://localhost:8000/health`
+- Web UI: `http://localhost:3001`
+- API docs: `http://localhost:8001/docs`
+- Health: `http://localhost:8001/health`
 - Neo4j Browser: `http://localhost:7474` (`tradeghost` / `admin`)
 
 The Compose bootstrap uses Neo4j's required initial `neo4j` account and then creates the requested application account, `tradeghost` / `admin`, before applying the graph schema. `admin` is deliberately supported for this local V1 only; replace both bootstrap and application credentials with Docker secrets before any non-local deployment.
@@ -415,9 +415,9 @@ docker compose logs -f tradeghost-web
 ```
 
 6. Access from your LAN:
-- `http://192.168.0.230:3000`
-- `http://192.168.0.230:8000/health`
-- `http://192.168.0.230:8000/docs`
+- `http://192.168.0.230:3001`
+- `http://192.168.0.230:8001/health`
+- `http://192.168.0.230:8001/docs`
 
 ### Update Existing Deployment (recommended routine)
 

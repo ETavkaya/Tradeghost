@@ -578,3 +578,16 @@ When updating this file, append a short dated entry:
 - Next steps:
   1. Run local frontend/backend validation and review the combined uncommitted Product V2 changes.
   2. If approved, deploy migrations `006` and `007` with the feature flags still disabled; explicitly enable and verify only when an operator is ready to run a future-only virtual experiment.
+
+## 32) Latest Entry (2026-11-18)
+
+- Request:
+  - Deploy the completed Phase 2/Product V2 release to the current Linux Docker host.
+- Deployed and verified:
+  - Pushed release commit `2f2cce6` (`Complete Product V2 workflow and Strategy Lab UI`) and fast-forwarded `emrebee@192.168.0.230` to that commit.
+  - Rebuilt and recreated only `tradeghost-api` and `tradeghost-web`; Postgres and Neo4j remained running with their existing persisted volumes. The host's pre-existing untracked `logs/`, `ngrok.log`, and `tradeghost/shared/config/schemas.py` were preserved.
+  - API health returned `{"status":"ok","app":"TradeGhost"}` and `/discover` returned HTTP `200`. The new Strategy Lab route is present and correctly returns its disabled-by-default feature-gate response.
+  - Ran the deployed idempotent research-schema migration runner without enabling feature flags. `006_phase2b_market_state_reporting.sql` and `007_phase2c_strategy_lab.sql` are recorded in `tradeghost_schema_migrations`; Market State, operational-report, Strategy Lab experiment, and Strategy Lab position tables exist.
+  - Neo4j remained healthy and authenticated successfully as the `tradeghost` application account.
+- Compatibility / operations:
+  - `PRODUCT_V2_ENABLED` and `STRATEGY_LAB_ENABLED` remain disabled. No market-state capture, operational report, Strategy Lab experiment, scheduler, broker action, or LLM writer was enabled or created during deployment.

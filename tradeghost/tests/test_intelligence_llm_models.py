@@ -8,11 +8,11 @@ from tradeghost.services.intelligence.service import IntelligenceService
 def _make_service() -> IntelligenceService:
     service = IntelligenceService.__new__(IntelligenceService)
     service.settings = SimpleNamespace(
-        llmq_chat_model="gpt-4o-mini",
-        daily_report_llm_model="gpt-4o-mini",
-        market_context_llm_model="gpt-4o-mini",
-        final_28d_review_llm_model="gpt-4o-mini",
-        openai_model="gpt-4o-mini",
+        llmq_chat_model="gpt-5.6",
+        daily_report_llm_model="gpt-5.6",
+        market_context_llm_model="gpt-5.6",
+        final_28d_review_llm_model="gpt-5.6",
+        openai_model="gpt-5.6",
         ollama_model="llama3.2:3b",
     )
     return service
@@ -21,7 +21,7 @@ def _make_service() -> IntelligenceService:
 def test_default_model_for_provider_uses_llm_chat_model() -> None:
     service = _make_service()
 
-    assert service._default_model_for_provider("openai") == "gpt-4o-mini"
+    assert service._default_model_for_provider("openai") == "gpt-5.6"
     assert service._default_model_for_provider("ollama") == "llama3.2:3b"
 
 

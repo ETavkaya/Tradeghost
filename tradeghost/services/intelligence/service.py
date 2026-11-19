@@ -210,7 +210,7 @@ class IntelligenceService:
 
     def _default_model_for_provider(self, provider: str) -> str:
         if provider == "openai":
-            return self.settings.llmq_chat_model or self.settings.openai_model or "gpt-4o-mini"
+            return self.settings.llmq_chat_model or self.settings.openai_model or "gpt-5.6"
         return self.settings.ollama_model
 
     def _openai_model_candidates(self, preferred_model: str | None = None) -> list[str]:
@@ -222,6 +222,7 @@ class IntelligenceService:
                 self.settings.market_context_llm_model,
                 self.settings.final_28d_review_llm_model,
                 self.settings.openai_model,
+                "gpt-5.6",
                 "gpt-4o-mini",
                 "gpt-4.1-mini",
                 "gpt-5-mini",
@@ -240,7 +241,7 @@ class IntelligenceService:
                 return candidate, True
         if candidates:
             return candidates[0], False
-        return preferred_model or self.settings.openai_model or "gpt-4o-mini", False
+        return preferred_model or self.settings.openai_model or "gpt-5.6", False
 
     def _ollama_generate_direct(
         self,

@@ -591,3 +591,14 @@ When updating this file, append a short dated entry:
   - Neo4j remained healthy and authenticated successfully as the `tradeghost` application account.
 - Compatibility / operations:
   - `PRODUCT_V2_ENABLED` and `STRATEGY_LAB_ENABLED` remain disabled. No market-state capture, operational report, Strategy Lab experiment, scheduler, broker action, or LLM writer was enabled or created during deployment.
+
+## 33) Latest Entry (2026-11-19)
+
+- Request:
+  - Restore the current OpenAI task model from the stale `gpt-4o-mini` runtime setting to `gpt-5.6`.
+- Implemented and deployed:
+  - Changed the OpenAI default and all task-specific OpenAI model defaults to `gpt-5.6`; model-resolution fallbacks still retain prior models only when an authenticated account lists them as available.
+  - Updated the non-secret host `.env` model fields (`OPENAI_MODEL`, `LLMQ_CHAT_MODEL`, `DAILY_REPORT_LLM_MODEL`, `MARKET_CONTEXT_LLM_MODEL`, and `FINAL_28D_REVIEW_LLM_MODEL`) and rebuilt/recreated only `tradeghost-api`.
+  - `55` backend tests passed before deployment. Runtime LLM status now reports `primary_model` and `model_used` as `gpt-5.6`.
+- Runtime blocker:
+  - OpenAI remains unavailable because the configured API key receives HTTP `401 Unauthorized` from `https://api.openai.com/v1/models`. No API key was viewed, changed, or logged. Replace the host `OPENAI_API_KEY` with an active key that has access to the requested model, then recreate `tradeghost-api` and re-check `/intelligence/llm/status`.

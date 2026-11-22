@@ -602,3 +602,15 @@ When updating this file, append a short dated entry:
   - `55` backend tests passed before deployment. Runtime LLM status now reports `primary_model` and `model_used` as `gpt-5.6`.
 - Runtime blocker:
   - OpenAI remains unavailable because the configured API key receives HTTP `401 Unauthorized` from `https://api.openai.com/v1/models`. No API key was viewed, changed, or logged. Replace the host `OPENAI_API_KEY` with an active key that has access to the requested model, then recreate `tradeghost-api` and re-check `/intelligence/llm/status`.
+
+## 34) Latest Entry (2026-11-22)
+
+- Runtime resolution:
+  - After the host API container was recreated with the updated non-secret `.env` settings, the OpenAI account authenticated successfully and `gpt-5.6` accepted an actual Responses API request.
+  - Added a provider compatibility normalization: `gpt-5.6` converts the unsupported `reasoning.effort=minimal` default to `low`; explicit `gpt-5-pro` handling remains `high`.
+  - Added versioned-alias recognition so an account listing `gpt-5.6-sol`, `gpt-5.6-terra`, or another `gpt-5.6-*` variant correctly reports the configured `gpt-5.6` alias as available instead of misreporting `gpt-4o-mini`.
+  - Full backend validation passed (`58 passed`). Release commits `3f78801` and `fd12d8e` were deployed by rebuilding/recreating only `tradeghost-api`.
+- Live verification:
+  - `/intelligence/llm/status` reports OpenAI connected, `primary_model=gpt-5.6`, `model_used=gpt-5.6`, and `model_available=true`.
+  - `POST /intelligence/llm/test` returned `OK` in approximately 1.3 seconds, within the 20-second threshold.
+  - The local workstation `.env` remains a separate, legacy Groq/Ollama-oriented development configuration and was not overwritten; the Docker host uses its own `/home/emrebee/Tradeghost/.env`.

@@ -58,6 +58,16 @@ class OpenAIProvider:
         return normalized.startswith("gpt-5") or normalized.startswith("o")
 
     @staticmethod
+    def _reasoning_effort(model: str, requested_effort: Any) -> str:
+        normalized = (model or "").strip().lower()
+        effort = str(requested_effort or "minimal").strip().lower()
+        if normalized.startswith("gpt-5.6") and effort == "minimal":
+            return "low"
+        if normalized.startswith("gpt-5-pro"):
+            return "high"
+        return effort
+
+    @staticmethod
     def _responses_text_format(response_format: dict[str, Any] | None) -> dict[str, Any] | None:
         if not isinstance(response_format, dict) or not response_format:
             return None
@@ -115,10 +125,7 @@ class OpenAIProvider:
         if text_format:
             payload["text"] = {"format": text_format}
         if self._is_reasoning_model(model_name):
-            effort = str(options.get("reasoning_effort") or "minimal")
-            if model_name.lower().startswith("gpt-5-pro"):
-                effort = "high"
-            payload["reasoning"] = {"effort": effort}
+            payload["reasoning"] = {"effort": self._reasoning_effort(model_name, options.get("reasoning_effort"))}
         req = Request(
             url=endpoint,
             data=json.dumps(payload).encode("utf-8"),

@@ -41,3 +41,12 @@ def test_resolve_openai_model_preserves_requested_model_when_available() -> None
 
     assert model == "gpt-4o-mini"
     assert available is True
+
+
+def test_resolve_openai_model_preserves_version_alias_when_account_lists_variants() -> None:
+    service = _make_service()
+
+    model, available = service._resolve_openai_model("gpt-5.6", ["gpt-5.6-sol", "gpt-5.6-terra"])
+
+    assert model == "gpt-5.6"
+    assert available is True

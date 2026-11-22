@@ -239,6 +239,9 @@ class IntelligenceService:
         for candidate in candidates:
             if candidate in installed:
                 return candidate, True
+            versioned_alias_prefix = f"{candidate}-"
+            if candidate.startswith("gpt-") and any(model.startswith(versioned_alias_prefix) for model in installed):
+                return candidate, True
         if candidates:
             return candidates[0], False
         return preferred_model or self.settings.openai_model or "gpt-5.6", False

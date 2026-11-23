@@ -5,6 +5,7 @@ import { Panel, Pill, SectionTitle, StatCard } from "@/components/ui";
 import { api } from "@/lib/api";
 import type {
   IntelligenceDashboardResponse,
+  MarketCode,
   ScannerCategory,
   StrategyLabExperiment,
   StrategyLabExperimentDetail,
@@ -65,6 +66,7 @@ export default function PortfolioPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [experimentName, setExperimentName] = useState("");
+  const [experimentMarket, setExperimentMarket] = useState<MarketCode>("us");
   const [activationAt, setActivationAt] = useState(() => localDateTimeValue(new Date(Date.now() + 60 * 60 * 1000)));
   const [confirmVirtual, setConfirmVirtual] = useState(false);
   const [sourceRunId, setSourceRunId] = useState("");
@@ -145,7 +147,7 @@ export default function PortfolioPage() {
       const created = await api.createStrategyLabExperiment({
         name: experimentName.trim(),
         activation_at: new Date(activationAt).toISOString(),
-        market: "us",
+        market: experimentMarket,
       });
       setExperimentName("");
       setConfirmVirtual(false);
@@ -225,11 +227,22 @@ export default function PortfolioPage() {
   return (
     <main className="space-y-4">
       <Panel className="border-violet/40 bg-gradient-to-r from-panel to-panelSoft">
-        <p className="text-xs font-medium uppercase tracking-wide text-violet">Primary workflow · 3 of 3</p>
+        <p className="text-xs font-medium uppercase tracking-wide text-violet">Manual Strategy Lab</p>
         <h2 className="mt-1 text-2xl font-semibold">Portfolio</h2>
         <p className="mt-2 max-w-4xl text-sm text-slate-300">
           Strategy Lab is a future-only virtual experiment ledger. It does not submit broker orders, convert cohorts into trades, or allow an LLM to create a decision.
         </p>
+      </Panel>
+
+      <Panel>
+        <SectionTitle title="How Portfolio works" subtitle="Virtual experiment workflow; this is not a broker portfolio." />
+        <ol className="grid gap-3 text-sm text-slate-300 md:grid-cols-4">
+          <li><span className="font-semibold text-cyan">1. Discover</span><br />Run the unchanged deterministic US or BIST scanner.</li>
+          <li><span className="font-semibold text-cyan">2. Create</span><br />Create and manually activate a future-only virtual experiment.</li>
+          <li><span className="font-semibold text-cyan">3. Record</span><br />Submit an eligible candidate from a fresh run; the backend freezes its evidence.</li>
+          <li><span className="font-semibold text-cyan">4. Process</span><br />Manually process canonical bars for virtual fills, valuations, and the fixed 56-session exit.</li>
+        </ol>
+        <p className="mt-3 text-xs text-slate-400">No broker order, automatic scheduler, historical cohort conversion, scanner-rule change, or LLM trade decision is possible here.</p>
       </Panel>
 
       {featureError ? (
@@ -271,6 +284,12 @@ export default function PortfolioPage() {
             <form onSubmit={createExperiment} className="mt-5 space-y-3 border-t border-stroke pt-4">
               <h3 className="text-sm font-semibold">Create virtual experiment</h3>
               <input required value={experimentName} onChange={(event) => setExperimentName(event.target.value)} placeholder="Experiment name" className="w-full rounded-lg border border-stroke bg-bg px-3 py-2 text-sm" />
+              <label className="block text-xs text-slate-400">Market
+                <select value={experimentMarket} onChange={(event) => setExperimentMarket(event.target.value as MarketCode)} className="mt-1 w-full rounded-lg border border-stroke bg-bg px-3 py-2 text-sm text-slate-100">
+                  <option value="us">US stocks</option>
+                  <option value="bist">BIST stocks</option>
+                </select>
+              </label>
               <label className="block text-xs text-slate-400">Activation time (local time, stored as UTC)
                 <input required type="datetime-local" value={activationAt} onChange={(event) => setActivationAt(event.target.value)} className="mt-1 w-full rounded-lg border border-stroke bg-bg px-3 py-2 text-sm text-slate-100" />
               </label>

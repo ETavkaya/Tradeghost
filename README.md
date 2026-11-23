@@ -485,7 +485,7 @@ npm run dev
 
 ## Product V2 Roadmap
 
-TradeGhost is incrementally evolving toward a self-hosted daily intelligence and portfolio-management workflow: `Discover -> Monitor -> Portfolio`. Phase D now makes that workflow the primary navigation: Discover runs the existing deterministic daily pipeline, Monitor retains watchlists and alerts, and Portfolio reads the manual Strategy Lab virtual ledger. `Scanner`, `Analysis`, `Backtest`, `Intelligence`, `Research`, `Logic`, and `Logs` remain available as advanced workspaces. Product V2 Phases A-C remain the compatibility, Market State/reporting, and future-only Strategy Lab foundations; scanner scoring, category logic, follow-up scheduling, cohorts, and research database behavior are unchanged.
+TradeGhost is incrementally evolving toward a self-hosted daily intelligence and portfolio-management workflow: `Discover -> Monitor -> Portfolio`. Phase D now makes that workflow the primary navigation: Discover runs the existing deterministic daily pipeline for US or BIST, Monitor retains watchlists and alerts, and Portfolio reads the manual Strategy Lab virtual ledger. Portfolio is an experiment ledger rather than a broker portfolio: create and explicitly activate a future-only virtual experiment, record only a fresh eligible deterministic candidate, then manually process canonical bars. `Scanner`, `Analysis`, `Backtest`, `Intelligence`, `Research`, `Logic`, and `Logs` remain available as advanced workspaces. Product V2 Phases A-C remain the compatibility, Market State/reporting, and future-only Strategy Lab foundations; scanner scoring, category logic, follow-up scheduling, cohorts, and research database behavior are unchanged.
 
 The reserved feature flags are all disabled by default:
 - `PRODUCT_V2_ENABLED`
@@ -500,7 +500,9 @@ Design contracts and phased delivery plan:
 - `docs/operational_reporting_v2.md`
 - `docs/trading212_integration_plan.md`
 
-Strategy Lab is a future-only, deterministic virtual experiment with an auditable Postgres ledger. The Portfolio UI is a manual feature-gated client of that ledger: it cannot enable runtime flags, start scheduled processing, convert historical cohorts into trades, or submit orders. Any future Trading 212 adapter is read-only by design and cannot place orders. LLMs remain advisory only.
+Strategy Lab is a future-only, deterministic virtual experiment with an auditable Postgres ledger for US or BIST. The Portfolio UI is a manual feature-gated client of that ledger: it cannot enable runtime flags, start scheduled processing, convert historical cohorts into trades, or submit orders. Any future Trading 212 adapter is read-only by design and cannot place orders. LLMs remain advisory only.
+
+The Logs workspace distinguishes successful Postgres report persistence from optional LLM enrichment. A recorded fallback or enrichment error does not mean that the deterministic report or its Postgres row was lost. In Docker deployments, the API reaches a host-published Ollama fallback through `host.docker.internal`; native local development may override that URL in `.env`.
 
 ## Production Notes
 

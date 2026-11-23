@@ -614,3 +614,19 @@ When updating this file, append a short dated entry:
   - `/intelligence/llm/status` reports OpenAI connected, `primary_model=gpt-5.6`, `model_used=gpt-5.6`, and `model_available=true`.
   - `POST /intelligence/llm/test` returned `OK` in approximately 1.3 seconds, within the 20-second threshold.
   - The local workstation `.env` remains a separate, legacy Groq/Ollama-oriented development configuration and was not overwritten; the Docker host uses its own `/home/emrebee/Tradeghost/.env`.
+
+## 35) Latest Entry (2026-11-23)
+
+- Request:
+  - Correct the live Product V2 workflow: allow BIST discovery, explain the Portfolio/Strategy Lab workflow, correct the misleading Logs presentation, and keep Logic current.
+- Implemented:
+  - Discover now lets the operator choose the existing deterministic `us` or `bist` market request without changing scanner scoring, categories, gates, limits, or LLM involvement.
+  - Portfolio now offers the same market choice for future-only virtual experiments, removes the ambiguous `Primary workflow · 3 of 3` label, and presents the explicit four-step manual ledger workflow. It remains brokerless, unscheduled, and LLM-free for decisions.
+  - Logs now distinguishes confirmed Postgres persistence from optional LLM enrichment/fallback. The reported `Connection refused` rows from 2026-11-20 are historical OpenAI/fallback enrichment failures, not lost Postgres data: the deterministic report was persisted successfully.
+  - Added Docker host-gateway resolution for a host-published Ollama fallback and documented the Docker versus native-local fallback URL. Runtime template flags remain disabled by default.
+  - Logic now documents the current deterministic, Postgres-authoritative, Neo4j-projection, and advisory-only LLM boundaries.
+- Validation run:
+  - `npm run build` in `apps/web` passed.
+  - `pytest tradeghost/tests/test_strategy_lab.py tradeghost/tests/test_product_v2_phase_a.py tradeghost/tests/test_phase_b_reporting.py -q` passed (`11 passed`; only an existing local pytest-cache permission warning).
+- Deployment follow-up:
+  - Enable the already-established manual Strategy Lab runtime flags only on the Linux host when an operator explicitly wants to use Portfolio. This does not create an experiment, run a scheduler, or permit broker execution.

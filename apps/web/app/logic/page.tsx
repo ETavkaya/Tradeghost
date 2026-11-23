@@ -26,6 +26,18 @@ export default function LogicPage() {
       </Panel>
 
       <Panel>
+        <SectionTitle title="Current Operating Model" subtitle="Boundaries for the live product workflow" />
+        <div className="space-y-2 text-sm text-slate-300">
+          <p><strong>Discover:</strong> runs the existing bounded deterministic scanner for either US or BIST. Category logic, scoring, and entry gates are unchanged; no LLM is invoked.</p>
+          <p><strong>Monitor:</strong> retains the existing watchlist and alert workflow. It observes symbols and does not create a trade.</p>
+          <p><strong>Portfolio:</strong> is a manual Strategy Lab virtual experiment ledger, not a broker account. It accepts only fresh deterministic evidence after explicit activation and processes canonical bars only when requested.</p>
+          <p><strong>Research:</strong> keeps Postgres as deterministic truth for cohorts, Predictions, Outcomes, market states, and operational reporting. Neo4j and the outbox are projections, not an LLM memory source.</p>
+          <p><strong>LLM boundary:</strong> the LLM may summarize or advise from traceable evidence. It cannot tune scanner rules, create a prediction or outcome, repair historical records, activate an experiment, or submit an order.</p>
+          <p><strong>Logs:</strong> show Postgres persistence separately from optional LLM enrichment/fallback so an enrichment outage is not misread as loss of deterministic data.</p>
+        </div>
+      </Panel>
+
+      <Panel>
         <SectionTitle title="Glossary" subtitle="Strategy modes, setups, indicators, scanner metrics, alerts, and ratios" />
         <div className="space-y-3 text-sm text-slate-300">
           <p><strong>Strategy modes:</strong> aggressive/balanced/conservative are pullback-biased. momentum_continuation allows controlled extension when trend + dynamics + trigger align. custom exposes deterministic overrides.</p>

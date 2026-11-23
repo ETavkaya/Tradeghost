@@ -44,7 +44,7 @@ Corrections append a reversing or superseding ledger event. They never mutate a 
 4. Submit one decision from a source `run_id`, symbol, and scanner category through `POST /intelligence/strategy-lab/experiments/{experiment_id}/decisions`.
 5. Manually process canonical bars with `POST /intelligence/strategy-lab/experiments/{experiment_id}/process?as_of_date=YYYY-MM-DD`.
 
-The Phase D Portfolio workspace exposes the same manual workflow. It requires explicit confirmations before creating a virtual experiment or processing canonical bars, and clearly shows a disabled runtime state when the feature flags are off. It does not start a background task or bypass an API rejection.
+The Phase D Portfolio workspace exposes the same manual workflow for US or BIST experiments. It shows the four steps directly: run a deterministic discovery, create and manually activate a virtual experiment, record a fresh eligible candidate, then manually process canonical bars. It requires explicit confirmations before creating a virtual experiment or processing canonical bars, and clearly shows a disabled runtime state when the feature flags are off. It does not start a background task or bypass an API rejection.
 
 The decision endpoint rejects a run that predates activation, a missing source symbol/category, a false frozen `final_entry_decision`, source data-quality flags, duplicate exposure, or exhausted sleeve capacity. The processor is idempotent and never runs in the background.
 

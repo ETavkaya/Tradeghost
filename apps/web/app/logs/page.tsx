@@ -150,6 +150,7 @@ export default function LogsPage() {
 
   const scheduler = status?.scheduler;
   const postgres = status?.daily_reports.postgres;
+  const enrichmentIssue = Boolean(postgres?.fallback_used || postgres?.error_message);
 
   return (
     <main className="space-y-4">
@@ -199,16 +200,18 @@ export default function LogsPage() {
       </Panel>
 
       <Panel>
-        <SectionTitle title="Postgres Daily Report Confirmation" subtitle="Proof from cohort_daily_reports, not just a markdown file." />
+        <SectionTitle title="Postgres Persistence and LLM Enrichment" subtitle="The Postgres row is independent from optional LLM enrichment and its fallback state." />
         <div className="grid gap-3 text-sm md:grid-cols-3">
+          <div>Postgres write: <span className={postgres?.configured && postgres?.latest_report_date ? "text-green" : "text-amber"}>{postgres?.configured && postgres?.latest_report_date ? "confirmed" : "not confirmed"}</span></div>
           <div>configured: <span className="text-slate-100">{fmt(postgres?.configured)}</span></div>
           <div>latest_report_date: <span className="text-slate-100">{fmt(postgres?.latest_report_date)}</span></div>
-          <div>fallback_used: <span className="text-slate-100">{fmt(postgres?.fallback_used)}</span></div>
+          <div>LLM fallback used: <span className={postgres?.fallback_used ? "text-amber" : "text-slate-100"}>{fmt(postgres?.fallback_used)}</span></div>
           <div>created_at: <span className="text-slate-100">{dt(postgres?.latest_report_created_at)}</span></div>
           <div>updated_at: <span className="text-slate-100">{dt(postgres?.latest_report_updated_at)}</span></div>
-          <div>error_message: <span className="text-red">{fmt(postgres?.error_message)}</span></div>
+          <div>LLM enrichment issue: <span className={postgres?.error_message ? "text-amber" : "text-slate-100"}>{fmt(postgres?.error_message)}</span></div>
           <div className="md:col-span-3">latest_export_path: <span className="text-slate-100">{fmt(postgres?.latest_export_path)}</span></div>
         </div>
+        {enrichmentIssue ? <p className="mt-3 rounded-lg border border-amber/40 bg-amber/5 p-3 text-xs text-amber">This is an LLM enrichment/fallback result on the latest stored report, not a Postgres connection failure. The deterministic report and its Postgres row remain available; a successful later report replaces this status.</p> : null}
       </Panel>
 
       <Panel>

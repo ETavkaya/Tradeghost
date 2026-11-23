@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Panel, Pill, SectionTitle, StatCard } from "@/components/ui";
 import { api } from "@/lib/api";
-import type { DailyPipelineRequest, IntelligenceDashboardResponse, IntelligenceRunResponse, SymbolResult } from "@/lib/types";
+import type { DailyPipelineRequest, IntelligenceDashboardResponse, IntelligenceRunResponse, MarketCode, SymbolResult } from "@/lib/types";
 
 const discoveryRequest: DailyPipelineRequest = {
   market: "us",
@@ -47,6 +47,7 @@ export default function DiscoverPage() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [market, setMarket] = useState<MarketCode>("us");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -73,9 +74,9 @@ export default function DiscoverPage() {
     setError(null);
     setNotice(null);
     try {
-      const response: IntelligenceRunResponse = await api.runDailyPipeline(discoveryRequest);
+      const response: IntelligenceRunResponse = await api.runDailyPipeline({ ...discoveryRequest, market });
       setResults(response.symbol_results);
-      setNotice(`Deterministic discovery completed: ${response.run.final_candidates_after_merge} merged candidates in run ${response.run.id}.`);
+      setNotice(`Deterministic ${market.toUpperCase()} discovery completed: ${response.run.final_candidates_after_merge} merged candidates in run ${response.run.id}.`);
       await load();
     } catch (requestError) {
       setError(errorMessage(requestError));
@@ -89,23 +90,36 @@ export default function DiscoverPage() {
       <Panel className="border-cyan/30 bg-gradient-to-r from-panel to-panelSoft">
         <div className="flex flex-col justify-between gap-4 md:flex-row md:items-start">
           <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-cyan">Primary workflow · 1 of 3</p>
+            <p className="text-xs font-medium uppercase tracking-wide text-cyan">Deterministic candidate discovery</p>
             <h2 className="mt-1 text-2xl font-semibold">Discover</h2>
             <p className="mt-2 max-w-3xl text-sm text-slate-300">
               Run the established deterministic daily scanner and inspect its frozen candidate evidence. This page does not tune scores, categories, or entry gates.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => void runDiscovery()}
-            disabled={running}
-            className="rounded-lg border border-cyan/50 bg-cyan/15 px-4 py-2 text-sm font-semibold text-cyan disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {running ? "Running deterministic discovery…" : "Run Discovery Now"}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-xs text-slate-300" htmlFor="discovery-market">Market</label>
+            <select
+              id="discovery-market"
+              value={market}
+              onChange={(event) => setMarket(event.target.value as MarketCode)}
+              disabled={running}
+              className="rounded-lg border border-stroke bg-bg px-3 py-2 text-sm text-slate-100 disabled:opacity-50"
+            >
+              <option value="us">US stocks</option>
+              <option value="bist">BIST stocks</option>
+            </select>
+            <button
+              type="button"
+              onClick={() => void runDiscovery()}
+              disabled={running}
+              className="rounded-lg border border-cyan/50 bg-cyan/15 px-4 py-2 text-sm font-semibold text-cyan disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {running ? "Running deterministic discovery…" : "Run Discovery Now"}
+            </button>
+          </div>
         </div>
         <p className="mt-4 text-xs text-slate-400">
-          Fixed request: US market, 1-year window, all five existing categories, capped 60-symbol universe, 18-second scanner limit. No LLM is invoked.
+          Fixed request: selected US or BIST market, 1-year window, all five existing categories, capped 60-symbol universe, 18-second scanner limit. No LLM is invoked.
         </p>
       </Panel>
 

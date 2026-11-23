@@ -628,5 +628,8 @@ When updating this file, append a short dated entry:
 - Validation run:
   - `npm run build` in `apps/web` passed.
   - `pytest tradeghost/tests/test_strategy_lab.py tradeghost/tests/test_product_v2_phase_a.py tradeghost/tests/test_phase_b_reporting.py -q` passed (`11 passed`; only an existing local pytest-cache permission warning).
-- Deployment follow-up:
-  - Enable the already-established manual Strategy Lab runtime flags only on the Linux host when an operator explicitly wants to use Portfolio. This does not create an experiment, run a scheduler, or permit broker execution.
+- Deployed and verified:
+  - Pushed release commit `400b445` (`Improve market selection and runtime reporting`) and fast-forwarded `emrebee@192.168.0.230` to it. Only `tradeghost-api` and `tradeghost-web` were rebuilt/recreated; persisted Postgres and Neo4j containers were not restarted.
+  - Enabled only `PRODUCT_V2_ENABLED=true` and `STRATEGY_LAB_ENABLED=true` on the host. `GET /intelligence/strategy-lab/experiments` now returns HTTP `200` and an empty ledger; no experiment, decision, position, scheduler, or broker action was created.
+  - Confirmed `/discover` and `/portfolio` return HTTP `200`, API health is healthy, OpenAI remains connected on `gpt-5.6`, and the Docker API container can reach the host Ollama fallback (`/api/tags` HTTP `200`).
+  - Preserved the host's pre-existing untracked `logs/`, `ngrok.log`, and `tradeghost/shared/config/schemas.py` files.
